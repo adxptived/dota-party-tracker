@@ -28,22 +28,28 @@ def together_summary(players: list[tuple[str, list[dict]]]) -> dict:
 
     games = wins = 0
     for outcomes in by_match.values():
-        if len(outcomes) < 2:
+        won = sum(1 for o in outcomes if o)
+        lost = len(outcomes) - won
+        if max(won, lost) < 2:  # нет как минимум 2 игроков на одной стороне
             continue
-        if len(set(outcomes)) != 1:  # разные команды — пропускаем
+        if won == lost:  # 2 на 2 и т.п. — неоднозначно, пропускаем
             continue
         games += 1
-        if outcomes[0]:
+        if won > lost:
             wins += 1
     return {"games": games, "wins": wins, "losses": games - wins}
 
 
 def best_duo(players: list[tuple[str, list[dict]]]) -> Optional[dict]:
-    """Пара с наибольшим числом совместных матчей (на одной стороне)."""
-    win_maps = {name: _win_map(matches) for name, matches in players}
+    """Пара с наибольшим числом совместных матчей (на одной стороне).
+
+    Держим список (имя, win_map), НЕ dict: имена не уникальны, и два аккаунта
+    с одинаковым именем не должны схлопываться (иначе теряем матчи одного из них).
+    """
+    win_maps = [(name, _win_map(matches)) for name, matches in players]
 
     best: Optional[dict] = None
-    for (name_a, wm_a), (name_b, wm_b) in combinations(win_maps.items(), 2):
+    for (name_a, wm_a), (name_b, wm_b) in combinations(win_maps, 2):
         shared = set(wm_a) & set(wm_b)
         games = wins = 0
         for match_id in shared:

@@ -53,3 +53,38 @@ def test_best_duo_picks_pair_with_most_shared_games():
 def test_best_duo_none_when_no_shared():
     players = [("Alice", [win(1)]), ("Bob", [win(2)])]
     assert best_duo(players) is None
+
+
+def test_best_duo_does_not_collapse_duplicate_names():
+    # Два аккаунта с одинаковым именем не должны схлопываться (потеря матчей).
+    players = [
+        ("Alex", [win(1), win(2), win(3)]),  # аккаунт A1: 3 общих с Bob
+        ("Bob", [win(1), win(2), win(3)]),
+        ("Alex", [win(9)]),                  # аккаунт A2: общих нет
+    ]
+    duo = best_duo(players)
+    assert duo is not None
+    assert duo["games"] == 3  # матчи A1 не потеряны
+
+
+def test_together_counts_same_side_subgroup_when_split():
+    # A,B на Radiant (победа), C на Dire — A и B сыграли вместе на одной стороне.
+    players = [
+        ("A", [wm(50, 0, True)]),
+        ("B", [wm(50, 1, True)]),
+        ("C", [wm(50, 128, True)]),
+    ]
+    s = together_summary(players)
+    assert s["games"] == 1
+    assert s["wins"] == 1
+
+
+def test_together_skips_even_split():
+    # 2 на 2 — неоднозначно, не считаем.
+    players = [
+        ("A", [wm(60, 0, True)]),
+        ("B", [wm(60, 1, True)]),
+        ("C", [wm(60, 128, True)]),
+        ("D", [wm(60, 129, True)]),
+    ]
+    assert together_summary(players)["games"] == 0
