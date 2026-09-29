@@ -150,6 +150,45 @@ def solo_party_split(matches: list[dict]) -> dict[str, tuple[int, int]]:
     return {key: (games, wins) for key, (games, wins) in buckets.items()}
 
 
+def recent_form(matches: list[dict], n: int = 5) -> list[bool]:
+    """Последние n матчей как список исходов (True=победа), в хронологическом порядке."""
+    tail = matches[-n:]
+    return [is_win(m["player_slot"], m["radiant_win"]) for m in tail]
+
+
+def best_game(matches: list[dict]) -> Optional[dict]:
+    """Матч с максимальным KDA. Возвращает kills/deaths/assists/hero_id/kda или None."""
+    best = None
+    best_kda = -1.0
+    for match in matches:
+        kills = match.get("kills", 0) or 0
+        deaths = match.get("deaths", 0) or 0
+        assists = match.get("assists", 0) or 0
+        kda = (kills + assists) / max(deaths, 1)
+        if kda > best_kda:
+            best_kda = kda
+            best = {
+                "kills": kills,
+                "deaths": deaths,
+                "assists": assists,
+                "hero_id": match.get("hero_id"),
+                "kda": kda,
+            }
+    return best
+
+
+def longest_win_streak(matches: list[dict]) -> int:
+    """Самая длинная серия побед подряд за весь набор матчей."""
+    longest = current = 0
+    for match in matches:
+        if is_win(match["player_slot"], match["radiant_win"]):
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
 def duration_stats(matches: list[dict]) -> dict[str, float]:
     """Средняя и максимальная длительность (в минутах) по полю duration (секунды)."""
     durations = [m["duration"] for m in matches if m.get("duration")]

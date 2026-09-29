@@ -79,6 +79,40 @@ class OpenDota:
         data = self._get(f"/players/{account_id}/matches", params={"limit": limit, "significant": 0})
         return data if isinstance(data, list) else []
 
+    def get_lanes(self, account_id: int) -> dict:
+        """Игры/победы по линиям из /players/{id}/counts → {lane_int: (games, wins)}.
+
+        lane_role: 0 — линия неизвестна (нераспарсенные матчи), 1 safe, 2 mid, 3 off, 4 jungle.
+        """
+        data = self._get(f"/players/{account_id}/counts") or {}
+        lane_role = data.get("lane_role") or {}
+        result: dict[int, tuple[int, int]] = {}
+        for key, stat in lane_role.items():
+            try:
+                lane = int(key)
+            except (TypeError, ValueError):
+                continue
+            result[lane] = (stat.get("games", 0), stat.get("win", 0))
+        return result
+
+    def get_gpm_distribution(self, account_id: int) -> dict:
+        """Медиана и пик GPM из гистограммы /players/{id}/histograms/gold_per_min."""
+        data = self._get(f"/players/{account_id}/histograms/gold_per_min")
+        buckets = [(b["x"], b.get("games", 0)) for b in data if b.get("games")] if isinstance(data, list) else []
+        if not buckets:
+            return {"median": None, "best": None}
+        total = sum(games for _, games in buckets)
+        half = total / 2
+        cumulative = 0
+        median = None
+        for x, games in sorted(buckets):
+            cumulative += games
+            if cumulative >= half:
+                median = x
+                break
+        best = max(x for x, _ in buckets)
+        return {"median": median, "best": best}
+
     def get_totals(self, account_id: int) -> dict:
         """Средние GPM/XPM/last hits из /players/{id}/totals (sum/n по полям)."""
         data = self._get(f"/players/{account_id}/totals")

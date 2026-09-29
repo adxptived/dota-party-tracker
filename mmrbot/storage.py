@@ -40,6 +40,9 @@ class Player:
     last_gpm: Optional[float] = None
     last_xpm: Optional[float] = None
     last_last_hits: Optional[float] = None
+    last_lanes: Optional[str] = None
+    last_gpm_median: Optional[float] = None
+    last_gpm_best: Optional[float] = None
 
 
 _SCHEMA = """
@@ -64,6 +67,9 @@ CREATE TABLE IF NOT EXISTS players (
     last_gpm              REAL,
     last_xpm              REAL,
     last_last_hits        REAL,
+    last_lanes            TEXT,
+    last_gpm_median       REAL,
+    last_gpm_best         REAL,
     UNIQUE(chat_id, account_id)
 );
 CREATE TABLE IF NOT EXISTS matches (
@@ -101,7 +107,10 @@ class Storage:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
         add_missing("chats", {"last_digest_date": "TEXT"})
-        add_missing("players", {"last_gpm": "REAL", "last_xpm": "REAL", "last_last_hits": "REAL"})
+        add_missing("players", {
+            "last_gpm": "REAL", "last_xpm": "REAL", "last_last_hits": "REAL",
+            "last_lanes": "TEXT", "last_gpm_median": "REAL", "last_gpm_best": "REAL",
+        })
         add_missing("matches", {"duration": "INTEGER", "party_size": "INTEGER"})
 
     def _conn(self) -> sqlite3.Connection:
@@ -170,6 +179,9 @@ class Storage:
             last_gpm=row["last_gpm"],
             last_xpm=row["last_xpm"],
             last_last_hits=row["last_last_hits"],
+            last_lanes=row["last_lanes"],
+            last_gpm_median=row["last_gpm_median"],
+            last_gpm_best=row["last_gpm_best"],
         )
 
     def add_player(
@@ -257,6 +269,15 @@ class Storage:
             conn.execute(
                 "UPDATE players SET last_gpm = ?, last_xpm = ?, last_last_hits = ? WHERE id = ?",
                 (gpm, xpm, last_hits, player_id),
+            )
+
+    def update_player_insights(
+        self, player_id: int, lanes_json: Optional[str], gpm_median: Optional[float], gpm_best: Optional[float]
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE players SET last_lanes = ?, last_gpm_median = ?, last_gpm_best = ? WHERE id = ?",
+                (lanes_json, gpm_median, gpm_best, player_id),
             )
 
     # --- matches --------------------------------------------------------

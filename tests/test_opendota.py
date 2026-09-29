@@ -56,6 +56,38 @@ def test_no_api_key_means_no_param():
     assert "api_key" not in session.calls[0]["params"]
 
 
+def test_get_lanes_normalizes_lane_role():
+    session = FakeSession({"lane_role": {"1": {"games": 10, "win": 6}, "2": {"games": 4, "win": 1}}})
+    od = OpenDota(session=session, min_interval=0)
+    lanes = od.get_lanes(42)
+    assert lanes[1] == (10, 6)
+    assert lanes[2] == (4, 1)
+    assert session.calls[0]["url"].endswith("/players/42/counts")
+
+
+def test_get_lanes_empty_when_absent():
+    od = OpenDota(session=FakeSession({}), min_interval=0)
+    assert od.get_lanes(42) == {}
+
+
+def test_get_gpm_distribution_median_and_best():
+    session = FakeSession([
+        {"x": 0, "games": 1, "win": 0},
+        {"x": 100, "games": 2, "win": 1},
+        {"x": 200, "games": 1, "win": 1},
+    ])
+    od = OpenDota(session=session, min_interval=0)
+    dist = od.get_gpm_distribution(42)
+    assert dist["median"] == 100  # 4 игры, медиана падает в бакет 100
+    assert dist["best"] == 200
+    assert session.calls[0]["url"].endswith("/players/42/histograms/gold_per_min")
+
+
+def test_get_gpm_distribution_empty():
+    od = OpenDota(session=FakeSession([]), min_interval=0)
+    assert od.get_gpm_distribution(42) == {"median": None, "best": None}
+
+
 def test_get_totals_computes_averages():
     session = FakeSession([
         {"field": "gold_per_min", "n": 10, "sum": 5000},   # avg 500

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
@@ -22,6 +23,8 @@ class OpenDotaClient(Protocol):
     def get_profile(self, account_id: int) -> dict: ...
     def get_matches(self, account_id: int, limit: int = 200) -> list[dict]: ...
     def get_totals(self, account_id: int) -> dict: ...
+    def get_lanes(self, account_id: int) -> dict: ...
+    def get_gpm_distribution(self, account_id: int) -> dict: ...
 
 
 @dataclass
@@ -61,6 +64,12 @@ class PlayerSummary:
     party: tuple = (0, 0)
     best_hour: Optional[tuple] = None
     worst_hour: Optional[tuple] = None
+    lanes: dict = field(default_factory=dict)
+    recent_form: list = field(default_factory=list)
+    best_game: Optional[dict] = None
+    longest_win_streak: int = 0
+    gpm_median: Optional[float] = None
+    gpm_best: Optional[float] = None
 
 
 def _normalize(raw: dict) -> dict:
@@ -109,6 +118,15 @@ def refresh_player(storage: Storage, client: OpenDotaClient, player: Player, now
     except Exception:
         log.debug("Не удалось получить totals игрока %s", player.account_id, exc_info=True)
 
+    # Линии + распределение GPM — тоже необязательные доп. запросы.
+    try:
+        lanes = client.get_lanes(player.account_id)
+        lanes_json = json.dumps({str(lane): list(gw) for lane, gw in lanes.items()})
+        dist = client.get_gpm_distribution(player.account_id)
+        storage.update_player_insights(player.id, lanes_json, dist.get("median"), dist.get("best"))
+    except Exception:
+        log.debug("Не удалось получить lanes/gpm игрока %s", player.account_id, exc_info=True)
+
     return inserted
 
 
@@ -132,6 +150,7 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
     duration = stats.duration_stats(all_matches)
     split = stats.solo_party_split(all_matches)
     best_hour, worst_hour = _best_worst_hour(stats.winrate_by_hour(all_matches, chat.tz))
+    lanes = _parse_lanes(player.last_lanes)
 
     return PlayerSummary(
         display_name=player.display_name,
@@ -168,6 +187,12 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         party=split["party"],
         best_hour=best_hour,
         worst_hour=worst_hour,
+        lanes=lanes,
+        recent_form=stats.recent_form(all_matches, 5),
+        best_game=stats.best_game(all_matches),
+        longest_win_streak=stats.longest_win_streak(all_matches),
+        gpm_median=player.last_gpm_median,
+        gpm_best=player.last_gpm_best,
     )
 
 
@@ -196,6 +221,23 @@ def build_leaderboard(
     # По убыванию текущего MMR; игроки без оценки MMR — в конце.
     summaries.sort(key=lambda s: (s.current_mmr is not None, s.current_mmr or 0), reverse=True)
     return summaries
+
+
+def _parse_lanes(lanes_json: Optional[str]) -> dict:
+    """JSON {'2':[games,wins]} → {2: (games, wins)}."""
+    if not lanes_json:
+        return {}
+    try:
+        raw = json.loads(lanes_json)
+    except (ValueError, TypeError):
+        return {}
+    result = {}
+    for key, value in raw.items():
+        try:
+            result[int(key)] = (value[0], value[1])
+        except (ValueError, TypeError, IndexError):
+            continue
+    return result
 
 
 def _best_worst_hour(by_hour: dict, min_games: int = 3):

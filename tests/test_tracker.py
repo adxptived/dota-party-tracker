@@ -134,6 +134,26 @@ def test_summary_includes_streak_and_top_heroes(store):
     assert s.top_heroes[0]["hero_id"] == 1  # 2 игры на герое 1
 
 
+def test_summary_includes_form_lanes_and_records(store):
+    now = 100_000
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.update_player_insights(p.id, lanes_json='{"2": [10, 6]}', gpm_median=500, gpm_best=800)
+    store.add_matches(p.id, [
+        _m(1, 2000, radiant_win=True),
+        _m(2, 3000, radiant_win=True),
+        _m(3, 4000, radiant_win=False),
+        _m(4, 5000, radiant_win=True),
+    ])
+    p = store.get_player(100, "Вася")
+    chat = store.get_or_create_chat(100)
+    s = build_player_summary(store, chat, p, now=now)
+    assert s.recent_form == [True, True, False, True]
+    assert s.longest_win_streak == 2
+    assert s.lanes[2] == (10, 6)
+    assert s.gpm_median == 500
+    assert s.best_game is not None
+
+
 def test_summary_includes_solo_party_and_totals(store):
     now = 100_000
     p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)

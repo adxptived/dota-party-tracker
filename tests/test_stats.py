@@ -2,11 +2,14 @@ import pytest
 
 from mmrbot.stats import (
     aggregate,
+    best_game,
     current_streak,
     duration_stats,
     estimate_mmr_delta,
     is_ranked_lobby,
     is_win,
+    longest_win_streak,
+    recent_form,
     solo_party_split,
     top_heroes,
     winrate_by_hour,
@@ -199,3 +202,45 @@ def test_duration_stats_avg_and_max():
     d = duration_stats(matches)
     assert d["avg_minutes"] == pytest.approx(45.0)
     assert d["max_minutes"] == pytest.approx(60.0)
+
+
+# --- recent_form / best_game / longest_win_streak -----------------------
+
+def test_recent_form_last_n_in_order():
+    # W L W W L W  (6 матчей)
+    matches = [make(0, True), make(0, False), make(0, True), make(0, True), make(0, False), make(0, True)]
+    form = recent_form(matches, n=5)
+    assert form == [False, True, True, False, True]  # последние 5 по порядку
+
+
+def test_recent_form_fewer_than_n():
+    assert recent_form([make(0, True), make(0, False)], n=5) == [True, False]
+
+
+def test_recent_form_empty():
+    assert recent_form([], n=5) == []
+
+
+def test_best_game_max_kda():
+    matches = [
+        make(0, True, k=5, d=2, a=5),    # KDA 5.0
+        make(0, True, k=10, d=1, a=10),  # KDA 20.0 ← лучший
+        make(0, False, k=1, d=9, a=1),   # KDA ~0.22
+    ]
+    best = best_game(matches)
+    assert best["kills"] == 10 and best["deaths"] == 1 and best["assists"] == 10
+
+
+def test_best_game_empty():
+    assert best_game([]) is None
+
+
+def test_longest_win_streak():
+    # W W L W W W L
+    matches = [make(0, True), make(0, True), make(0, False), make(0, True), make(0, True), make(0, True), make(0, False)]
+    assert longest_win_streak(matches) == 3
+
+
+def test_longest_win_streak_none():
+    assert longest_win_streak([make(0, False), make(0, False)]) == 0
+    assert longest_win_streak([]) == 0

@@ -193,3 +193,22 @@ def test_render_player_card_has_deep_stats():
     assert "520" in text          # GPM
     assert "Juggernaut" in text   # hero_id 8
     assert "соло" in text.lower() or "solo" in text.lower()
+
+
+def test_render_player_card_has_lanes_form_records_gpm():
+    s = summary(
+        display_name="Вася",
+        lanes={2: (10, 6), 0: (5, 2)},
+        recent_form=[True, False, True],
+        best_game={"kills": 10, "deaths": 1, "assists": 10, "hero_id": 8, "kda": 20.0},
+        longest_win_streak=3,
+        gpm_median=520.0,
+        gpm_best=800.0,
+    )
+    text = render_player_card(s)
+    assert "Mid" in text            # линия 2
+    assert "без линии: 5" in text   # честная пометка про нераспарсенные
+    assert "✅" in text             # форма
+    assert "20.00" in text          # лучшая игра KDA
+    assert "3" in text              # макс серия
+    assert "520" in text            # медиана GPM

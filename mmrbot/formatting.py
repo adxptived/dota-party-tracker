@@ -14,6 +14,7 @@ from mmrbot.storage import Player
 from mmrbot.tracker import PlayerSummary, compute_awards
 
 POSITIONS = {1: "🥇", 2: "🥈", 3: "🥉"}
+LANE_NAMES = {1: "Safe", 2: "Mid", 3: "Off", 4: "Лес"}
 
 
 def _esc(text) -> str:
@@ -195,36 +196,73 @@ def render_heroes(summaries: list[PlayerSummary]) -> str:
 
 # --- карточка игрока ----------------------------------------------------
 
+def _lanes_line(lanes: dict) -> Optional[str]:
+    if not lanes:
+        return None
+    known = [
+        f"{LANE_NAMES[lane]} {_fmt_wr(games, wins)}"
+        for lane, (games, wins) in sorted(lanes.items())
+        if lane in LANE_NAMES and games
+    ]
+    if not known:
+        return None
+    line = "🛣 По линиям: " + " · ".join(known)
+    unknown = lanes.get(0, (0, 0))[0]
+    if unknown:
+        line += f" · без линии: {unknown}"
+    return line
+
+
 def render_player_card(s: PlayerSummary) -> str:
     lines = [f"🎮 {_b(s.display_name)} · {_rank_with_emoji(s)}{_streak_str(s)}"]
     lines.append(f"{_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}")
 
     if s.games_total == 0:
         lines.append("пока без ранкед-игр с момента добавления")
-        return "\n".join(lines)
+    else:
+        lines.append(f"📊 {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)")
+        lines.append(f"⚔️ KDA {s.kda_ratio:.2f} ({s.avg_kills:.1f}/{s.avg_deaths:.1f}/{s.avg_assists:.1f})")
 
-    lines.append(f"📊 {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)")
-    lines.append(f"⚔️ KDA {s.kda_ratio:.2f} ({s.avg_kills:.1f}/{s.avg_deaths:.1f}/{s.avg_assists:.1f})")
+        if s.recent_form:
+            icons = "".join("✅" if won else "❌" for won in s.recent_form)
+            lines.append(f"📋 Форма (посл. {len(s.recent_form)}): {icons}")
 
-    econ = []
-    if s.gpm is not None:
-        econ.append(f"GPM {s.gpm:.0f}")
-    if s.xpm is not None:
-        econ.append(f"XPM {s.xpm:.0f}")
-    if s.last_hits is not None:
-        econ.append(f"LH/игра {s.last_hits:.0f}")
-    if econ:
-        lines.append("💰 " + " · ".join(econ))
+        econ = []
+        if s.gpm is not None:
+            econ.append(f"GPM {s.gpm:.0f}")
+        if s.xpm is not None:
+            econ.append(f"XPM {s.xpm:.0f}")
+        if s.last_hits is not None:
+            econ.append(f"LH/игра {s.last_hits:.0f}")
+        if econ:
+            lines.append("💰 " + " · ".join(econ))
 
-    if s.avg_duration_min:
-        lines.append(f"⏱️ Средняя игра {s.avg_duration_min:.0f} мин (макс {s.max_duration_min:.0f})")
+        if s.avg_duration_min:
+            lines.append(f"⏱️ Средняя игра {s.avg_duration_min:.0f} мин (макс {s.max_duration_min:.0f})")
 
-    lines.append(f"🧑‍🤝‍🧑 Соло {_fmt_wr(*s.solo)} · Пати {_fmt_wr(*s.party)}")
+        lines.append(f"🧑‍🤝‍🧑 Соло {_fmt_wr(*s.solo)} · Пати {_fmt_wr(*s.party)}")
 
-    if s.best_hour and s.worst_hour:
-        bh, bwr = s.best_hour
-        wh, wwr = s.worst_hour
-        lines.append(f"🌙 Лучший час {bh:02d}:00 ({bwr * 100:.0f}%) · худший {wh:02d}:00 ({wwr * 100:.0f}%)")
+        if s.best_hour and s.worst_hour:
+            bh, bwr = s.best_hour
+            wh, wwr = s.worst_hour
+            lines.append(f"🌙 Лучший час {bh:02d}:00 ({bwr * 100:.0f}%) · худший {wh:02d}:00 ({wwr * 100:.0f}%)")
+
+        if s.best_game:
+            bg = s.best_game
+            lines.append(
+                f"🌟 Лучшая игра: {_esc(hero_name(bg['hero_id']))} "
+                f"{bg['kills']}/{bg['deaths']}/{bg['assists']} (KDA {bg['kda']:.2f})"
+            )
+        if s.longest_win_streak >= 2:
+            lines.append(f"🔥 Макс. серия побед: {s.longest_win_streak}")
+
+    # Разрезы из истории OpenDota (доступны и без наших матчей).
+    lane_line = _lanes_line(s.lanes)
+    if lane_line:
+        lines.append(lane_line)
+    if s.gpm_median is not None:
+        peak = f" · пик {s.gpm_best:.0f}" if s.gpm_best else ""
+        lines.append(f"💠 GPM обычно ~{s.gpm_median:.0f}{peak}")
 
     lines.append(f"🦸 Герои: {_heroes_line(s.top_heroes)}")
     return "\n".join(lines)
