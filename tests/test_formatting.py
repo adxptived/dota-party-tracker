@@ -1,4 +1,11 @@
-from mmrbot.formatting import format_delta, render_leaderboard
+from mmrbot.formatting import (
+    format_delta,
+    render_awards,
+    render_heroes,
+    render_leaderboard,
+    render_player_card,
+    render_together,
+)
 from mmrbot.tracker import PlayerSummary
 
 
@@ -81,3 +88,67 @@ def test_player_without_anchor_mmr_shows_question_not_crash():
     text = render_leaderboard([summary(anchor_mmr=None, current_mmr=None, mmr_delta=25)])
     assert "Вася" in text
     assert "+25" in text
+
+
+def test_leaderboard_shows_win_streak():
+    text = render_leaderboard([summary(streak_type="W", streak_len=3)])
+    assert "🔥" in text
+    assert "3" in text
+
+
+# --- awards -------------------------------------------------------------
+
+def test_render_awards_lists_leaders():
+    players = [
+        summary(display_name="A", winrate=0.8, wins_total=8, losses_total=2, games_total=10, kda_ratio=5.0, sum_deaths=10),
+        summary(display_name="B", winrate=0.3, wins_total=3, losses_total=7, games_total=10, kda_ratio=1.0, sum_deaths=90),
+    ]
+    text = render_awards(players)
+    assert "A" in text  # король винрейта
+    assert "B" in text  # фидер
+
+
+def test_render_awards_empty_when_no_eligible():
+    text = render_awards([summary(games_total=0, wins_total=0, losses_total=0)])
+    assert text == ""
+
+
+# --- together -----------------------------------------------------------
+
+def test_render_together_with_shared_games():
+    result = {"player_count": 2, "summary": {"games": 5, "wins": 3, "losses": 2},
+              "duo": {"pair": ("Alice", "Bob"), "games": 4, "wins": 3, "winrate": 0.75}}
+    text = render_together(result)
+    assert "5" in text
+    assert "Alice" in text and "Bob" in text
+
+
+def test_render_together_no_games():
+    result = {"player_count": 2, "summary": {"games": 0, "wins": 0, "losses": 0}, "duo": None}
+    text = render_together(result)
+    assert "нет" in text.lower() or "совмест" in text.lower()
+
+
+# --- heroes -------------------------------------------------------------
+
+def test_render_heroes_shows_hero_names():
+    s = summary(display_name="Вася", top_heroes=[{"hero_id": 1, "games": 5, "wins": 3, "winrate": 0.6}])
+    text = render_heroes([s])
+    assert "Вася" in text
+    assert "Anti-Mage" in text  # hero_id 1
+
+
+# --- player card --------------------------------------------------------
+
+def test_render_player_card_has_deep_stats():
+    s = summary(
+        display_name="Вася", gpm=520.0, xpm=610.0, last_hits=180.0,
+        avg_duration_min=38.0, solo=(10, 6), party=(5, 4),
+        top_heroes=[{"hero_id": 8, "games": 4, "wins": 3, "winrate": 0.75}],
+        streak_type="W", streak_len=2,
+    )
+    text = render_player_card(s)
+    assert "Вася" in text
+    assert "520" in text          # GPM
+    assert "Juggernaut" in text   # hero_id 8
+    assert "соло" in text.lower() or "solo" in text.lower()

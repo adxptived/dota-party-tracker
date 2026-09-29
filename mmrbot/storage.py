@@ -37,6 +37,9 @@ class Player:
     last_rank_tier: Optional[int]
     last_leaderboard_rank: Optional[int]
     updated_ts: Optional[int]
+    last_gpm: Optional[float] = None
+    last_xpm: Optional[float] = None
+    last_last_hits: Optional[float] = None
 
 
 _SCHEMA = """
@@ -58,6 +61,9 @@ CREATE TABLE IF NOT EXISTS players (
     last_rank_tier        INTEGER,
     last_leaderboard_rank INTEGER,
     updated_ts            INTEGER,
+    last_gpm              REAL,
+    last_xpm              REAL,
+    last_last_hits        REAL,
     UNIQUE(chat_id, account_id)
 );
 CREATE TABLE IF NOT EXISTS matches (
@@ -71,6 +77,8 @@ CREATE TABLE IF NOT EXISTS matches (
     deaths      INTEGER NOT NULL DEFAULT 0,
     assists     INTEGER NOT NULL DEFAULT 0,
     hero_id     INTEGER,
+    duration    INTEGER,
+    party_size  INTEGER,
     PRIMARY KEY (player_id, match_id)
 );
 """
@@ -86,9 +94,15 @@ class Storage:
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
         """Лёгкие миграции для БД, созданных предыдущими версиями схемы."""
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(chats)").fetchall()}
-        if "last_digest_date" not in columns:
-            conn.execute("ALTER TABLE chats ADD COLUMN last_digest_date TEXT")
+        def add_missing(table: str, columns: dict[str, str]) -> None:
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, decl in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+        add_missing("chats", {"last_digest_date": "TEXT"})
+        add_missing("players", {"last_gpm": "REAL", "last_xpm": "REAL", "last_last_hits": "REAL"})
+        add_missing("matches", {"duration": "INTEGER", "party_size": "INTEGER"})
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -153,6 +167,9 @@ class Storage:
             last_rank_tier=row["last_rank_tier"],
             last_leaderboard_rank=row["last_leaderboard_rank"],
             updated_ts=row["updated_ts"],
+            last_gpm=row["last_gpm"],
+            last_xpm=row["last_xpm"],
+            last_last_hits=row["last_last_hits"],
         )
 
     def add_player(
@@ -233,6 +250,15 @@ class Storage:
                 (rank_tier, leaderboard_rank, updated_ts, player_id),
             )
 
+    def update_player_totals(
+        self, player_id: int, gpm: Optional[float], xpm: Optional[float], last_hits: Optional[float]
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE players SET last_gpm = ?, last_xpm = ?, last_last_hits = ? WHERE id = ?",
+                (gpm, xpm, last_hits, player_id),
+            )
+
     # --- matches --------------------------------------------------------
 
     def add_matches(self, player_id: int, matches: list[dict]) -> int:
@@ -243,7 +269,8 @@ class Storage:
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO matches "
                     "(player_id, match_id, start_time, player_slot, radiant_win, lobby_type, "
-                    " kills, deaths, assists, hero_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " kills, deaths, assists, hero_id, duration, party_size) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         player_id,
                         m["match_id"],
@@ -255,6 +282,8 @@ class Storage:
                         m.get("deaths", 0) or 0,
                         m.get("assists", 0) or 0,
                         m.get("hero_id"),
+                        m.get("duration"),
+                        m.get("party_size"),
                     ),
                 )
                 inserted += cur.rowcount

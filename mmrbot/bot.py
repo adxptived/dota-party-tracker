@@ -13,7 +13,13 @@ from mmrbot import commands as cmd
 from mmrbot.formatting import render_player_list
 from mmrbot.ids import parse_account_id
 from mmrbot.opendota import OpenDota
-from mmrbot.service import render_board, split_message
+from mmrbot.service import (
+    render_board,
+    render_heroes_board,
+    render_player_board,
+    render_together_board,
+    split_message,
+)
 from mmrbot.storage import Storage
 from mmrbot.tracker import refresh_player
 
@@ -21,8 +27,11 @@ router = Router()
 
 # Меню команд (всплывает по «/», особенно полезно в группах).
 BOT_COMMANDS = [
-    BotCommand(command="stats", description="🏆 Лидерборд пати"),
+    BotCommand(command="stats", description="🏆 Лидерборд пати + награды"),
     BotCommand(command="today", description="📅 Активность за сутки"),
+    BotCommand(command="together", description="🤝 Совместные игры пати"),
+    BotCommand(command="heroes", description="🦸 Топ героев участников"),
+    BotCommand(command="player", description="🎮 Карточка игрока: /player Имя"),
     BotCommand(command="add", description="➕ Добавить игрока: /add ссылка Имя MMR"),
     BotCommand(command="list", description="👥 Список игроков"),
     BotCommand(command="setmmr", description="🎯 Задать/поправить MMR: /setmmr Имя 5400"),
@@ -51,9 +60,27 @@ HELP_TEXT = (
     "/setmmr <Имя> <MMR> — задать/поправить MMR\n"
     "/setstep <шаг> — шаг оценки MMR за игру (по умолчанию 25)\n"
     "/settime <час> — время ежедневного дайджеста (МСК)\n"
-    "/stats — полный лидерборд\n"
+    "/stats — полный лидерборд (+ награды пати)\n"
     "/today — активность за сутки\n"
+    "/together — совместные игры пати\n"
+    "/heroes — топ героев участников\n"
+    "/player <Имя> — карточка игрока (GPM, соло/пати, время суток…)\n"
 )
+
+
+async def _reply_board(message: Message, coro) -> None:
+    """Общий помощник: собрать текст (с обработкой ошибок сети) и отправить чанками."""
+    try:
+        text = await coro
+    except Exception:
+        logging.getLogger(__name__).exception("Ошибка сборки статистики для чата %s", message.chat.id)
+        await message.answer("⚠️ Не удалось получить данные OpenDota, попробуй ещё раз чуть позже.")
+        return
+    if text is None:
+        await message.answer("Не нашёл игрока. Смотри /list.")
+        return
+    for chunk in split_message(text):
+        await message.answer(chunk)
 
 
 @router.message(Command("start"))
@@ -160,14 +187,7 @@ async def cmd_stats(message: Message, storage: Storage, od: OpenDota) -> None:
         await message.answer("В этом чате пока нет игроков. Добавь: /add <ссылка или ID> Имя [MMR]")
         return
     await message.answer("⏳ Собираю статистику из OpenDota…")
-    try:
-        text = await render_board(storage, od, message.chat.id, today_only=False, refresh=True)
-    except Exception:
-        logging.getLogger(__name__).exception("Ошибка сборки /stats для чата %s", message.chat.id)
-        await message.answer("⚠️ Не удалось получить данные OpenDota, попробуй ещё раз чуть позже.")
-        return
-    for chunk in split_message(text):
-        await message.answer(chunk)
+    await _reply_board(message, render_board(storage, od, message.chat.id, today_only=False, refresh=True))
 
 
 @router.message(Command("today"))
@@ -176,11 +196,32 @@ async def cmd_today(message: Message, storage: Storage, od: OpenDota) -> None:
         await message.answer("В этом чате пока нет игроков. Добавь: /add <ссылка или ID> Имя [MMR]")
         return
     await message.answer("⏳ Собираю сегодняшнюю статистику…")
-    try:
-        text = await render_board(storage, od, message.chat.id, today_only=True, refresh=True)
-    except Exception:
-        logging.getLogger(__name__).exception("Ошибка сборки /today для чата %s", message.chat.id)
-        await message.answer("⚠️ Не удалось получить данные OpenDota, попробуй ещё раз чуть позже.")
+    await _reply_board(message, render_board(storage, od, message.chat.id, today_only=True, refresh=True))
+
+
+@router.message(Command("together"))
+async def cmd_together(message: Message, storage: Storage, od: OpenDota) -> None:
+    if not storage.list_players(message.chat.id):
+        await message.answer("В этом чате пока нет игроков. Добавь: /add <ссылка или ID> Имя [MMR]")
         return
-    for chunk in split_message(text):
-        await message.answer(chunk)
+    await message.answer("⏳ Считаю совместные игры…")
+    await _reply_board(message, render_together_board(storage, od, message.chat.id))
+
+
+@router.message(Command("heroes"))
+async def cmd_heroes(message: Message, storage: Storage, od: OpenDota) -> None:
+    if not storage.list_players(message.chat.id):
+        await message.answer("В этом чате пока нет игроков. Добавь: /add <ссылка или ID> Имя [MMR]")
+        return
+    await message.answer("⏳ Собираю героев…")
+    await _reply_board(message, render_heroes_board(storage, od, message.chat.id))
+
+
+@router.message(Command("player"))
+async def cmd_player(message: Message, command: CommandObject, storage: Storage, od: OpenDota) -> None:
+    name = (command.args or "").strip()
+    if not name:
+        await message.answer("Формат: /player Имя (например: /player Вася)")
+        return
+    await message.answer(f"⏳ Собираю карточку {name}…")
+    await _reply_board(message, render_player_board(storage, od, message.chat.id, name))

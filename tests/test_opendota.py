@@ -56,6 +56,28 @@ def test_no_api_key_means_no_param():
     assert "api_key" not in session.calls[0]["params"]
 
 
+def test_get_totals_computes_averages():
+    session = FakeSession([
+        {"field": "gold_per_min", "n": 10, "sum": 5000},   # avg 500
+        {"field": "xp_per_min", "n": 10, "sum": 6000},      # avg 600
+        {"field": "last_hits", "n": 10, "sum": 1800},       # avg 180
+        {"field": "kills", "n": 10, "sum": 100},            # игнор
+    ])
+    od = OpenDota(session=session, min_interval=0)
+    totals = od.get_totals(42)
+    assert totals["gpm"] == 500
+    assert totals["xpm"] == 600
+    assert totals["last_hits"] == 180
+    assert session.calls[0]["url"].endswith("/players/42/totals")
+
+
+def test_get_totals_handles_missing_fields():
+    session = FakeSession([])
+    od = OpenDota(session=session, min_interval=0)
+    totals = od.get_totals(42)
+    assert totals == {"gpm": None, "xpm": None, "last_hits": None}
+
+
 def test_concurrent_calls_are_serialized_by_lock():
     """Один общий клиент из нескольких потоков не должен делать запросы одновременно."""
     import threading

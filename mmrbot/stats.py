@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
+
+import pytz
 
 RANKED_LOBBY_TYPE = 7
 
@@ -78,3 +81,81 @@ def aggregate(matches: list[dict]) -> Aggregate:
 def estimate_mmr_delta(wins: int, losses: int, step: int) -> int:
     """Оценка изменения MMR: (победы - поражения) * шаг."""
     return (wins - losses) * step
+
+
+def current_streak(matches: list[dict]) -> tuple[str, int]:
+    """Текущая серия по хвосту (матчи должны быть по возрастанию времени).
+
+    Возвращает ('W'|'L', длина) или ('', 0), если матчей нет.
+    """
+    if not matches:
+        return ("", 0)
+    last_win = is_win(matches[-1]["player_slot"], matches[-1]["radiant_win"])
+    length = 0
+    for match in reversed(matches):
+        if is_win(match["player_slot"], match["radiant_win"]) == last_win:
+            length += 1
+        else:
+            break
+    return ("W" if last_win else "L", length)
+
+
+def top_heroes(matches: list[dict], k: int = 3) -> list[dict]:
+    """Топ-k героев по числу игр (тай-брейк: винрейт, затем hero_id)."""
+    by_hero: dict[int, list[int]] = {}  # hero_id -> [games, wins]
+    for match in matches:
+        hero_id = match.get("hero_id")
+        if not hero_id:
+            continue
+        stat = by_hero.setdefault(hero_id, [0, 0])
+        stat[0] += 1
+        if is_win(match["player_slot"], match["radiant_win"]):
+            stat[1] += 1
+    result = [
+        {"hero_id": hid, "games": games, "wins": wins, "winrate": wins / games}
+        for hid, (games, wins) in by_hero.items()
+    ]
+    result.sort(key=lambda h: (h["games"], h["winrate"], -h["hero_id"]), reverse=True)
+    return result[:k]
+
+
+def winrate_by_hour(matches: list[dict], tz_name: str) -> dict[int, tuple[int, int]]:
+    """Разбивка по локальному часу старта: hour -> (игр, побед)."""
+    try:
+        tz = pytz.timezone(tz_name)
+    except Exception:
+        tz = pytz.timezone("Europe/Moscow")
+    by_hour: dict[int, list[int]] = {}
+    for match in matches:
+        start_time = match.get("start_time")
+        if start_time is None:
+            continue
+        hour = datetime.fromtimestamp(start_time, tz=timezone.utc).astimezone(tz).hour
+        stat = by_hour.setdefault(hour, [0, 0])
+        stat[0] += 1
+        if is_win(match["player_slot"], match["radiant_win"]):
+            stat[1] += 1
+    return {hour: (games, wins) for hour, (games, wins) in by_hour.items()}
+
+
+def solo_party_split(matches: list[dict]) -> dict[str, tuple[int, int]]:
+    """Соло (party_size<=1 или отсутствует) vs пати: bucket -> (игр, побед)."""
+    buckets = {"solo": [0, 0], "party": [0, 0]}
+    for match in matches:
+        party_size = match.get("party_size") or 1
+        key = "party" if party_size > 1 else "solo"
+        buckets[key][0] += 1
+        if is_win(match["player_slot"], match["radiant_win"]):
+            buckets[key][1] += 1
+    return {key: (games, wins) for key, (games, wins) in buckets.items()}
+
+
+def duration_stats(matches: list[dict]) -> dict[str, float]:
+    """Средняя и максимальная длительность (в минутах) по полю duration (секунды)."""
+    durations = [m["duration"] for m in matches if m.get("duration")]
+    if not durations:
+        return {"avg_minutes": 0, "max_minutes": 0}
+    return {
+        "avg_minutes": sum(durations) / len(durations) / 60,
+        "max_minutes": max(durations) / 60,
+    }

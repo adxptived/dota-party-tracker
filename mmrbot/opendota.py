@@ -78,3 +78,15 @@ class OpenDota:
         # significant=0 включает все типы лобби; ранкед-фильтр делаем сами по lobby_type.
         data = self._get(f"/players/{account_id}/matches", params={"limit": limit, "significant": 0})
         return data if isinstance(data, list) else []
+
+    def get_totals(self, account_id: int) -> dict:
+        """Средние GPM/XPM/last hits из /players/{id}/totals (sum/n по полям)."""
+        data = self._get(f"/players/{account_id}/totals")
+        wanted = {"gold_per_min": "gpm", "xp_per_min": "xpm", "last_hits": "last_hits"}
+        result: dict = {"gpm": None, "xpm": None, "last_hits": None}
+        if isinstance(data, list):
+            for row in data:
+                key = wanted.get(row.get("field"))
+                if key and row.get("n"):
+                    result[key] = row["sum"] / row["n"]
+        return result

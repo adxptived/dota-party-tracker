@@ -170,3 +170,23 @@ def test_get_matches_returns_fields_for_aggregate(store):
     assert row["player_slot"] == 132
     assert bool(row["radiant_win"]) is True
     assert (row["kills"], row["deaths"], row["assists"]) == (7, 3, 9)
+
+
+def test_add_matches_stores_duration_and_party_size(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    m = match(1, 1100)
+    m["duration"] = 2400
+    m["party_size"] = 3
+    store.add_matches(p.id, [m])
+    row = store.get_matches(p.id)[0]
+    assert row["duration"] == 2400
+    assert row["party_size"] == 3
+
+
+def test_update_player_totals(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.update_player_totals(p.id, gpm=520.5, xpm=610.0, last_hits=180.2)
+    got = store.get_player(100, "Вася")
+    assert got.last_gpm == pytest.approx(520.5)
+    assert got.last_xpm == pytest.approx(610.0)
+    assert got.last_last_hits == pytest.approx(180.2)

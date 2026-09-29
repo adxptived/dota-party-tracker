@@ -1,7 +1,13 @@
 import pytest
 
 from mmrbot.storage import Storage
-from mmrbot.tracker import build_leaderboard, build_player_summary, refresh_player
+from mmrbot.tracker import (
+    build_leaderboard,
+    build_player_summary,
+    build_together,
+    compute_awards,
+    refresh_player,
+)
 
 
 class FakeOpenDota:
@@ -103,6 +109,72 @@ def test_leaderboard_survives_one_player_refresh_error(store):
     board = build_leaderboard(store, FlakyClient(), 100, now=now, refresh=True)
     names = {s.display_name for s in board}
     assert names == {"Good", "Bad"}  # битый игрок не рушит весь лидерборд
+
+
+def _m(match_id, start_time, slot=0, radiant_win=True, hero_id=1, k=1, d=1, a=1, lobby_type=7, duration=1800, party_size=1):
+    return {
+        "match_id": match_id, "start_time": start_time, "player_slot": slot,
+        "radiant_win": radiant_win, "lobby_type": lobby_type, "kills": k, "deaths": d,
+        "assists": a, "hero_id": hero_id, "duration": duration, "party_size": party_size,
+    }
+
+
+def test_summary_includes_streak_and_top_heroes(store):
+    now = 100_000
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [
+        _m(1, 2000, hero_id=1, radiant_win=False),  # loss
+        _m(2, 3000, hero_id=1, radiant_win=True),   # win
+        _m(3, 4000, hero_id=2, radiant_win=True),   # win
+    ])
+    p = store.get_player(100, "Вася")
+    chat = store.get_or_create_chat(100)
+    s = build_player_summary(store, chat, p, now=now)
+    assert (s.streak_type, s.streak_len) == ("W", 2)
+    assert s.top_heroes[0]["hero_id"] == 1  # 2 игры на герое 1
+
+
+def test_summary_includes_solo_party_and_totals(store):
+    now = 100_000
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.update_player_totals(p.id, gpm=500.0, xpm=600.0, last_hits=180.0)
+    store.add_matches(p.id, [
+        _m(1, 2000, party_size=1, radiant_win=True),   # solo win
+        _m(2, 3000, party_size=3, radiant_win=False),  # party loss
+    ])
+    p = store.get_player(100, "Вася")
+    chat = store.get_or_create_chat(100)
+    s = build_player_summary(store, chat, p, now=now)
+    assert s.gpm == 500.0
+    assert s.solo == (1, 1)
+    assert s.party == (1, 0)
+    assert s.avg_duration_min > 0
+
+
+def test_compute_awards_picks_leaders(store):
+    now = 100_000
+    good = store.add_player(100, 1, "Good", 5000, 1000, 1000)
+    bad = store.add_player(100, 2, "Bad", 4000, 1000, 1000)
+    # Good: 3 победы; Bad: 3 поражения с большим числом смертей
+    store.add_matches(good.id, [_m(10 + i, 2000 + i, radiant_win=True, d=1) for i in range(3)])
+    store.add_matches(bad.id, [_m(20 + i, 2000 + i, radiant_win=False, d=15) for i in range(3)])
+    summaries = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)
+    awards = compute_awards(summaries)
+    titles = {a["title"]: a["player"] for a in awards}
+    assert any("инрейт" in t for t in titles)  # Король винрейта
+    assert titles.get(next(t for t in titles if "инрейт" in t)) == "Good"
+    assert any("идер" in t for t in titles)  # Фидер (смерти)
+
+
+def test_build_together_counts_shared(store):
+    now = 100_000
+    a = store.add_player(100, 1, "Alice", 5000, 1000, 1000)
+    b = store.add_player(100, 2, "Bob", 4000, 1000, 1000)
+    store.add_matches(a.id, [_m(1, 2000, radiant_win=True), _m(2, 3000, radiant_win=False)])
+    store.add_matches(b.id, [_m(1, 2000, radiant_win=True), _m(9, 3000, radiant_win=True)])
+    result = build_together(store, 100)
+    assert result["summary"]["games"] == 1  # общий матч 1
+    assert result["summary"]["wins"] == 1
 
 
 def test_leaderboard_reread_by_account_id_not_name(store):

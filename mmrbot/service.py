@@ -7,13 +7,25 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Optional
 
-from mmrbot.formatting import render_leaderboard
+from mmrbot.formatting import (
+    render_awards,
+    render_heroes,
+    render_leaderboard,
+    render_player_card,
+    render_together,
+)
 from mmrbot.opendota import OpenDota
 from mmrbot.storage import Storage
-from mmrbot.tracker import build_leaderboard
+from mmrbot.tracker import build_leaderboard, build_together
 
 TELEGRAM_LIMIT = 4096
+
+
+async def gather_summaries(storage: Storage, od: OpenDota, chat_id: int, refresh: bool = True):
+    now = int(time.time())
+    return await asyncio.to_thread(build_leaderboard, storage, od, chat_id, now, refresh)
 
 
 async def render_board(
@@ -23,9 +35,34 @@ async def render_board(
     today_only: bool = False,
     refresh: bool = True,
 ) -> str:
-    now = int(time.time())
-    summaries = await asyncio.to_thread(build_leaderboard, storage, od, chat_id, now, refresh)
-    return render_leaderboard(summaries, today_only=today_only)
+    summaries = await gather_summaries(storage, od, chat_id, refresh)
+    text = render_leaderboard(summaries, today_only=today_only)
+    if not today_only:
+        awards = render_awards(summaries)
+        if awards:
+            text += "\n\n" + awards
+    return text
+
+
+async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int) -> str:
+    summaries = await gather_summaries(storage, od, chat_id, refresh=True)
+    return render_heroes(summaries)
+
+
+async def render_together_board(storage: Storage, od: OpenDota, chat_id: int) -> str:
+    # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
+    await gather_summaries(storage, od, chat_id, refresh=True)
+    result = await asyncio.to_thread(build_together, storage, chat_id)
+    return render_together(result)
+
+
+async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name: str) -> Optional[str]:
+    summaries = await gather_summaries(storage, od, chat_id, refresh=True)
+    name_lower = name.strip().lower()
+    for summary in summaries:
+        if summary.display_name.lower() == name_lower or str(summary.account_id) == name.strip():
+            return render_player_card(summary)
+    return None
 
 
 def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
