@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 
 
 class OpenDotaClient(Protocol):
+    def refresh(self, account_id: int) -> bool: ...
     def get_profile(self, account_id: int) -> dict: ...
     def get_matches(self, account_id: int, limit: int = 200) -> list[dict]: ...
     def get_totals(self, account_id: int) -> dict: ...
@@ -90,6 +91,12 @@ def _normalize(raw: dict) -> dict:
 
 def refresh_player(storage: Storage, client: OpenDotaClient, player: Player, now: int) -> int:
     """Подтянуть новые ранкед-матчи (с created_ts) и текущий ранг. Вернуть число новых матчей."""
+    # Пнуть OpenDota перечитать историю — свежие игры доедут быстрее (best-effort).
+    try:
+        client.refresh(player.account_id)
+    except Exception:
+        pass
+
     profile = client.get_profile(player.account_id)
     if profile is not None:
         storage.update_player_rank(

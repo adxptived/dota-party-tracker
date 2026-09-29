@@ -66,6 +66,20 @@ class OpenDota:
                 return resp.json()
             raise last_exc or RuntimeError("OpenDota: не удалось получить ответ")
 
+    def refresh(self, account_id: int) -> bool:
+        """Попросить OpenDota перечитать историю матчей игрока (POST /refresh).
+
+        Обновление у OpenDota асинхронное: свежие матчи появятся не мгновенно, а
+        через некоторое время — зато следующий опрос будет актуальнее. Best-effort.
+        """
+        with self._lock:
+            self._throttle()
+            try:
+                self._session.post(f"{BASE_URL}/players/{account_id}/refresh", timeout=self.timeout)
+                return True
+            except Exception:
+                return False
+
     def get_profile(self, account_id: int) -> dict:
         data = self._get(f"/players/{account_id}") or {}
         return {

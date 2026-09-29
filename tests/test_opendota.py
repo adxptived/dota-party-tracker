@@ -18,10 +18,15 @@ class FakeSession:
     def __init__(self, payload):
         self.payload = payload
         self.calls = []
+        self.post_calls = []
 
     def get(self, url, params=None, timeout=None):
         self.calls.append({"url": url, "params": params or {}})
         return FakeResp(self.payload)
+
+    def post(self, url, timeout=None):
+        self.post_calls.append({"url": url})
+        return FakeResp({})
 
 
 def test_get_profile_extracts_fields():
@@ -54,6 +59,22 @@ def test_no_api_key_means_no_param():
     od = OpenDota(session=session, min_interval=0)
     od.get_profile(42)
     assert "api_key" not in session.calls[0]["params"]
+
+
+def test_refresh_posts_to_endpoint():
+    session = FakeSession({})
+    od = OpenDota(session=session, min_interval=0)
+    assert od.refresh(42) is True
+    assert session.post_calls[0]["url"].endswith("/players/42/refresh")
+
+
+def test_refresh_swallows_errors():
+    class BrokenSession(FakeSession):
+        def post(self, url, timeout=None):
+            raise RuntimeError("network down")
+
+    od = OpenDota(session=BrokenSession({}), min_interval=0)
+    assert od.refresh(42) is False  # не бросает, возвращает False
 
 
 def test_get_lanes_normalizes_lane_role():

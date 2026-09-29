@@ -18,6 +18,11 @@ class FakeOpenDota:
         self.matches = matches or []
         self.profile_calls = 0
         self.match_calls = 0
+        self.refresh_calls = 0
+
+    def refresh(self, account_id):
+        self.refresh_calls += 1
+        return True
 
     def get_profile(self, account_id):
         self.profile_calls += 1
