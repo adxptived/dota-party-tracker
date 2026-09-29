@@ -53,8 +53,8 @@ def setup_scheduler(bot: Bot, storage: Storage, od: OpenDota) -> AsyncIOSchedule
                 continue
             try:
                 text = await render_board(storage, od, chat.chat_id, today_only=False, refresh=True)
-                for chunk in split_message("🌅 Ежедневный дайджест\n\n" + text):
-                    await bot.send_message(chat.chat_id, chunk)
+                for chunk in split_message("🌅 <b>Ежедневный дайджест</b>\n\n" + text):
+                    await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
                 storage.set_last_digest_date(chat.chat_id, due_date)
             except Exception:  # один битый чат не должен рушить остальные
                 log.exception("Не удалось отправить дайджест в чат %s", chat.chat_id)

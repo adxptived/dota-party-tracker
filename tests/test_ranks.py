@@ -1,4 +1,4 @@
-from mmrbot.ranks import rank_label
+from mmrbot.ranks import rank_emoji, rank_label
 
 
 def test_herald_one():
@@ -40,3 +40,22 @@ def test_none_is_uncalibrated():
 
 def test_zero_is_uncalibrated():
     assert rank_label(0) == "Без ранга"
+
+
+# --- rank_emoji ---------------------------------------------------------
+
+def test_emoji_immortal():
+    assert rank_emoji(80) == "🔱"
+
+
+def test_emoji_divine():
+    assert rank_emoji(75) == "💎"
+
+
+def test_emoji_ancient():
+    assert rank_emoji(63) == "🟣"
+
+
+def test_emoji_none_is_empty():
+    assert rank_emoji(None) == ""
+    assert rank_emoji(0) == ""

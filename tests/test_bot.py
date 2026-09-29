@@ -12,7 +12,7 @@ class FakeMessage:
         self.chat = FakeChat()
         self.sent = []
 
-    async def answer(self, text):
+    async def answer(self, text, **kwargs):
         self.sent.append(text)
 
 

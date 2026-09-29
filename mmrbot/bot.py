@@ -80,7 +80,7 @@ async def _reply_board(message: Message, coro) -> None:
         await message.answer("Не нашёл игрока. Смотри /list.")
         return
     for chunk in split_message(text):
-        await message.answer(chunk)
+        await message.answer(chunk, parse_mode="HTML")
 
 
 @router.message(Command("start"))
@@ -129,7 +129,7 @@ async def cmd_add(message: Message, command: CommandObject, storage: Storage, od
 @router.message(Command("list"))
 async def cmd_list(message: Message, storage: Storage) -> None:
     players = storage.list_players(message.chat.id)
-    await message.answer(render_player_list(players))
+    await message.answer(render_player_list(players), parse_mode="HTML")
 
 
 @router.message(Command("remove"))

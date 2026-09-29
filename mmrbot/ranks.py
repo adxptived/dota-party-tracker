@@ -21,6 +21,24 @@ MEDALS = {
 
 UNCALIBRATED = "Без ранга"
 
+# Эмодзи-медаль по номеру медали (1 Herald … 8 Immortal) — «градиент» рангов.
+MEDAL_EMOJI = {
+    1: "⚪",
+    2: "🟠",
+    3: "🟡",
+    4: "🟢",
+    5: "🔵",
+    6: "🟣",
+    7: "💎",
+    8: "🔱",
+}
+
+
+def rank_emoji(rank_tier: Optional[int]) -> str:
+    if not rank_tier:
+        return ""
+    return MEDAL_EMOJI.get(rank_tier // 10, "")
+
 
 def rank_label(rank_tier: Optional[int], leaderboard_rank: Optional[int] = None) -> str:
     if not rank_tier:  # None или 0 — ранг не откалиброван

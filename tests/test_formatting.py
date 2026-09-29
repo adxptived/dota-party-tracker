@@ -1,5 +1,6 @@
 from mmrbot.formatting import (
     format_delta,
+    plural_games,
     render_awards,
     render_heroes,
     render_leaderboard,
@@ -65,10 +66,50 @@ def test_leaderboard_shows_name_rank_mmr_and_estimate_marker():
     assert "75%" in text
 
 
-def test_leaderboard_orders_and_numbers_players():
-    text = render_leaderboard([summary(display_name="A"), summary(display_name="B")])
-    assert text.index("A") < text.index("B")
-    assert "1." in text and "2." in text
+def test_leaderboard_orders_and_medals_players():
+    text = render_leaderboard([summary(display_name="Aaa"), summary(display_name="Bbb")])
+    assert text.index("Aaa") < text.index("Bbb")
+    assert "🥇" in text and "🥈" in text
+
+
+# --- новый дизайн (карточки) --------------------------------------------
+
+def test_plural_games():
+    assert plural_games(1) == "1 игра"
+    assert plural_games(2) == "2 игры"
+    assert plural_games(5) == "5 игр"
+    assert plural_games(11) == "11 игр"
+    assert plural_games(21) == "21 игра"
+
+
+def test_zero_games_collapsed_no_noise():
+    text = render_leaderboard([summary(games_total=0, wins_total=0, losses_total=0, winrate=0.0, kda_ratio=0.0)])
+    assert "пока без игр" in text
+    assert "KDA 0.00" not in text
+    assert "0–0" not in text
+
+
+def test_leaderboard_hides_avg_breakdown():
+    # Разбивку K/D/A показываем только в /player, не в лидерборде.
+    text = render_leaderboard([summary(avg_kills=8.0, avg_deaths=4.0, avg_assists=7.0)])
+    assert "8.0/4.0/7.0" not in text
+
+
+def test_positive_delta_shows_up_arrow():
+    text = render_leaderboard([summary(mmr_delta=50, games_total=4)])
+    assert "📈" in text
+
+
+def test_negative_delta_shows_down_arrow():
+    text = render_leaderboard([summary(current_mmr=4900, mmr_delta=-100, games_total=4)])
+    assert "📉" in text
+    assert "-100" in text
+
+
+def test_name_is_html_escaped_and_bold():
+    text = render_leaderboard([summary(display_name="A<b>&")])
+    assert "A&lt;b&gt;&amp;" in text  # экранировано
+    assert "<b>" in text              # жирный присутствует
 
 
 def test_leaderboard_negative_delta_shows_minus():

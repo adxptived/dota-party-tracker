@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from mmrbot import party, stats
-from mmrbot.ranks import rank_label
+from mmrbot.ranks import rank_emoji, rank_label
 from mmrbot.storage import Chat, Player, Storage
 
 TODAY_WINDOW_SEC = 86_400
@@ -45,6 +45,7 @@ class PlayerSummary:
     losses_today: int
     delta_today: int
     # расширенная статистика (пакеты A/C/D)
+    rank_emoji: str = ""
     sum_kills: int = 0
     sum_deaths: int = 0
     sum_assists: int = 0
@@ -136,6 +137,7 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         display_name=player.display_name,
         account_id=player.account_id,
         rank=rank_label(player.last_rank_tier, player.last_leaderboard_rank),
+        rank_emoji=rank_emoji(player.last_rank_tier),
         anchor_mmr=player.anchor_mmr,
         current_mmr=current_mmr,
         mmr_delta=mmr_delta,

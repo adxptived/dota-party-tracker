@@ -1,19 +1,43 @@
-"""Рендер сообщений бота (русский, plain text — безопасно для Telegram без разметки)."""
+"""Рендер сообщений бота — карточный дизайн, Telegram HTML.
+
+Сообщения-борды (лидерборд, награды, совместка, герои, карточка игрока, список)
+отправляются с parse_mode=HTML — имена экранируются через html.escape.
+Обычные подтверждения/ошибки шлются обычным текстом (без разметки).
+"""
 from __future__ import annotations
 
+import html
 from typing import Optional
 
 from mmrbot.heroes import hero_name
 from mmrbot.storage import Player
 from mmrbot.tracker import PlayerSummary, compute_awards
 
+POSITIONS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
-def _streak_str(summary: PlayerSummary) -> str:
-    if summary.streak_len < 2:
-        return ""
-    if summary.streak_type == "W":
-        return f"  🔥{summary.streak_len} побед подряд"
-    return f"  💧{summary.streak_len} поражений подряд"
+
+def _esc(text) -> str:
+    return html.escape(str(text))
+
+
+def _b(text) -> str:
+    """Жирный с экранированием сырого текста."""
+    return f"<b>{_esc(text)}</b>"
+
+
+def _pos(index: int) -> str:
+    return POSITIONS.get(index, f"{index}.")
+
+
+def plural_games(n: int) -> str:
+    n10, n100 = n % 10, n % 100
+    if n10 == 1 and n100 != 11:
+        word = "игра"
+    elif 2 <= n10 <= 4 and not (12 <= n100 <= 14):
+        word = "игры"
+    else:
+        word = "игр"
+    return f"{n} {word}"
 
 
 def format_delta(delta: int) -> str:
@@ -24,48 +48,43 @@ def format_delta(delta: int) -> str:
     return "0"
 
 
-def _format_mmr(current: Optional[int], delta: int) -> str:
-    if current is not None:
-        return f"≈ {current} ({format_delta(delta)})"
-    return f"≈ ? ({format_delta(delta)} за сессию)"
+def _trend(delta: int) -> str:
+    if delta > 0:
+        return f"  📈{format_delta(delta)}"
+    if delta < 0:
+        return f"  📉{format_delta(delta)}"
+    return ""
 
 
-def _format_kda(s: PlayerSummary) -> str:
-    return f"KDA {s.kda_ratio:.2f} ({s.avg_kills:.1f}/{s.avg_deaths:.1f}/{s.avg_assists:.1f})"
+def _today_delta(delta: int) -> str:
+    if delta > 0:
+        return f"📈{format_delta(delta)}"
+    if delta < 0:
+        return f"📉{format_delta(delta)}"
+    return "±0"
 
 
-def _summary_block(index: int, s: PlayerSummary, today_only: bool) -> str:
-    lines = [f"{index}. {s.display_name} — {s.rank}{'' if today_only else _streak_str(s)}"]
-    if today_only:
-        if s.games_today == 0:
-            lines.append("   сегодня без игр")
-        else:
-            lines.append(
-                f"   сегодня: {s.games_today} игр, MMR {format_delta(s.delta_today)} "
-                f"({s.wins_today}–{s.losses_today})"
-            )
-    else:
-        lines.append(
-            f"   MMR {_format_mmr(s.current_mmr, s.mmr_delta)} · игр {s.games_total} · "
-            f"{s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%) · {_format_kda(s)}"
-        )
-        if s.games_today:
-            lines.append(f"   сегодня: {s.games_today} игр, MMR {format_delta(s.delta_today)} ({s.wins_today}–{s.losses_today})")
-    return "\n".join(lines)
+def _mmr_str(current: Optional[int]) -> str:
+    return f"≈ {current} MMR" if current is not None else "≈ ? MMR"
 
 
-def render_leaderboard(summaries: list[PlayerSummary], today_only: bool = False) -> str:
-    if not summaries:
-        return (
-            "В этом чате пока нет отслеживаемых игроков.\n"
-            "Добавь аккаунт: /add <ссылка Dotabuff/OpenDota или ID> Имя [стартовый_MMR]\n"
-            "Например: /add dotabuff.com/players/123456 Вася 5400"
-        )
+def _rank_with_emoji(s: PlayerSummary) -> str:
+    prefix = f"{s.rank_emoji} " if s.rank_emoji else ""
+    return f"{prefix}{s.rank}"
 
-    header = "📅 Сегодня (ранкед)" if today_only else "🏆 Лидерборд пати (ранкед с момента добавления)"
-    blocks = [_summary_block(i, s, today_only) for i, s in enumerate(summaries, start=1)]
-    footer = "\n\nMMR — оценка (±шаг за игру), точного числа Dota 2 не отдаёт. Коррекция: /setmmr Имя MMR"
-    return header + "\n\n" + "\n\n".join(blocks) + footer
+
+def _streak_str(s: PlayerSummary) -> str:
+    if s.streak_len < 2:
+        return ""
+    return f"  🔥{s.streak_len} подряд" if s.streak_type == "W" else f"  💧{s.streak_len} подряд"
+
+
+def _heroes_line(top_heroes: list[dict]) -> str:
+    if not top_heroes:
+        return "нет данных"
+    return ", ".join(
+        f"{_esc(hero_name(h['hero_id']))} ({h['games']}и, {h['winrate'] * 100:.0f}%)" for h in top_heroes
+    )
 
 
 def _fmt_wr(games: int, wins: int) -> str:
@@ -74,58 +93,118 @@ def _fmt_wr(games: int, wins: int) -> str:
     return f"{wins}–{games - wins} ({wins / games * 100:.0f}%)"
 
 
+# --- лидерборд ----------------------------------------------------------
+
+def _card_full(index: int, s: PlayerSummary) -> str:
+    lines = [f"{_pos(index)} {_b(s.display_name)}"]
+    lines.append(f"    {_rank_with_emoji(s)} · {_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}")
+    if s.games_total == 0:
+        lines.append("    пока без игр")
+    else:
+        lines.append(
+            f"    {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} "
+            f"({s.winrate * 100:.0f}%) · KDA {s.kda_ratio:.2f}{_streak_str(s)}"
+        )
+        if s.games_today:
+            lines.append(
+                f"    сегодня: {plural_games(s.games_today)}, "
+                f"{_today_delta(s.delta_today)} ({s.wins_today}–{s.losses_today})"
+            )
+    return "\n".join(lines)
+
+
+def _card_today(index: int, s: PlayerSummary) -> str:
+    lines = [f"{_pos(index)} {_b(s.display_name)} · {_rank_with_emoji(s)}"]
+    if s.games_today == 0:
+        lines.append("    сегодня без игр")
+    else:
+        lines.append(
+            f"    сегодня: {plural_games(s.games_today)}, "
+            f"{_today_delta(s.delta_today)} ({s.wins_today}–{s.losses_today})"
+        )
+    return "\n".join(lines)
+
+
+def render_leaderboard(summaries: list[PlayerSummary], today_only: bool = False) -> str:
+    if not summaries:
+        return (
+            "В этом чате пока нет отслеживаемых игроков.\n"
+            "Добавь аккаунт: /add «ссылка Dotabuff/OpenDota или ID» Имя [стартовый_MMR]\n"
+            "Например: /add dotabuff.com/players/123456 Вася 5400"
+        )
+
+    if today_only:
+        header = "📅 <b>Сегодня</b> · ранкед"
+        blocks = [_card_today(i, s) for i, s in enumerate(summaries, start=1)]
+        return header + "\n\n" + "\n\n".join(blocks)
+
+    header = "🏆 <b>Лидерборд пати</b>\n<i>ранкед с момента добавления</i>"
+    blocks = [_card_full(i, s) for i, s in enumerate(summaries, start=1)]
+    footer = "\n<i>≈ MMR — оценка (±шаг за игру), точного Dota не отдаёт. /help — команды</i>"
+    return header + "\n\n" + "\n\n".join(blocks) + "\n" + footer
+
+
+# --- награды ------------------------------------------------------------
+
 def render_awards(summaries: list[PlayerSummary]) -> str:
     awards = compute_awards(summaries)
     if not awards:
         return ""
-    lines = ["🎖 Награды пати:"]
+    lines = ["🎖 <b>Награды пати:</b>"]
     for award in awards:
-        lines.append(f"{award['title']} — {award['player']} ({award['detail']})")
+        lines.append(f"{award['title']} — {_b(award['player'])} ({_esc(award['detail'])})")
     return "\n".join(lines)
 
+
+# --- совместная игра ----------------------------------------------------
 
 def render_together(result: dict) -> str:
     summary = result.get("summary", {})
     games = summary.get("games", 0)
     if games == 0:
         return (
-            "🤝 Совместная игра пати\n\n"
+            "🤝 <b>Совместная игра пати</b>\n\n"
             "Пока нет совместных ранкед-игр (или данные ещё собираются).\n"
-            "Как сыграете вместе — тут появится общий винрейт и лучшее дуо."
+            "Как сыграете вместе — покажу общий винрейт и лучшее дуо."
         )
     lines = [
-        "🤝 Совместная игра пати",
+        "🤝 <b>Совместная игра пати</b>",
         "",
-        f"Вместе сыграно: {games} игр, {_fmt_wr(games, summary.get('wins', 0))}",
+        f"Вместе сыграно: {_b(plural_games(games))} · {_fmt_wr(games, summary.get('wins', 0))}",
     ]
     duo = result.get("duo")
     if duo:
         n1, n2 = duo["pair"]
-        lines.append(f"👯 Лучшее дуо: {n1} + {n2} — {duo['games']} игр, {_fmt_wr(duo['games'], duo['wins'])}")
+        lines.append(
+            f"👯 Лучшее дуо: <b>{_esc(n1)} + {_esc(n2)}</b> — "
+            f"{plural_games(duo['games'])}, {_fmt_wr(duo['games'], duo['wins'])}"
+        )
     return "\n".join(lines)
 
 
-def _heroes_line(top_heroes: list[dict]) -> str:
-    if not top_heroes:
-        return "нет данных"
-    parts = [f"{hero_name(h['hero_id'])} ({h['games']}и, {h['winrate'] * 100:.0f}%)" for h in top_heroes]
-    return ", ".join(parts)
-
+# --- герои --------------------------------------------------------------
 
 def render_heroes(summaries: list[PlayerSummary]) -> str:
     if not summaries:
-        return "Нет игроков. Добавь: /add <ссылка или ID> Имя [MMR]"
-    lines = ["🦸 Топ героев участников:"]
+        return "Нет игроков. Добавь: /add «ссылка или ID» Имя [MMR]"
+    lines = ["🦸 <b>Топ героев участников:</b>"]
     for s in summaries:
-        lines.append(f"• {s.display_name}: {_heroes_line(s.top_heroes)}")
+        lines.append(f"• {_b(s.display_name)}: {_heroes_line(s.top_heroes)}")
     return "\n".join(lines)
 
 
+# --- карточка игрока ----------------------------------------------------
+
 def render_player_card(s: PlayerSummary) -> str:
-    lines = [f"🎮 {s.display_name} — {s.rank}{_streak_str(s)}"]
-    lines.append(f"MMR {_format_mmr(s.current_mmr, s.mmr_delta)} · игр {s.games_total} · "
-                 f"{s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)")
-    lines.append(f"{_format_kda(s)}")
+    lines = [f"🎮 {_b(s.display_name)} · {_rank_with_emoji(s)}{_streak_str(s)}"]
+    lines.append(f"{_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}")
+
+    if s.games_total == 0:
+        lines.append("пока без ранкед-игр с момента добавления")
+        return "\n".join(lines)
+
+    lines.append(f"📊 {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)")
+    lines.append(f"⚔️ KDA {s.kda_ratio:.2f} ({s.avg_kills:.1f}/{s.avg_deaths:.1f}/{s.avg_assists:.1f})")
 
     econ = []
     if s.gpm is not None:
@@ -151,11 +230,13 @@ def render_player_card(s: PlayerSummary) -> str:
     return "\n".join(lines)
 
 
+# --- список игроков -----------------------------------------------------
+
 def render_player_list(players: list[Player]) -> str:
     if not players:
-        return "Список пуст. Добавь игрока: /add <ссылка или ID> Имя [MMR]"
-    lines = ["👥 Отслеживаемые игроки:"]
+        return "Список пуст. Добавь игрока: /add «ссылка или ID» Имя [MMR]"
+    lines = ["👥 <b>Отслеживаемые игроки:</b>"]
     for p in players:
         mmr = f"старт MMR ≈ {p.anchor_mmr}" if p.anchor_mmr is not None else "MMR не задан"
-        lines.append(f"• {p.display_name} (id {p.account_id}) — {mmr}")
+        lines.append(f"• {_b(p.display_name)} (id {p.account_id}) — {mmr}")
     return "\n".join(lines)
