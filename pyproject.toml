@@ -1,0 +1,23 @@
+[project]
+name = "dota-mmr-bot"
+version = "0.1.0"
+description = "Telegram-бот: групповой трекер MMR/статистики Dota 2 по данным OpenDota"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram==3.13.1",
+    "APScheduler==3.10.4",
+    "requests==2.32.3",
+    "python-dotenv==1.0.1",
+    "pytz==2024.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.3"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]

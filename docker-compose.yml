@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /data/mmrbot.db
+    volumes:
+      - bot_data:/data
+
+volumes:
+  bot_data:

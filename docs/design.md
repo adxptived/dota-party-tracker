@@ -1,0 +1,98 @@
+# Dota MMR Tracker Bot — дизайн
+
+Дата: 2026-09-29
+
+## Что это
+
+Telegram-бот для пати игроков Dota 2: следит за ранкед-играми участников с момента
+добавления и ведёт **общий лидерборд группы** — игры, оценка ±MMR, текущий MMR (≈),
+медаль/ранг, средний KDA, винрейт. Данные — из **OpenDota** (без API-ключа).
+
+## Ключевая техническая правда
+
+Точного числа MMR в Dota 2 нет ни в одном публичном API (Valve закрыл выдачу ~2019).
+Публично доступны: медаль/ранг, список **ранкед-матчей** (только если у игрока включены
+«открытые данные матчей»), и по каждому матчу — победа/поражение, KDA, герой, время.
+
+Поэтому MMR **оценивается**: пользователь вводит стартовый MMR (якорь), а бот считает
+`current_mmr ≈ anchor_mmr + (победы − поражения) × шаг` (шаг по умолчанию 25). Везде
+помечается как «≈ оценка». `/setmmr` ставит новый якорь для ручной коррекции.
+
+## Решения (подтверждены с пользователем)
+
+- **MMR:** оценка ±шаг за ранкед-игру, старт вводится один раз, ручная коррекция `/setmmr`.
+- **Формат:** общий лидерборд группы (в групповом чате).
+- **Расписание:** авто-дайджест раз в день + `/stats` по запросу.
+- **Матчи:** только ранкед (`lobby_type == 7`), отсчёт с момента добавления аккаунта.
+- **Стек:** Telegram + aiogram 3.x, SQLite, APScheduler, requests → OpenDota. Язык RU.
+- **Запуск:** long-polling, локально на ПК пользователя (или на любом always-on хосте).
+
+## Модель данных (SQLite)
+
+- `chats(chat_id PK, digest_hour, mmr_step, tz)` — конфиг чата.
+- `players(id PK, chat_id, account_id, display_name, anchor_mmr, anchor_ts, created_ts,
+  last_rank_tier, last_leaderboard_rank, updated_ts, UNIQUE(chat_id, account_id))`.
+- `matches(player_id, match_id, start_time, win, kills, deaths, assists, hero_id,
+  PK(player_id, match_id))` — кэш засчитанных ранкед-матчей.
+
+Окна:
+- «всего с старта» = матчи с `start_time >= created_ts`.
+- «за сутки» = матчи с `start_time >= now-24h`.
+- MMR-дельта = (W−L среди матчей с `start_time >= anchor_ts`) × шаг.
+
+## Компоненты (маленькие, тестируемые изолированно)
+
+| Модуль | Ответственность | Зависит от |
+|---|---|---|
+| `ids.py` | ссылка/ID → 32-битный account_id | — (чистый) |
+| `ranks.py` | `rank_tier` → медаль (+ Immortal #N) | — (чистый) |
+| `stats.py` | win/loss, KDA, агрегаты, оценка MMR | — (чистый) |
+| `opendota.py` | HTTP-клиент: профиль, ранкед-матчи; троттлинг+ретраи | requests |
+| `storage.py` | SQLite-репозиторий | sqlite3 |
+| `tracker.py` | обновить игрока, собрать сводку/лидерборд | storage, opendota, stats |
+| `formatting.py` | рендер сообщения (RU, Telegram-разметка) | ranks, stats |
+| `bot.py` | хендлеры aiogram (команды) | tracker, storage, formatting |
+| `scheduler.py` | ежедневный дайджест по чатам | tracker, formatting |
+| `config.py` | .env → настройки | python-dotenv |
+| `__main__.py` | сборка: polling + scheduler | всё выше |
+
+## Команды
+
+- `/add <ссылка|id> [Имя] [стартовый_MMR]` — добавить аккаунт в лидерборд чата.
+- `/list` — участники чата.
+- `/remove <Имя>` — убрать.
+- `/setmmr <Имя> <MMR>` — переякорить MMR (ручная коррекция).
+- `/setstep <шаг>` — шаг MMR для чата (по умолчанию 25).
+- `/stats` — полный лидерборд с даты старта.
+- `/today` — активность за сутки.
+- `/settime <час>` — час дайджеста (МСК).
+- `/start`, `/help` — справка.
+
+## Логика OpenDota
+
+- `/players/{id}` → `rank_tier`, `leaderboard_rank`, `profile.personaname`.
+- `/players/{id}/matches?date=N` → список матчей; поля `match_id, player_slot,
+  radiant_win, lobby_type, start_time, kills, deaths, assists, hero_id`.
+- Победа: `is_radiant = player_slot < 128`; `win = (is_radiant == radiant_win)`.
+- Ранкед: `lobby_type == 7`.
+- Троттлинг ~1 запрос/сек; опциональный `OPENDOTA_API_KEY` для лимитов.
+
+## Обработка ошибок
+
+- Приватные данные матчей → подсказка «включи открытые данные матчей».
+- Кривая ссылка / vanity `/id/...` → понятная ошибка.
+- OpenDota 429/5xx → ретрай с бэкоффом; дайджест не падает, берёт кэш.
+- Игрок без игр с старта → «0 игр» без краша.
+- Immortal без `rank_tier` → «Immortal #N» по `leaderboard_rank`.
+
+## Тесты (TDD)
+
+- Юнит: `ids`, `ranks`, `stats` (чистые функции).
+- `storage`: CRUD + окна выборки на временной БД.
+- `tracker`: с фейковым OpenDota-клиентом (без сети).
+- `formatting`: снапшот сообщения лидерборда.
+
+## Что нужно от пользователя
+
+1. Токен @BotFather (уже взят из `.env`, ключ `test_fatcher_bot` → бот `@chat4_openai_bot`).
+2. Держать процесс запущенным (`python -m mmrbot`) локально или на сервере.

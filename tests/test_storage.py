@@ -1,0 +1,172 @@
+import pytest
+
+from mmrbot.storage import Storage
+
+
+@pytest.fixture
+def store(tmp_path):
+    return Storage(str(tmp_path / "test.db"))
+
+
+def match(match_id, start_time, slot=0, radiant_win=True, k=1, d=2, a=3, lobby_type=7, hero_id=1):
+    return {
+        "match_id": match_id,
+        "start_time": start_time,
+        "player_slot": slot,
+        "radiant_win": radiant_win,
+        "lobby_type": lobby_type,
+        "kills": k,
+        "deaths": d,
+        "assists": a,
+        "hero_id": hero_id,
+    }
+
+
+# --- chats --------------------------------------------------------------
+
+def test_get_or_create_chat_defaults(store):
+    chat = store.get_or_create_chat(100)
+    assert chat.chat_id == 100
+    assert chat.digest_hour == 10
+    assert chat.mmr_step == 25
+    assert chat.tz == "Europe/Moscow"
+
+
+def test_set_step_persists(store):
+    store.get_or_create_chat(100)
+    store.set_chat_step(100, 30)
+    assert store.get_or_create_chat(100).mmr_step == 30
+
+
+def test_set_digest_hour_persists(store):
+    store.get_or_create_chat(100)
+    store.set_chat_digest_hour(100, 8)
+    assert store.get_or_create_chat(100).digest_hour == 8
+
+
+def test_list_chats(store):
+    store.get_or_create_chat(100)
+    store.get_or_create_chat(200)
+    assert {c.chat_id for c in store.list_chats()} == {100, 200}
+
+
+def test_last_digest_date_default_none(store):
+    assert store.get_or_create_chat(100).last_digest_date is None
+
+
+def test_set_last_digest_date_persists(store):
+    store.get_or_create_chat(100)
+    store.set_last_digest_date(100, "2026-09-29")
+    assert store.get_or_create_chat(100).last_digest_date == "2026-09-29"
+
+
+# --- players ------------------------------------------------------------
+
+def test_add_and_get_player(store):
+    p = store.add_player(chat_id=100, account_id=42, display_name="Вася", anchor_mmr=5000, anchor_ts=1000, created_ts=1000)
+    assert p.id > 0
+    assert p.account_id == 42
+    assert p.anchor_mmr == 5000
+    got = store.get_player(100, "Вася")
+    assert got.id == p.id
+
+
+def test_get_player_case_insensitive(store):
+    store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    assert store.get_player(100, "вАсЯ") is not None
+
+
+def test_get_player_by_account_id(store):
+    store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    assert store.get_player(100, "42").account_id == 42
+
+
+def test_get_player_unicode_digit_no_crash(store):
+    # str.isdigit() шире int(): '²' (U+00B2) не должен ронять get_player.
+    store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    assert store.get_player(100, "²") is None
+
+
+def test_get_player_by_account_id_exact_ignores_numeric_name(store):
+    # Игрок с именем-числом не должен перехватывать поиск по account_id другого игрока.
+    store.add_player(100, 555, "Alice", 5000, 1000, 1000)
+    store.add_player(100, 999, "555", 4000, 1000, 1000)
+    found = store.get_player_by_account_id(100, 555)
+    assert found.display_name == "Alice"
+    assert found.account_id == 555
+
+
+def test_duplicate_account_raises(store):
+    store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    with pytest.raises(ValueError):
+        store.add_player(100, 42, "Вася2", 4000, 1000, 1000)
+
+
+def test_same_account_different_chats_ok(store):
+    store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_player(200, 42, "Вася", 5000, 1000, 1000)  # другой чат — ок
+    assert store.get_player(200, "42") is not None
+
+
+def test_list_players_scoped_to_chat(store):
+    store.add_player(100, 1, "A", None, 1000, 1000)
+    store.add_player(100, 2, "B", None, 1000, 1000)
+    store.add_player(200, 3, "C", None, 1000, 1000)
+    assert {p.account_id for p in store.list_players(100)} == {1, 2}
+
+
+def test_remove_player(store):
+    store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    assert store.remove_player(100, "Вася") is True
+    assert store.get_player(100, "Вася") is None
+    assert store.remove_player(100, "Вася") is False  # уже нет
+
+
+def test_set_player_anchor(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.set_player_anchor(p.id, anchor_mmr=5300, anchor_ts=2000)
+    got = store.get_player(100, "Вася")
+    assert got.anchor_mmr == 5300
+    assert got.anchor_ts == 2000
+
+
+def test_update_player_rank(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.update_player_rank(p.id, rank_tier=75, leaderboard_rank=None, updated_ts=3000)
+    got = store.get_player(100, "Вася")
+    assert got.last_rank_tier == 75
+    assert got.updated_ts == 3000
+
+
+# --- matches ------------------------------------------------------------
+
+def test_add_matches_and_read_all(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    inserted = store.add_matches(p.id, [match(1, 1100), match(2, 1200)])
+    assert inserted == 2
+    rows = store.get_matches(p.id)
+    assert len(rows) == 2
+
+
+def test_add_matches_is_idempotent(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [match(1, 1100)])
+    inserted = store.add_matches(p.id, [match(1, 1100), match(2, 1200)])
+    assert inserted == 1  # только новый матч
+    assert len(store.get_matches(p.id)) == 2
+
+
+def test_get_matches_since_ts_filters(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [match(1, 1000), match(2, 2000), match(3, 3000)])
+    recent = store.get_matches(p.id, since_ts=2000)
+    assert {r["match_id"] for r in recent} == {2, 3}
+
+
+def test_get_matches_returns_fields_for_aggregate(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [match(1, 1100, slot=132, radiant_win=True, k=7, d=3, a=9)])
+    row = store.get_matches(p.id)[0]
+    assert row["player_slot"] == 132
+    assert bool(row["radiant_win"]) is True
+    assert (row["kills"], row["deaths"], row["assists"]) == (7, 3, 9)
