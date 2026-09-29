@@ -5,9 +5,9 @@ import asyncio
 import logging
 import time
 
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import BotCommand, Message
 
 from mmrbot import commands as cmd
 from mmrbot.formatting import render_player_list
@@ -18,6 +18,23 @@ from mmrbot.storage import Storage
 from mmrbot.tracker import refresh_player
 
 router = Router()
+
+# Меню команд (всплывает по «/», особенно полезно в группах).
+BOT_COMMANDS = [
+    BotCommand(command="stats", description="🏆 Лидерборд пати"),
+    BotCommand(command="today", description="📅 Активность за сутки"),
+    BotCommand(command="add", description="➕ Добавить игрока: /add ссылка Имя MMR"),
+    BotCommand(command="list", description="👥 Список игроков"),
+    BotCommand(command="setmmr", description="🎯 Задать/поправить MMR: /setmmr Имя 5400"),
+    BotCommand(command="setstep", description="⚙️ Шаг оценки MMR за игру"),
+    BotCommand(command="settime", description="⏰ Час ежедневного дайджеста (МСК)"),
+    BotCommand(command="remove", description="🗑 Убрать игрока: /remove Имя"),
+    BotCommand(command="help", description="ℹ️ Справка"),
+]
+
+
+async def set_bot_commands(bot: Bot) -> None:
+    await bot.set_my_commands(BOT_COMMANDS)
 
 HELP_TEXT = (
     "🎮 Трекер MMR/статистики Dota 2 (данные OpenDota)\n\n"

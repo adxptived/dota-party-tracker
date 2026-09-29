@@ -7,7 +7,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.types import ErrorEvent
 
-from mmrbot.bot import router
+from mmrbot.bot import router, set_bot_commands
 from mmrbot.config import load_config
 from mmrbot.opendota import OpenDota
 from mmrbot.scheduler import setup_scheduler
@@ -35,6 +35,8 @@ async def main() -> None:
         # Страховочная сеть: любой неотловленный сбой хендлера — в лог, а не в падение.
         logging.getLogger(__name__).exception("Необработанная ошибка хендлера: %s", event.exception)
         return True
+
+    await set_bot_commands(bot)
 
     scheduler = setup_scheduler(bot, storage, od)
     scheduler.start()
