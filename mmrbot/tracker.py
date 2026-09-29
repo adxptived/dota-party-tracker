@@ -19,6 +19,9 @@ TODAY_WINDOW_SEC = 86_400
 log = logging.getLogger(__name__)
 
 
+ENRICH_CAP = 12  # сколько матчей обогащать деталями за один refresh (лимит запросов)
+
+
 class OpenDotaClient(Protocol):
     def refresh(self, account_id: int) -> bool: ...
     def get_profile(self, account_id: int) -> dict: ...
@@ -26,6 +29,7 @@ class OpenDotaClient(Protocol):
     def get_totals(self, account_id: int) -> dict: ...
     def get_lanes(self, account_id: int) -> dict: ...
     def get_gpm_distribution(self, account_id: int) -> dict: ...
+    def get_match_player_stats(self, match_id: int, account_id: int) -> Optional[dict]: ...
 
 
 @dataclass
@@ -71,6 +75,11 @@ class PlayerSummary:
     longest_win_streak: int = 0
     gpm_median: Optional[float] = None
     gpm_best: Optional[float] = None
+    avg_perf: Optional[float] = None
+    enriched_games: int = 0
+    avg_gpm_window: Optional[float] = None
+    avg_hero_damage_window: Optional[float] = None
+    avg_net_worth_window: Optional[float] = None
 
 
 def _normalize(raw: dict) -> dict:
@@ -134,6 +143,16 @@ def refresh_player(storage: Storage, client: OpenDotaClient, player: Player, now
     except Exception:
         log.debug("Не удалось получить lanes/gpm игрока %s", player.account_id, exc_info=True)
 
+    # Обогащение матчей: пер-матч поля + role-normalized perf из benchmarks (по 1 GET на матч).
+    for match_id in storage.get_unenriched_match_ids(player.id, player.created_ts, ENRICH_CAP):
+        try:
+            details = client.get_match_player_stats(match_id, player.account_id)
+            if details:
+                ps = stats.perf_score(details.get("benchmarks") or {})
+                storage.update_match_details(player.id, match_id, details, ps)
+        except Exception:
+            log.debug("Не удалось обогатить матч %s", match_id, exc_info=True)
+
     return inserted
 
 
@@ -158,6 +177,13 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
     split = stats.solo_party_split(all_matches)
     best_hour, worst_hour = _best_worst_hour(stats.winrate_by_hour(all_matches, chat.tz))
     lanes = _parse_lanes(player.last_lanes)
+
+    enriched = [m for m in all_matches if m.get("perf_score") is not None]
+    avg_perf = sum(m["perf_score"] for m in enriched) / len(enriched) if enriched else None
+
+    def _mean_field(field: str) -> Optional[float]:
+        values = [m[field] for m in all_matches if m.get(field) is not None]
+        return sum(values) / len(values) if values else None
 
     return PlayerSummary(
         display_name=player.display_name,
@@ -200,6 +226,11 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         longest_win_streak=stats.longest_win_streak(all_matches),
         gpm_median=player.last_gpm_median,
         gpm_best=player.last_gpm_best,
+        avg_perf=avg_perf,
+        enriched_games=len(enriched),
+        avg_gpm_window=_mean_field("gpm"),
+        avg_hero_damage_window=_mean_field("hero_damage"),
+        avg_net_worth_window=_mean_field("net_worth"),
     )
 
 
@@ -263,6 +294,13 @@ def compute_awards(summaries: list[PlayerSummary], min_games: int = 3) -> list[d
     awards: list[dict] = []
     if not eligible:
         return awards
+
+    # MVP по role-normalized перформансу (честнее KDA) — самый престижный, ставим первым.
+    perf_eligible = [s for s in eligible if s.avg_perf is not None]
+    if perf_eligible:
+        mvp = max(perf_eligible, key=lambda s: s.avg_perf)
+        awards.append({"title": "🎯 MVP (перформанс)", "player": mvp.display_name,
+                       "detail": f"{mvp.avg_perf * 100:.0f}/100"})
 
     king = max(eligible, key=lambda s: s.winrate)
     awards.append({"title": "👑 Король винрейта", "player": king.display_name,

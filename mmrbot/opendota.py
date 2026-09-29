@@ -127,6 +127,30 @@ class OpenDota:
         best = max(x for x, _ in buckets)
         return {"median": median, "best": best}
 
+    _MATCH_FIELDS = {
+        "gold_per_min": "gpm", "xp_per_min": "xpm", "last_hits": "last_hits", "denies": "denies",
+        "hero_damage": "hero_damage", "tower_damage": "tower_damage", "hero_healing": "hero_healing",
+        "net_worth": "net_worth", "level": "level",
+    }
+
+    def get_match_player_stats(self, match_id: int, account_id: int) -> Optional[dict]:
+        """Пер-матч статистика игрока из /matches/{id} + benchmarks (перцентиль vs тот же герой).
+
+        GPM/урон/хил/нетворт и benchmarks приходят БЕЗ парса (из сводки Valve).
+        """
+        match = self._get(f"/matches/{match_id}") or {}
+        player = next(
+            (p for p in match.get("players", []) if p.get("account_id") == account_id), None
+        )
+        if player is None:
+            return None
+        result = {out: player.get(src) for src, out in self._MATCH_FIELDS.items()}
+        benchmarks = {}
+        for metric, value in (player.get("benchmarks") or {}).items():
+            benchmarks[metric] = value.get("pct") if isinstance(value, dict) else value
+        result["benchmarks"] = benchmarks
+        return result
+
     def get_totals(self, account_id: int) -> dict:
         """Средние GPM/XPM/last hits из /players/{id}/totals (sum/n по полям)."""
         data = self._get(f"/players/{account_id}/totals")

@@ -13,9 +13,10 @@ from mmrbot.tracker import (
 class FakeOpenDota:
     """Фейковый клиент: без сети, возвращает заранее заданные профиль и матчи."""
 
-    def __init__(self, profile=None, matches=None):
+    def __init__(self, profile=None, matches=None, match_stats=None):
         self.profile = profile or {"rank_tier": None, "leaderboard_rank": None, "personaname": None}
         self.matches = matches or []
+        self.match_stats = match_stats  # dict пер-матч статы (одинаковые для всех) или None
         self.profile_calls = 0
         self.match_calls = 0
         self.refresh_calls = 0
@@ -23,6 +24,9 @@ class FakeOpenDota:
     def refresh(self, account_id):
         self.refresh_calls += 1
         return True
+
+    def get_match_player_stats(self, match_id, account_id):
+        return self.match_stats
 
     def get_profile(self, account_id):
         self.profile_calls += 1
@@ -137,6 +141,42 @@ def test_summary_includes_streak_and_top_heroes(store):
     s = build_player_summary(store, chat, p, now=now)
     assert (s.streak_type, s.streak_len) == ("W", 2)
     assert s.top_heroes[0]["hero_id"] == 1  # 2 игры на герое 1
+
+
+def test_refresh_enriches_matches_and_perf(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    client = FakeOpenDota(
+        matches=[od_match(1, 1500), od_match(2, 2500)],
+        match_stats={
+            "gpm": 500, "xpm": 600, "last_hits": 180, "denies": 10, "hero_damage": 25000,
+            "tower_damage": 3000, "hero_healing": 0, "net_worth": 18000, "level": 25,
+            "benchmarks": {"gold_per_min": 0.6, "hero_damage_per_min": 0.8},
+        },
+    )
+    refresh_player(store, client, p, now=3000)
+    rows = store.get_matches(p.id)
+    assert all(r["enriched"] == 1 for r in rows)
+    assert rows[0]["gpm"] == 500 and rows[0]["net_worth"] == 18000
+
+    p2 = store.get_player(100, "Вася")
+    chat = store.get_or_create_chat(100)
+    s = build_player_summary(store, chat, p2, now=100_000)
+    assert s.avg_perf == pytest.approx((0.6 + 0.8) / 2)
+    assert s.enriched_games == 2
+    assert s.avg_gpm_window == pytest.approx(500)
+
+
+def test_compute_awards_includes_perf_mvp(store):
+    from dataclasses import replace
+    now = 100_000
+    p = store.add_player(100, 1, "Base", 5000, 1000, 1000)
+    store.add_matches(p.id, [_m(10 + i, 2000 + i, radiant_win=(i % 2 == 0)) for i in range(4)])
+    base = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)[0]
+    a = replace(base, display_name="A", avg_perf=0.82)
+    b = replace(base, display_name="B", avg_perf=0.31)
+    awards = compute_awards([a, b])
+    mvp = next(x for x in awards if "MVP" in x["title"])
+    assert mvp["player"] == "A"
 
 
 def test_summary_includes_form_lanes_and_records(store):

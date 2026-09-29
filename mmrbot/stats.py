@@ -150,6 +150,36 @@ def solo_party_split(matches: list[dict]) -> dict[str, tuple[int, int]]:
     return {key: (games, wins) for key, (games, wins) in buckets.items()}
 
 
+# Benchmark-метрики, где выше = лучше (deaths исключаем — высокий процент это плохо).
+_POSITIVE_BENCHMARKS = {
+    "gold_per_min",
+    "xp_per_min",
+    "kills_per_min",
+    "assists_per_min",
+    "last_hits_per_min",
+    "hero_damage_per_min",
+    "hero_healing_per_min",
+    "tower_damage_per_min",
+    "stuns_per_min",
+}
+
+
+def perf_score(benchmarks: dict) -> Optional[float]:
+    """Role-normalized перформанс: среднее перцентилей «полезных» benchmark-метрик (0..1).
+
+    benchmarks — перцентили игрока против других на ТОМ ЖЕ герое → метрика честна к роли
+    (саппорт сравнивается с саппортами, кор — с корами). Домашний аналог STRATZ IMP.
+    """
+    pcts = [
+        value
+        for metric, value in (benchmarks or {}).items()
+        if metric in _POSITIVE_BENCHMARKS and value is not None
+    ]
+    if not pcts:
+        return None
+    return sum(pcts) / len(pcts)
+
+
 def recent_form(matches: list[dict], n: int = 5) -> list[bool]:
     """Последние n матчей как список исходов (True=победа), в хронологическом порядке."""
     tail = matches[-n:]

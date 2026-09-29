@@ -9,6 +9,7 @@ from mmrbot.stats import (
     is_ranked_lobby,
     is_win,
     longest_win_streak,
+    perf_score,
     recent_form,
     solo_party_split,
     top_heroes,
@@ -244,3 +245,23 @@ def test_longest_win_streak():
 def test_longest_win_streak_none():
     assert longest_win_streak([make(0, False), make(0, False)]) == 0
     assert longest_win_streak([]) == 0
+
+
+# --- perf_score (role-normalized) ---------------------------------------
+
+def test_perf_score_averages_positive_benchmarks():
+    # deaths_per_min исключаем (высокий = плохо), остальное усредняем
+    bench = {"gold_per_min": 0.5, "xp_per_min": 0.7, "hero_healing_per_min": 0.9, "deaths_per_min": 0.95}
+    assert perf_score(bench) == pytest.approx((0.5 + 0.7 + 0.9) / 3)
+
+
+def test_perf_score_support_beats_core_when_role_appropriate():
+    # Саппорт: высокие хил/ассисты, низкий фарм → перцентили высоки на своих осях
+    support = {"hero_healing_per_min": 0.9, "assists_per_min": 0.85, "gold_per_min": 0.2, "last_hits_per_min": 0.15}
+    core = {"gold_per_min": 0.4, "last_hits_per_min": 0.45, "hero_damage_per_min": 0.4, "assists_per_min": 0.3}
+    assert perf_score(support) > perf_score(core)
+
+
+def test_perf_score_empty_is_none():
+    assert perf_score({}) is None
+    assert perf_score({"deaths_per_min": 0.9}) is None  # только негативная метрика

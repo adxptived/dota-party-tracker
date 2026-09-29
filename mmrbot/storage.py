@@ -82,9 +82,20 @@ CREATE TABLE IF NOT EXISTS matches (
     kills       INTEGER NOT NULL DEFAULT 0,
     deaths      INTEGER NOT NULL DEFAULT 0,
     assists     INTEGER NOT NULL DEFAULT 0,
-    hero_id     INTEGER,
-    duration    INTEGER,
-    party_size  INTEGER,
+    hero_id      INTEGER,
+    duration     INTEGER,
+    party_size   INTEGER,
+    gpm          REAL,
+    xpm          REAL,
+    last_hits    INTEGER,
+    denies       INTEGER,
+    hero_damage  INTEGER,
+    tower_damage INTEGER,
+    hero_healing INTEGER,
+    net_worth    INTEGER,
+    level        INTEGER,
+    perf_score   REAL,
+    enriched     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_id, match_id)
 );
 """
@@ -111,7 +122,13 @@ class Storage:
             "last_gpm": "REAL", "last_xpm": "REAL", "last_last_hits": "REAL",
             "last_lanes": "TEXT", "last_gpm_median": "REAL", "last_gpm_best": "REAL",
         })
-        add_missing("matches", {"duration": "INTEGER", "party_size": "INTEGER"})
+        add_missing("matches", {
+            "duration": "INTEGER", "party_size": "INTEGER",
+            "gpm": "REAL", "xpm": "REAL", "last_hits": "INTEGER", "denies": "INTEGER",
+            "hero_damage": "INTEGER", "tower_damage": "INTEGER", "hero_healing": "INTEGER",
+            "net_worth": "INTEGER", "level": "INTEGER", "perf_score": "REAL",
+            "enriched": "INTEGER NOT NULL DEFAULT 0",
+        })
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -309,6 +326,33 @@ class Storage:
                 )
                 inserted += cur.rowcount
         return inserted
+
+    _DETAIL_FIELDS = (
+        "gpm", "xpm", "last_hits", "denies", "hero_damage",
+        "tower_damage", "hero_healing", "net_worth", "level",
+    )
+
+    def update_match_details(self, player_id: int, match_id: int, details: dict, perf_score) -> None:
+        """Записать обогащённые пер-матч поля + perf_score и пометить enriched=1."""
+        assignments = ", ".join(f"{field} = ?" for field in self._DETAIL_FIELDS)
+        params = [details.get(field) for field in self._DETAIL_FIELDS]
+        params += [perf_score, player_id, match_id]
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE matches SET {assignments}, perf_score = ?, enriched = 1 "
+                "WHERE player_id = ? AND match_id = ?",
+                params,
+            )
+
+    def get_unenriched_match_ids(self, player_id: int, since_ts: int, limit: int) -> list[int]:
+        """match_id матчей без обогащения (свежие первыми) — для дозагрузки деталей."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT match_id FROM matches WHERE player_id = ? AND enriched = 0 AND start_time >= ? "
+                "ORDER BY start_time DESC LIMIT ?",
+                (player_id, since_ts, limit),
+            ).fetchall()
+        return [r["match_id"] for r in rows]
 
     def get_matches(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
         query = "SELECT * FROM matches WHERE player_id = ?"

@@ -212,3 +212,10 @@ def test_render_player_card_has_lanes_form_records_gpm():
     assert "20.00" in text          # лучшая игра KDA
     assert "3" in text              # макс серия
     assert "520" in text            # медиана GPM
+
+
+def test_render_player_card_shows_perf_score():
+    s = summary(avg_perf=0.72, enriched_games=9, avg_hero_damage_window=22000.0, avg_net_worth_window=18000.0)
+    text = render_player_card(s)
+    assert "72/100" in text
+    assert "перформанс" in text.lower()

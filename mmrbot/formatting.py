@@ -223,6 +223,19 @@ def render_player_card(s: PlayerSummary) -> str:
         lines.append(f"📊 {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)")
         lines.append(f"⚔️ KDA {s.kda_ratio:.2f} ({s.avg_kills:.1f}/{s.avg_deaths:.1f}/{s.avg_assists:.1f})")
 
+        if s.avg_perf is not None:
+            lines.append(
+                f"🎯 Перформанс: {_b(f'{s.avg_perf * 100:.0f}/100')} "
+                f"(перцентиль vs тот же герой, честно к роли)"
+            )
+        econ_window = []
+        if s.avg_hero_damage_window is not None:
+            econ_window.append(f"урон ~{s.avg_hero_damage_window:.0f}")
+        if s.avg_net_worth_window is not None:
+            econ_window.append(f"нетворт ~{s.avg_net_worth_window:.0f}")
+        if econ_window:
+            lines.append("📦 За период: " + " · ".join(econ_window))
+
         if s.recent_form:
             icons = "".join("✅" if won else "❌" for won in s.recent_form)
             lines.append(f"📋 Форма (посл. {len(s.recent_form)}): {icons}")

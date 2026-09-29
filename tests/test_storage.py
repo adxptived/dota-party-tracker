@@ -172,6 +172,37 @@ def test_get_matches_returns_fields_for_aggregate(store):
     assert (row["kills"], row["deaths"], row["assists"]) == (7, 3, 9)
 
 
+def test_update_match_details_and_read(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [match(1, 1100)])
+    store.update_match_details(p.id, 1, {
+        "gpm": 500, "xpm": 600, "last_hits": 180, "denies": 10,
+        "hero_damage": 25000, "tower_damage": 3000, "hero_healing": 0,
+        "net_worth": 18000, "level": 25,
+    }, perf_score=0.72)
+    row = store.get_matches(p.id)[0]
+    assert row["gpm"] == 500
+    assert row["net_worth"] == 18000
+    assert row["perf_score"] == 0.72
+    assert row["enriched"] == 1
+
+
+def test_get_unenriched_match_ids(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [match(1, 1000), match(2, 2000), match(3, 3000)])
+    store.update_match_details(p.id, 2, {"gpm": 400}, perf_score=0.5)
+    ids = store.get_unenriched_match_ids(p.id, since_ts=0, limit=10)
+    assert set(ids) == {1, 3}  # матч 2 уже обогащён
+
+
+def test_get_unenriched_respects_window_and_limit(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [match(1, 1000), match(2, 2000), match(3, 3000)])
+    assert store.get_unenriched_match_ids(p.id, since_ts=2000, limit=10) == [3, 2] or \
+        set(store.get_unenriched_match_ids(p.id, since_ts=2000, limit=10)) == {2, 3}
+    assert len(store.get_unenriched_match_ids(p.id, since_ts=0, limit=1)) == 1
+
+
 def test_add_matches_stores_duration_and_party_size(store):
     p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
     m = match(1, 1100)

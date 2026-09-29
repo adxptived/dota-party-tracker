@@ -61,6 +61,25 @@ def test_no_api_key_means_no_param():
     assert "api_key" not in session.calls[0]["params"]
 
 
+def test_get_match_player_stats_extracts_fields_and_benchmarks():
+    match = {"players": [
+        {"account_id": 42, "gold_per_min": 500, "xp_per_min": 600, "last_hits": 180, "denies": 10,
+         "hero_damage": 25000, "tower_damage": 3000, "hero_healing": 0, "net_worth": 18000, "level": 25,
+         "benchmarks": {"gold_per_min": {"raw": 500, "pct": 0.8}, "hero_healing_per_min": {"raw": 0, "pct": 0.1}}},
+        {"account_id": 99, "gold_per_min": 300},
+    ]}
+    od = OpenDota(session=FakeSession(match), min_interval=0)
+    s = od.get_match_player_stats(123, 42)
+    assert s["gpm"] == 500 and s["net_worth"] == 18000 and s["hero_damage"] == 25000
+    assert s["benchmarks"]["gold_per_min"] == 0.8
+    assert s["benchmarks"]["hero_healing_per_min"] == 0.1
+
+
+def test_get_match_player_stats_missing_player_returns_none():
+    od = OpenDota(session=FakeSession({"players": []}), min_interval=0)
+    assert od.get_match_player_stats(123, 42) is None
+
+
 def test_refresh_posts_to_endpoint():
     session = FakeSession({})
     od = OpenDota(session=session, min_interval=0)
