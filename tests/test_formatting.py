@@ -181,41 +181,43 @@ def test_render_heroes_shows_hero_names():
 
 # --- player card --------------------------------------------------------
 
-def test_render_player_card_has_deep_stats():
+def test_render_player_card_is_windowed_only():
+    # Карточка показывает только окно (последние игры), без карьерных линий/распределений.
     s = summary(
-        display_name="Вася", gpm=520.0, xpm=610.0, last_hits=180.0,
-        avg_duration_min=38.0, solo=(10, 6), party=(5, 4),
+        display_name="Вася",
+        avg_gpm_window=520.0, avg_net_worth_window=18000.0, avg_hero_damage_window=22000.0,
+        solo=(10, 6), party=(5, 4),
         top_heroes=[{"hero_id": 8, "games": 4, "wins": 3, "winrate": 0.75}],
-        streak_type="W", streak_len=2,
+        lanes={2: (10, 6), 0: (5, 2)},   # карьерное — НЕ должно попасть
+        gpm_median=999.0,                # карьерное — НЕ должно попасть
     )
     text = render_player_card(s)
     assert "Вася" in text
-    assert "520" in text          # GPM
-    assert "Juggernaut" in text   # hero_id 8
-    assert "соло" in text.lower() or "solo" in text.lower()
+    assert "520" in text            # windowed GPM
+    assert "Juggernaut" in text     # hero_id 8
+    assert "соло" in text.lower()
+    assert "Последние" in text      # явная пометка окна
+    # карьерных строк быть не должно
+    assert "Mid" not in text
+    assert "без линии" not in text
+    assert "999" not in text
 
 
-def test_render_player_card_has_lanes_form_records_gpm():
+def test_render_player_card_windowed_records():
     s = summary(
         display_name="Вася",
-        lanes={2: (10, 6), 0: (5, 2)},
         recent_form=[True, False, True],
         best_game={"kills": 10, "deaths": 1, "assists": 10, "hero_id": 8, "kda": 20.0},
         longest_win_streak=3,
-        gpm_median=520.0,
-        gpm_best=800.0,
     )
     text = render_player_card(s)
-    assert "Mid" in text            # линия 2
-    assert "без линии: 5" in text   # честная пометка про нераспарсенные
-    assert "✅" in text             # форма
-    assert "20.00" in text          # лучшая игра KDA
-    assert "3" in text              # макс серия
-    assert "520" in text            # медиана GPM
+    assert "✅" in text                         # форма
+    assert "10/1/10" in text                    # лучшая игра
+    assert "3" in text                          # макс серия
 
 
 def test_render_player_card_shows_perf_score():
     s = summary(avg_perf=0.72, enriched_games=9, avg_hero_damage_window=22000.0, avg_net_worth_window=18000.0)
     text = render_player_card(s)
     assert "72/100" in text
-    assert "перформанс" in text.lower()
+    assert "перф" in text.lower()

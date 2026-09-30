@@ -196,88 +196,73 @@ def render_heroes(summaries: list[PlayerSummary]) -> str:
 
 # --- карточка игрока ----------------------------------------------------
 
-def _lanes_line(lanes: dict) -> Optional[str]:
-    if not lanes:
-        return None
-    known = [
-        f"{LANE_NAMES[lane]} {_fmt_wr(games, wins)}"
-        for lane, (games, wins) in sorted(lanes.items())
-        if lane in LANE_NAMES and games
-    ]
-    if not known:
-        return None
-    line = "🛣 По линиям: " + " · ".join(known)
-    unknown = lanes.get(0, (0, 0))[0]
-    if unknown:
-        line += f" · без линии: {unknown}"
-    return line
+def _k(value) -> str:
+    """Компактно: 13656 → 13.7k, 428 → 428."""
+    if value is None:
+        return "—"
+    return f"{value / 1000:.1f}k" if value >= 1000 else f"{value:.0f}"
+
+
+def _form_icons(form: list) -> str:
+    return "".join("✅" if won else "❌" for won in form)
+
+
+def _wr_ratio(pair: tuple) -> Optional[float]:
+    games, wins = pair
+    return wins / games if games else None
 
 
 def render_player_card(s: PlayerSummary) -> str:
-    lines = [f"🎮 {_b(s.display_name)} · {_rank_with_emoji(s)}{_streak_str(s)}"]
-    lines.append(f"{_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}")
-
+    """Карточка игрока — ТОЛЬКО окно отслеживания (последние игры), без карьерных срезов."""
+    header = f"🎮 {_b(s.display_name)} · {_rank_with_emoji(s)}{_streak_str(s)}"
     if s.games_total == 0:
-        lines.append("пока без ранкед-игр с момента добавления")
-    else:
-        lines.append(f"📊 {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)")
-        lines.append(f"⚔️ KDA {s.kda_ratio:.2f} ({s.avg_kills:.1f}/{s.avg_deaths:.1f}/{s.avg_assists:.1f})")
+        return header + "\nпока без ранкед-игр с момента добавления"
 
-        if s.avg_perf is not None:
-            lines.append(
-                f"🎯 Перформанс: {_b(f'{s.avg_perf * 100:.0f}/100')} "
-                f"(перцентиль vs тот же герой, честно к роли)"
-            )
-        econ_window = []
-        if s.avg_hero_damage_window is not None:
-            econ_window.append(f"урон ~{s.avg_hero_damage_window:.0f}")
-        if s.avg_net_worth_window is not None:
-            econ_window.append(f"нетворт ~{s.avg_net_worth_window:.0f}")
-        if econ_window:
-            lines.append("📦 За период: " + " · ".join(econ_window))
+    lines = [header, f"📅 <i>Последние {plural_games(s.games_total)}</i>", ""]
 
-        if s.recent_form:
-            icons = "".join("✅" if won else "❌" for won in s.recent_form)
-            lines.append(f"📋 Форма (посл. {len(s.recent_form)}): {icons}")
+    # Заголовочная строка: MMR + честный перф рядом.
+    perf = f"    🎯 {_b(f'{s.avg_perf * 100:.0f}/100')} перф" if s.avg_perf is not None else ""
+    lines.append(f"{_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}{perf}")
+    lines.append(f"{s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)   форма {_form_icons(s.recent_form)}")
 
-        econ = []
-        if s.gpm is not None:
-            econ.append(f"GPM {s.gpm:.0f}")
-        if s.xpm is not None:
-            econ.append(f"XPM {s.xpm:.0f}")
-        if s.last_hits is not None:
-            econ.append(f"LH/игра {s.last_hits:.0f}")
-        if econ:
-            lines.append("💰 " + " · ".join(econ))
+    # Бой + экономика (всё за окно).
+    lines.append(f"⚔️ KDA {s.kda_ratio:.2f} ({s.avg_kills:.0f}/{s.avg_deaths:.0f}/{s.avg_assists:.0f})")
+    econ = []
+    if s.avg_gpm_window is not None:
+        econ.append(f"{s.avg_gpm_window:.0f} gpm")
+    if s.avg_net_worth_window is not None:
+        econ.append(f"{_k(s.avg_net_worth_window)} нетворт")
+    if s.avg_hero_damage_window is not None:
+        econ.append(f"{_k(s.avg_hero_damage_window)} урон")
+    if econ:
+        lines.append("💰 " + " · ".join(econ))
 
-        if s.avg_duration_min:
-            lines.append(f"⏱️ Средняя игра {s.avg_duration_min:.0f} мин (макс {s.max_duration_min:.0f})")
+    lines.append("")
 
-        lines.append(f"🧑‍🤝‍🧑 Соло {_fmt_wr(*s.solo)} · Пати {_fmt_wr(*s.party)}")
+    # Разрезы + подсказки.
+    solo_wr, party_wr = _wr_ratio(s.solo), _wr_ratio(s.party)
+    note = ""
+    if solo_wr is not None and party_wr is not None and s.party[0] >= 2 and party_wr < solo_wr - 0.2:
+        note = "   ← в стаке слабее"
+    lines.append(f"🧑‍🤝‍🧑 соло {_fmt_wr(*s.solo)} · пати {_fmt_wr(*s.party)}{note}")
 
-        if s.best_hour and s.worst_hour:
-            bh, bwr = s.best_hour
-            wh, wwr = s.worst_hour
-            lines.append(f"🌙 Лучший час {bh:02d}:00 ({bwr * 100:.0f}%) · худший {wh:02d}:00 ({wwr * 100:.0f}%)")
+    if s.best_hour and s.worst_hour:
+        bh, bwr = s.best_hour
+        wh, wwr = s.worst_hour
+        lines.append(f"🌙 лучший час {bh:02d}:00 ({bwr * 100:.0f}%) · худший {wh:02d}:00 ({wwr * 100:.0f}%)")
+    if s.avg_duration_min:
+        lines.append(f"⏱️ средняя игра {s.avg_duration_min:.0f} мин (макс {s.max_duration_min:.0f})")
+    if s.best_game:
+        bg = s.best_game
+        lines.append(
+            f"🌟 топ-игра: {_esc(hero_name(bg['hero_id']))} {bg['kills']}/{bg['deaths']}/{bg['assists']}"
+        )
+    if s.longest_win_streak >= 2:
+        lines.append(f"🔥 макс серия побед: {s.longest_win_streak}")
+    lines.append(f"🦸 {_heroes_line(s.top_heroes)}")
 
-        if s.best_game:
-            bg = s.best_game
-            lines.append(
-                f"🌟 Лучшая игра: {_esc(hero_name(bg['hero_id']))} "
-                f"{bg['kills']}/{bg['deaths']}/{bg['assists']} (KDA {bg['kda']:.2f})"
-            )
-        if s.longest_win_streak >= 2:
-            lines.append(f"🔥 Макс. серия побед: {s.longest_win_streak}")
-
-    # Разрезы из истории OpenDota (доступны и без наших матчей).
-    lane_line = _lanes_line(s.lanes)
-    if lane_line:
-        lines.append(lane_line)
-    if s.gpm_median is not None:
-        peak = f" · пик {s.gpm_best:.0f}" if s.gpm_best else ""
-        lines.append(f"💠 GPM обычно ~{s.gpm_median:.0f}{peak}")
-
-    lines.append(f"🦸 Герои: {_heroes_line(s.top_heroes)}")
+    lines.append("")
+    lines.append("<i>перф = перцентиль vs тот же герой (честно к роли)</i>")
     return "\n".join(lines)
 
 
