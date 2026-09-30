@@ -102,9 +102,10 @@ def _card_full(index: int, s: PlayerSummary) -> str:
     if s.games_total == 0:
         lines.append("    пока без игр")
     else:
+        perf = f" · перф {s.avg_perf * 100:.0f}" if s.avg_perf is not None else ""
         lines.append(
             f"    {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} "
-            f"({s.winrate * 100:.0f}%) · KDA {s.kda_ratio:.2f}{_streak_str(s)}"
+            f"({s.winrate * 100:.0f}%) · KDA {s.kda_ratio:.2f}{perf}{_streak_str(s)}"
         )
         if s.games_today:
             lines.append(

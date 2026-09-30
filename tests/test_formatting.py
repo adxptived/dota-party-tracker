@@ -139,16 +139,21 @@ def test_leaderboard_shows_win_streak():
     assert "3" in text
 
 
+def test_leaderboard_shows_perf_in_line():
+    text = render_leaderboard([summary(avg_perf=0.58, games_total=10)])
+    assert "перф 58" in text
+
+
 # --- awards -------------------------------------------------------------
 
 def test_render_awards_lists_leaders():
     players = [
-        summary(display_name="A", winrate=0.8, wins_total=8, losses_total=2, games_total=10, kda_ratio=5.0, sum_deaths=10),
-        summary(display_name="B", winrate=0.3, wins_total=3, losses_total=7, games_total=10, kda_ratio=1.0, sum_deaths=90),
+        summary(display_name="A", winrate=0.8, wins_total=8, losses_total=2, games_total=10, streak_type="W", streak_len=3),
+        summary(display_name="B", winrate=0.3, wins_total=3, losses_total=7, games_total=10, streak_type="L", streak_len=4),
     ]
     text = render_awards(players)
-    assert "A" in text  # король винрейта
-    assert "B" in text  # фидер
+    assert "A" in text  # король винрейта / на кураже
+    assert "B" in text  # главный тилт (серия поражений)
 
 
 def test_render_awards_empty_when_no_eligible():

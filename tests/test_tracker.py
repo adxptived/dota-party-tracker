@@ -252,19 +252,18 @@ def test_summary_includes_solo_party_and_totals(store):
     assert s.avg_duration_min > 0
 
 
-def test_compute_awards_picks_leaders(store):
+def test_compute_awards_tell_party_story(store):
     now = 100_000
     good = store.add_player(100, 1, "Good", 5000, 1000, 1000)
     bad = store.add_player(100, 2, "Bad", 4000, 1000, 1000)
-    # Good: 3 победы; Bad: 3 поражения с большим числом смертей
-    store.add_matches(good.id, [_m(10 + i, 2000 + i, radiant_win=True, d=1) for i in range(3)])
-    store.add_matches(bad.id, [_m(20 + i, 2000 + i, radiant_win=False, d=15) for i in range(3)])
+    store.add_matches(good.id, [_m(10 + i, 2000 + i, radiant_win=True) for i in range(3)])   # 3 победы → W3
+    store.add_matches(bad.id, [_m(20 + i, 2000 + i, radiant_win=False) for i in range(3)])   # 3 поражения → L3
     summaries = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)
     awards = compute_awards(summaries)
     titles = {a["title"]: a["player"] for a in awards}
-    assert any("инрейт" in t for t in titles)  # Король винрейта
-    assert titles.get(next(t for t in titles if "инрейт" in t)) == "Good"
-    assert any("идер" in t for t in titles)  # Фидер (смерти)
+    # Король винрейта → Good; «главный тилт» → Bad (а не активный игрок)
+    assert titles[next(t for t in titles if "инрейт" in t)] == "Good"
+    assert titles[next(t for t in titles if "тилт" in t.lower())] == "Bad"
 
 
 def test_build_together_counts_shared(store):

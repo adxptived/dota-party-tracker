@@ -310,13 +310,17 @@ def _best_worst_hour(by_hour: dict, min_games: int = 3):
 
 
 def compute_awards(summaries: list[PlayerSummary], min_games: int = 3) -> list[dict]:
-    """Награды пати по сводкам игроков. Каждая: {title, player, detail}."""
+    """Награды, рассказывающие историю пати (не липнут к одному игроку). {title, player, detail}.
+
+    Позитивные — лучшему; «главный тилт» — тому, кто РЕАЛЬНО в просадке (серия поражений),
+    а не самому активному. Метрики по ставкам/сериям, не по абсолютным суммам.
+    """
     eligible = [s for s in summaries if s.games_total >= min_games]
     awards: list[dict] = []
     if not eligible:
         return awards
 
-    # MVP по role-normalized перформансу (честнее KDA) — самый престижный, ставим первым.
+    # MVP по role-normalized перформансу (честнее KDA) — самый престижный.
     perf_eligible = [s for s in eligible if s.avg_perf is not None]
     if perf_eligible:
         mvp = max(perf_eligible, key=lambda s: s.avg_perf)
@@ -327,17 +331,19 @@ def compute_awards(summaries: list[PlayerSummary], min_games: int = 3) -> list[d
     awards.append({"title": "👑 Король винрейта", "player": king.display_name,
                    "detail": f"{king.winrate * 100:.0f}% ({king.wins_total}–{king.losses_total})"})
 
-    grinder = max(eligible, key=lambda s: s.games_total)
-    awards.append({"title": "🛠 Работяга", "player": grinder.display_name,
-                   "detail": f"{grinder.games_total} игр"})
+    # На кураже — самая длинная текущая серия ПОБЕД.
+    hot = [s for s in eligible if s.streak_type == "W" and s.streak_len >= 2]
+    if hot:
+        top = max(hot, key=lambda s: s.streak_len)
+        awards.append({"title": "🔥 На кураже", "player": top.display_name,
+                       "detail": f"{top.streak_len} побед подряд"})
 
-    carry = max(eligible, key=lambda s: s.kda_ratio)
-    awards.append({"title": "🗡 Керри (KDA)", "player": carry.display_name,
-                   "detail": f"KDA {carry.kda_ratio:.2f}"})
-
-    feeder = max(eligible, key=lambda s: s.sum_deaths)
-    awards.append({"title": "💀 Фидер", "player": feeder.display_name,
-                   "detail": f"{feeder.sum_deaths} смертей всего"})
+    # Главный тилт — самая длинная серия ПОРАЖЕНИЙ (реальная просадка, а не число смертей).
+    cold = [s for s in eligible if s.streak_type == "L" and s.streak_len >= 2]
+    if cold:
+        bottom = max(cold, key=lambda s: (s.streak_len, -s.winrate))
+        awards.append({"title": "📉 Главный тилт", "player": bottom.display_name,
+                       "detail": f"{bottom.streak_len} поражений подряд, {bottom.winrate * 100:.0f}%"})
 
     return awards
 
