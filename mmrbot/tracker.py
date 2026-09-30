@@ -321,6 +321,48 @@ def compute_awards(summaries: list[PlayerSummary], min_games: int = 3) -> list[d
     return awards
 
 
+# Метрики для сравнения игроков внутри чата (все — «выше = лучше»).
+_COMPARE_METRICS = {
+    "perf": lambda s: s.avg_perf,
+    "winrate": lambda s: s.winrate if s.games_total else None,
+    "kda": lambda s: s.kda_ratio if s.games_total else None,
+    "gpm": lambda s: s.avg_gpm_window,
+}
+
+
+def build_chat_comparison(summaries: list[PlayerSummary]) -> dict:
+    """Ранги игроков внутри чата по метрикам + композитная «сила в чате».
+
+    Для каждой метрики ранжируем (1 = лучший). power = среднее нормированной позиции
+    (1=лучший…0=худший) по метрикам, где значение есть. power_rank — итоговое место.
+    """
+    players: dict = {s.display_name: {"ranks": {}, "leads": [], "_pos": []} for s in summaries}
+    averages: dict = {}
+
+    for key, getter in _COMPARE_METRICS.items():
+        valued = [(s.display_name, getter(s)) for s in summaries if getter(s) is not None]
+        present = [value for _, value in valued]
+        averages[key] = sum(present) / len(present) if present else None
+        ordered = sorted(valued, key=lambda kv: kv[1], reverse=True)
+        n = len(ordered)
+        for rank, (name, _value) in enumerate(ordered, start=1):
+            players[name]["ranks"][key] = rank
+            if rank == 1 and n > 1:
+                players[name]["leads"].append(key)
+            players[name]["_pos"].append((n - rank) / (n - 1) if n > 1 else 1.0)
+
+    ranking = []
+    for name, data in players.items():
+        positions = data.pop("_pos")
+        data["power"] = sum(positions) / len(positions) if positions else None
+        ranking.append((name, data["power"]))
+    ranking.sort(key=lambda kv: (kv[1] is not None, kv[1] or 0), reverse=True)
+    for rank, (name, _power) in enumerate(ranking, start=1):
+        players[name]["power_rank"] = rank
+
+    return {"size": len(summaries), "players": players, "averages": averages}
+
+
 def build_together(storage: Storage, chat_id: int) -> dict:
     """Статистика совместной игры пати (пакет B)."""
     players = storage.list_players(chat_id)

@@ -11,14 +11,16 @@ from typing import Optional
 
 from mmrbot.formatting import (
     render_awards,
+    render_compare_table,
     render_heroes,
     render_leaderboard,
     render_player_card,
     render_together,
+    standing_line,
 )
 from mmrbot.opendota import OpenDota
 from mmrbot.storage import Storage
-from mmrbot.tracker import build_leaderboard, build_together
+from mmrbot.tracker import build_chat_comparison, build_leaderboard, build_together
 
 TELEGRAM_LIMIT = 4096
 
@@ -58,11 +60,21 @@ async def render_together_board(storage: Storage, od: OpenDota, chat_id: int) ->
 
 async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name: str) -> Optional[str]:
     summaries = await gather_summaries(storage, od, chat_id, refresh=True)
+    comparison = build_chat_comparison(summaries)
     name_lower = name.strip().lower()
     for summary in summaries:
         if summary.display_name.lower() == name_lower or str(summary.account_id) == name.strip():
-            return render_player_card(summary)
+            standing = standing_line(comparison, summary.display_name)
+            return render_player_card(summary, standing=standing)
     return None
+
+
+async def render_compare_board(storage: Storage, od: OpenDota, chat_id: int) -> str:
+    summaries = await gather_summaries(storage, od, chat_id, refresh=True)
+    if not summaries:
+        return "В этом чате пока нет игроков. Добавь: /add «ссылка или ID» Имя [MMR]"
+    comparison = build_chat_comparison(summaries)
+    return render_compare_table(comparison, summaries)
 
 
 def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:

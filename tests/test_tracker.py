@@ -2,6 +2,7 @@ import pytest
 
 from mmrbot.storage import Storage
 from mmrbot.tracker import (
+    build_chat_comparison,
     build_leaderboard,
     build_player_summary,
     build_together,
@@ -164,6 +165,37 @@ def test_refresh_enriches_matches_and_perf(store):
     assert s.avg_perf == pytest.approx((0.6 + 0.8) / 2)
     assert s.enriched_games == 2
     assert s.avg_gpm_window == pytest.approx(500)
+
+
+def test_build_chat_comparison_ranks_and_power(store):
+    from dataclasses import replace
+    now = 100_000
+    p = store.add_player(100, 1, "Base", 5000, 1000, 1000)
+    store.add_matches(p.id, [_m(10 + i, 2000 + i, radiant_win=(i % 2 == 0)) for i in range(4)])
+    base = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)[0]
+    # A лучше по всем метрикам, B хуже
+    a = replace(base, display_name="A", avg_perf=0.8, winrate=0.6, kda_ratio=4.0, avg_gpm_window=500.0, games_total=5)
+    b = replace(base, display_name="B", avg_perf=0.4, winrate=0.4, kda_ratio=2.0, avg_gpm_window=400.0, games_total=5)
+    comp = build_chat_comparison([a, b])
+    assert comp["size"] == 2
+    assert comp["players"]["A"]["ranks"]["perf"] == 1
+    assert comp["players"]["B"]["ranks"]["perf"] == 2
+    assert comp["players"]["A"]["power_rank"] == 1
+    assert comp["players"]["B"]["power_rank"] == 2
+    assert "perf" in comp["players"]["A"]["leads"]
+
+
+def test_build_chat_comparison_handles_missing_metrics(store):
+    from dataclasses import replace
+    now = 100_000
+    p = store.add_player(100, 1, "Base", 5000, 1000, 1000)
+    store.add_matches(p.id, [_m(10, 2000)])
+    base = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)[0]
+    a = replace(base, display_name="A", avg_perf=0.7, games_total=5)
+    b = replace(base, display_name="B", avg_perf=None, games_total=5)  # без перфа
+    comp = build_chat_comparison([a, b])
+    assert comp["players"]["A"]["ranks"]["perf"] == 1
+    assert "perf" not in comp["players"]["B"]["ranks"]  # нет метрики — нет ранга
 
 
 def test_compute_awards_includes_perf_mvp(store):

@@ -212,7 +212,51 @@ def _wr_ratio(pair: tuple) -> Optional[float]:
     return wins / games if games else None
 
 
-def render_player_card(s: PlayerSummary) -> str:
+LEAD_NAMES = {"perf": "перф", "winrate": "винрейт", "kda": "KDA", "gpm": "GPM"}
+
+
+def standing_line(comparison: dict, name: str) -> Optional[str]:
+    """Строка «место в чате» для игрока (None, если сравнивать не с кем)."""
+    if comparison["size"] < 2:
+        return None
+    player = comparison["players"].get(name)
+    if not player:
+        return None
+    ranks = player["ranks"]
+    parts = [_b(f"сила #{player['power_rank']}")]
+    for key, label in (("perf", "перф"), ("winrate", "WR"), ("kda", "KDA")):
+        if key in ranks:
+            parts.append(f"{label} #{ranks[key]}")
+    line = f"📊 В чате (из {comparison['size']}): " + " · ".join(parts)
+    if player["leads"]:
+        line += "\n🏅 лидируешь: " + ", ".join(LEAD_NAMES[m] for m in player["leads"])
+    return line
+
+
+def render_compare_table(comparison: dict, summaries: list[PlayerSummary]) -> str:
+    """Сравнительная таблица: игроки по «силе в чате» + ранги по метрикам."""
+    order = sorted(summaries, key=lambda s: comparison["players"][s.display_name]["power_rank"])
+    lines = [f"⚡ <b>Сила в чате</b> <i>(из {comparison['size']})</i>", ""]
+    for s in order:
+        player = comparison["players"][s.display_name]
+        ranks = player["ranks"]
+        power = player["power"]
+        power_str = f"{power * 100:.0f}" if power is not None else "—"
+        lines.append(f"{_pos(player['power_rank'])} {_b(s.display_name)} — сила {_b(power_str)}")
+        parts = []
+        if s.avg_perf is not None:
+            parts.append(f"🎯 {s.avg_perf * 100:.0f} (#{ranks['perf']})")
+        if s.games_total:
+            parts.append(f"🏆 {s.winrate * 100:.0f}% (#{ranks['winrate']})")
+            parts.append(f"⚔️ {s.kda_ratio:.1f} (#{ranks['kda']})")
+        if s.avg_gpm_window is not None:
+            parts.append(f"💰 {s.avg_gpm_window:.0f}gpm (#{ranks['gpm']})")
+        if parts:
+            lines.append("    " + " · ".join(parts))
+    return "\n".join(lines)
+
+
+def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
     """Карточка игрока — ТОЛЬКО окно отслеживания (последние игры), без карьерных срезов."""
     header = f"🎮 {_b(s.display_name)} · {_rank_with_emoji(s)}{_streak_str(s)}"
     if s.games_total == 0:
@@ -260,6 +304,10 @@ def render_player_card(s: PlayerSummary) -> str:
     if s.longest_win_streak >= 2:
         lines.append(f"🔥 макс серия побед: {s.longest_win_streak}")
     lines.append(f"🦸 {_heroes_line(s.top_heroes)}")
+
+    if standing:
+        lines.append("")
+        lines.append(standing)
 
     lines.append("")
     lines.append("<i>перф = перцентиль vs тот же герой (честно к роли)</i>")

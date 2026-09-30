@@ -2,12 +2,14 @@ from mmrbot.formatting import (
     format_delta,
     plural_games,
     render_awards,
+    render_compare_table,
     render_heroes,
     render_leaderboard,
     render_player_card,
     render_together,
+    standing_line,
 )
-from mmrbot.tracker import PlayerSummary
+from mmrbot.tracker import PlayerSummary, build_chat_comparison
 
 
 def summary(**kw):
@@ -221,3 +223,39 @@ def test_render_player_card_shows_perf_score():
     text = render_player_card(s)
     assert "72/100" in text
     assert "перф" in text.lower()
+
+
+def test_render_player_card_with_standing_block():
+    s = summary()
+    text = render_player_card(s, standing="📊 В чате (из 3): сила #1 · перф #1")
+    assert "В чате" in text
+    assert "сила #1" in text
+
+
+# --- сравнение в чате ---------------------------------------------------
+
+def _two_player_comparison():
+    a = summary(display_name="A", avg_perf=0.8, winrate=0.6, kda_ratio=4.0, avg_gpm_window=500.0)
+    b = summary(display_name="B", avg_perf=0.4, winrate=0.4, kda_ratio=2.0, avg_gpm_window=400.0)
+    return build_chat_comparison([a, b]), [a, b]
+
+
+def test_render_compare_table_orders_by_power():
+    comp, summaries = _two_player_comparison()
+    text = render_compare_table(comp, summaries)
+    assert "Сила в чате" in text
+    assert text.index("A") < text.index("B")   # A первым (сильнее)
+    assert "🥇" in text and "🥈" in text
+
+
+def test_standing_line_shows_ranks():
+    comp, _ = _two_player_comparison()
+    line = standing_line(comp, "A")
+    assert "сила #1" in line
+    assert "перф #1" in line
+
+
+def test_standing_line_none_when_alone():
+    a = summary(display_name="Solo", avg_perf=0.5)
+    comp = build_chat_comparison([a])
+    assert standing_line(comp, "Solo") is None  # сравнивать не с кем

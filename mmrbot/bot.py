@@ -15,6 +15,7 @@ from mmrbot.ids import parse_account_id
 from mmrbot.opendota import OpenDota
 from mmrbot.service import (
     render_board,
+    render_compare_board,
     render_heroes_board,
     render_player_board,
     render_together_board,
@@ -28,6 +29,7 @@ router = Router()
 # Меню команд (всплывает по «/», особенно полезно в группах).
 BOT_COMMANDS = [
     BotCommand(command="stats", description="🏆 Лидерборд пати + награды"),
+    BotCommand(command="compare", description="⚡ Кто сильнее в чате (сравнение)"),
     BotCommand(command="today", description="📅 Активность за сутки"),
     BotCommand(command="together", description="🤝 Совместные игры пати"),
     BotCommand(command="heroes", description="🦸 Топ героев участников"),
@@ -61,6 +63,7 @@ HELP_TEXT = (
     "/setstep <шаг> — шаг оценки MMR за игру (по умолчанию 25)\n"
     "/settime <час> — время ежедневного дайджеста (МСК)\n"
     "/stats — полный лидерборд (+ награды пати)\n"
+    "/compare — кто сильнее в чате (сравнение по метрикам)\n"
     "/today — активность за сутки\n"
     "/together — совместные игры пати\n"
     "/heroes — топ героев участников\n"
@@ -206,6 +209,16 @@ async def cmd_together(message: Message, storage: Storage, od: OpenDota) -> None
         return
     await message.answer("⏳ Считаю совместные игры…")
     await _reply_board(message, render_together_board(storage, od, message.chat.id))
+
+
+@router.message(Command("compare"))
+@router.message(Command("table"))
+async def cmd_compare(message: Message, storage: Storage, od: OpenDota) -> None:
+    if not storage.list_players(message.chat.id):
+        await message.answer("В этом чате пока нет игроков. Добавь: /add <ссылка или ID> Имя [MMR]")
+        return
+    await message.answer("⏳ Сравниваю игроков…")
+    await _reply_board(message, render_compare_board(storage, od, message.chat.id))
 
 
 @router.message(Command("heroes"))
