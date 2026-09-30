@@ -80,6 +80,10 @@ class PlayerSummary:
     avg_gpm_window: Optional[float] = None
     avg_hero_damage_window: Optional[float] = None
     avg_net_worth_window: Optional[float] = None
+    avg_last_hits_window: Optional[float] = None
+    avg_hero_healing_window: Optional[float] = None
+    skill: dict = field(default_factory=dict)
+    role_style: str = ""
 
 
 def _normalize(raw: dict) -> dict:
@@ -185,6 +189,19 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         values = [m[field] for m in all_matches if m.get(field) is not None]
         return sum(values) / len(values) if values else None
 
+    bench_list = []
+    for match in all_matches:
+        raw = match.get("bench_json")
+        if raw:
+            try:
+                bench_list.append(json.loads(raw))
+            except (ValueError, TypeError):
+                pass
+    skill = stats.aggregate_skill(bench_list)
+    avg_last_hits_window = _mean_field("last_hits")
+    avg_hero_healing_window = _mean_field("hero_healing")
+    role_style = stats.infer_role_style(avg_last_hits_window, avg_hero_healing_window)
+
     return PlayerSummary(
         display_name=player.display_name,
         account_id=player.account_id,
@@ -231,6 +248,10 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         avg_gpm_window=_mean_field("gpm"),
         avg_hero_damage_window=_mean_field("hero_damage"),
         avg_net_worth_window=_mean_field("net_worth"),
+        avg_last_hits_window=avg_last_hits_window,
+        avg_hero_healing_window=avg_hero_healing_window,
+        skill=skill,
+        role_style=role_style,
     )
 
 

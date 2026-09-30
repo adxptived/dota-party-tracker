@@ -187,6 +187,15 @@ def test_update_match_details_and_read(store):
     assert row["enriched"] == 1
 
 
+def test_update_match_details_stores_benchmarks_json(store):
+    import json
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [match(1, 1100)])
+    store.update_match_details(p.id, 1, {"gpm": 500, "benchmarks": {"gold_per_min": 0.6}}, perf_score=0.6)
+    row = store.get_matches(p.id)[0]
+    assert json.loads(row["bench_json"]) == {"gold_per_min": 0.6}
+
+
 def test_get_unenriched_match_ids(store):
     p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
     store.add_matches(p.id, [match(1, 1000), match(2, 2000), match(3, 3000)])

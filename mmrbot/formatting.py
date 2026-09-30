@@ -196,6 +196,33 @@ def render_heroes(summaries: list[PlayerSummary]) -> str:
 
 # --- карточка игрока ----------------------------------------------------
 
+SKILL_GROUPS = [
+    ("🌾 Фарм", ["gold_per_min", "last_hits_per_min", "xp_per_min"]),
+    ("⚔️ Урон", ["hero_damage_per_min", "tower_damage_per_min"]),
+    ("🎯 Файты", ["kills_per_min", "assists_per_min"]),
+    ("✨ Помощь", ["hero_healing_per_min"]),
+]
+
+
+def _bar(pct: float, width: int = 10) -> str:
+    filled = max(0, min(width, round(pct * width)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def _skill_block(skill: dict) -> Optional[str]:
+    """Объективный профиль скилла: перцентиль по категориям (50% = средний игрок)."""
+    if not skill:
+        return None
+    lines = ["🧠 <b>Скилл</b> <i>(перцентиль в мире, 50% = средний)</i>"]
+    for label, metrics in SKILL_GROUPS:
+        pcts = [skill[m] for m in metrics if m in skill]
+        if not pcts:
+            continue
+        avg = sum(pcts) / len(pcts)
+        lines.append(f"   {label}  {_bar(avg)} {avg * 100:.0f}%")
+    return "\n".join(lines) if len(lines) > 1 else None
+
+
 def _k(value) -> str:
     """Компактно: 13656 → 13.7k, 428 → 428."""
     if value is None:
@@ -280,6 +307,14 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
         econ.append(f"{_k(s.avg_hero_damage_window)} урон")
     if econ:
         lines.append("💰 " + " · ".join(econ))
+
+    # Объективный скилл (перцентиль в мире) + стиль/роль.
+    if s.role_style:
+        lines.append(f"🎭 стиль: {s.role_style}")
+    skill_block = _skill_block(s.skill)
+    if skill_block:
+        lines.append("")
+        lines.append(skill_block)
 
     lines.append("")
 

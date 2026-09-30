@@ -225,6 +225,19 @@ def test_render_player_card_shows_perf_score():
     assert "перф" in text.lower()
 
 
+def test_render_player_card_shows_skill_breakdown_and_role():
+    s = summary(
+        role_style="кор (фарм)",
+        skill={"gold_per_min": 0.45, "hero_damage_per_min": 0.78, "kills_per_min": 0.66, "hero_healing_per_min": 0.9},
+    )
+    text = render_player_card(s)
+    assert "Скилл" in text
+    assert "Фарм" in text            # категория
+    assert "78%" in text             # урон-перцентиль
+    assert ("▰" in text) or ("▱" in text)  # бар
+    assert "стиль" in text.lower() and "кор" in text.lower()
+
+
 def test_render_player_card_with_standing_block():
     s = summary()
     text = render_player_card(s, standing="📊 В чате (из 3): сила #1 · перф #1")

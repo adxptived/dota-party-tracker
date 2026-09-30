@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from typing import Optional
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS matches (
     net_worth    INTEGER,
     level        INTEGER,
     perf_score   REAL,
+    bench_json   TEXT,
     enriched     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_id, match_id)
 );
@@ -127,7 +129,7 @@ class Storage:
             "gpm": "REAL", "xpm": "REAL", "last_hits": "INTEGER", "denies": "INTEGER",
             "hero_damage": "INTEGER", "tower_damage": "INTEGER", "hero_healing": "INTEGER",
             "net_worth": "INTEGER", "level": "INTEGER", "perf_score": "REAL",
-            "enriched": "INTEGER NOT NULL DEFAULT 0",
+            "bench_json": "TEXT", "enriched": "INTEGER NOT NULL DEFAULT 0",
         })
 
     def _conn(self) -> sqlite3.Connection:
@@ -333,13 +335,14 @@ class Storage:
     )
 
     def update_match_details(self, player_id: int, match_id: int, details: dict, perf_score) -> None:
-        """Записать обогащённые пер-матч поля + perf_score и пометить enriched=1."""
+        """Записать обогащённые пер-матч поля + perf_score + benchmarks(JSON), пометить enriched=1."""
         assignments = ", ".join(f"{field} = ?" for field in self._DETAIL_FIELDS)
+        bench_json = json.dumps(details.get("benchmarks") or {})
         params = [details.get(field) for field in self._DETAIL_FIELDS]
-        params += [perf_score, player_id, match_id]
+        params += [perf_score, bench_json, player_id, match_id]
         with self._conn() as conn:
             conn.execute(
-                f"UPDATE matches SET {assignments}, perf_score = ?, enriched = 1 "
+                f"UPDATE matches SET {assignments}, perf_score = ?, bench_json = ?, enriched = 1 "
                 "WHERE player_id = ? AND match_id = ?",
                 params,
             )

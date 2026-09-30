@@ -165,6 +165,10 @@ def test_refresh_enriches_matches_and_perf(store):
     assert s.avg_perf == pytest.approx((0.6 + 0.8) / 2)
     assert s.enriched_games == 2
     assert s.avg_gpm_window == pytest.approx(500)
+    # профиль скилла (перцентили) и роль
+    assert s.skill["gold_per_min"] == pytest.approx(0.6)
+    assert s.skill["hero_damage_per_min"] == pytest.approx(0.8)
+    assert s.role_style == "кор (фарм)"  # last_hits 180 → кор
 
 
 def test_build_chat_comparison_ranks_and_power(store):

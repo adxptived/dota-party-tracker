@@ -180,6 +180,36 @@ def perf_score(benchmarks: dict) -> Optional[float]:
     return sum(pcts) / len(pcts)
 
 
+def aggregate_skill(benchmarks_list: list[dict]) -> dict:
+    """Средний перцентиль по каждой benchmark-метрике за набор матчей.
+
+    Даёт объективный профиль скилла: где стоишь относительно других на тех же героях
+    (50% = средний игрок мира).
+    """
+    sums: dict = {}
+    counts: dict = {}
+    for benchmarks in benchmarks_list:
+        for metric, pct in (benchmarks or {}).items():
+            if pct is None:
+                continue
+            sums[metric] = sums.get(metric, 0.0) + pct
+            counts[metric] = counts.get(metric, 0) + 1
+    return {metric: sums[metric] / counts[metric] for metric in sums}
+
+
+def infer_role_style(avg_last_hits: Optional[float], avg_hero_healing: Optional[float]) -> str:
+    """Грубая эвристика стиля/роли по сырым средним (не перцентилям)."""
+    if avg_last_hits is None:
+        return ""
+    if (avg_hero_healing or 0) > 4000:
+        return "саппорт (хилер)"
+    if avg_last_hits >= 180:
+        return "кор (фарм)"
+    if avg_last_hits < 90:
+        return "саппорт / роумер"
+    return "универсал"
+
+
 def recent_form(matches: list[dict], n: int = 5) -> list[bool]:
     """Последние n матчей как список исходов (True=победа), в хронологическом порядке."""
     tail = matches[-n:]

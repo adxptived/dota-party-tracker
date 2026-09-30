@@ -2,10 +2,12 @@ import pytest
 
 from mmrbot.stats import (
     aggregate,
+    aggregate_skill,
     best_game,
     current_streak,
     duration_stats,
     estimate_mmr_delta,
+    infer_role_style,
     is_ranked_lobby,
     is_win,
     longest_win_streak,
@@ -265,3 +267,36 @@ def test_perf_score_support_beats_core_when_role_appropriate():
 def test_perf_score_empty_is_none():
     assert perf_score({}) is None
     assert perf_score({"deaths_per_min": 0.9}) is None  # только негативная метрика
+
+
+# --- aggregate_skill / infer_role_style ---------------------------------
+
+def test_aggregate_skill_averages_per_metric():
+    benches = [
+        {"gold_per_min": 0.4, "hero_damage_per_min": 0.8},
+        {"gold_per_min": 0.6, "kills_per_min": 0.5},
+    ]
+    skill = aggregate_skill(benches)
+    assert skill["gold_per_min"] == pytest.approx(0.5)
+    assert skill["hero_damage_per_min"] == pytest.approx(0.8)
+    assert skill["kills_per_min"] == pytest.approx(0.5)
+
+
+def test_aggregate_skill_empty():
+    assert aggregate_skill([]) == {}
+
+
+def test_infer_role_core_by_farm():
+    assert infer_role_style(avg_last_hits=220, avg_hero_healing=200) == "кор (фарм)"
+
+
+def test_infer_role_support_by_healing():
+    assert "саппорт" in infer_role_style(avg_last_hits=120, avg_hero_healing=6000)
+
+
+def test_infer_role_support_by_low_farm():
+    assert "саппорт" in infer_role_style(avg_last_hits=50, avg_hero_healing=500)
+
+
+def test_infer_role_unknown_without_data():
+    assert infer_role_style(avg_last_hits=None, avg_hero_healing=None) == ""
