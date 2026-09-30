@@ -266,6 +266,22 @@ def test_compute_awards_tell_party_story(store):
     assert titles[next(t for t in titles if "тилт" in t.lower())] == "Bad"
 
 
+def test_compute_awards_has_many_style_categories(store):
+    from dataclasses import replace
+    now = 100_000
+    p = store.add_player(100, 1, "Base", 5000, 1000, 1000)
+    store.add_matches(p.id, [_m(10 + i, 2000 + i, radiant_win=(i % 2 == 0)) for i in range(4)])
+    base = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)[0]
+    farmer = replace(base, display_name="Farmer", avg_gpm_window=700.0, avg_hero_damage_window=30000.0, avg_assists=8.0)
+    support = replace(base, display_name="Support", avg_gpm_window=300.0, avg_hero_damage_window=8000.0, avg_assists=25.0)
+    awards = compute_awards([farmer, support])
+    titles = {a["title"]: a["player"] for a in awards}
+    # больше категорий, и стили разводятся
+    assert titles[next(t for t in titles if "армил" in t.lower())] == "Farmer"   # 🌾 Фармила
+    assert titles[next(t for t in titles if "пора" in t.lower())] == "Support"   # ✨ Опора (ассисты)
+    assert len(awards) >= 5
+
+
 def test_build_together_counts_shared(store):
     now = 100_000
     a = store.add_player(100, 1, "Alice", 5000, 1000, 1000)

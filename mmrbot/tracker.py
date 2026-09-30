@@ -344,6 +344,21 @@ def compute_awards(summaries: list[PlayerSummary], min_games: int = 3) -> list[d
     awards.append({"title": "👑 Король винрейта", "player": king.display_name,
                    "detail": f"{king.winrate * 100:.0f}% ({king.wins_total}–{king.losses_total})"})
 
+    # Стилевые награды (по ставкам/за игру) — разводят кор/саппорт/дамагера.
+    def _best(getter, title, detail):
+        pool = [s for s in eligible if getter(s) is not None]
+        if pool:
+            top = max(pool, key=getter)
+            awards.append({"title": title, "player": top.display_name, "detail": detail(top)})
+
+    _best(lambda s: s.avg_gpm_window, "🌾 Фармила", lambda s: f"{s.avg_gpm_window:.0f} GPM")
+    _best(lambda s: s.avg_hero_damage_window, "🗡 Мясник",
+          lambda s: f"{s.avg_hero_damage_window / 1000:.1f}k урона/игра")
+    _best(lambda s: s.avg_assists or None, "✨ Опора", lambda s: f"{s.avg_assists:.0f} ассистов/игра")
+    _best(lambda s: s.best_game["kda"] if s.best_game else None, "🌟 Имба игры",
+          lambda s: f"{s.best_game['kills']}/{s.best_game['deaths']}/{s.best_game['assists']}")
+    _best(lambda s: s.hero_pool or None, "🦸 Мастер на все руки", lambda s: f"{s.hero_pool} героев")
+
     # На кураже — самая длинная текущая серия ПОБЕД.
     hot = [s for s in eligible if s.streak_type == "W" and s.streak_len >= 2]
     if hot:
@@ -351,7 +366,10 @@ def compute_awards(summaries: list[PlayerSummary], min_games: int = 3) -> list[d
         awards.append({"title": "🔥 На кураже", "player": top.display_name,
                        "detail": f"{top.streak_len} побед подряд"})
 
-    # Главный тилт — самая длинная серия ПОРАЖЕНИЙ (реальная просадка, а не число смертей).
+    # Камикадзе — больше всего смертей ЗА ИГРУ (не сумма! честно к активности).
+    _best(lambda s: s.avg_deaths or None, "💀 Камикадзе", lambda s: f"{s.avg_deaths:.0f} смертей/игра")
+
+    # Главный тилт — самая длинная серия ПОРАЖЕНИЙ (реальная просадка).
     cold = [s for s in eligible if s.streak_type == "L" and s.streak_len >= 2]
     if cold:
         bottom = max(cold, key=lambda s: (s.streak_len, -s.winrate))
