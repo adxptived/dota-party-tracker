@@ -249,6 +249,28 @@ def longest_win_streak(matches: list[dict]) -> int:
     return longest
 
 
+def wins_losses_split(matches: list[dict]) -> dict:
+    """Средние KDA/смерти отдельно в победах и поражениях (тащишь или разваливаешься)."""
+    def _agg(subset: list[dict]) -> Optional[dict]:
+        if not subset:
+            return None
+        deaths = sum((m.get("deaths", 0) or 0) for m in subset) / len(subset)
+        kda = sum(
+            ((m.get("kills", 0) or 0) + (m.get("assists", 0) or 0)) / max(m.get("deaths", 0) or 0, 1)
+            for m in subset
+        ) / len(subset)
+        return {"games": len(subset), "avg_deaths": deaths, "avg_kda": kda}
+
+    wins = [m for m in matches if is_win(m["player_slot"], m["radiant_win"])]
+    losses = [m for m in matches if not is_win(m["player_slot"], m["radiant_win"])]
+    return {"win": _agg(wins), "loss": _agg(losses)}
+
+
+def hero_pool(matches: list[dict]) -> int:
+    """Число разных героев (широта пула)."""
+    return len({m["hero_id"] for m in matches if m.get("hero_id")})
+
+
 def duration_stats(matches: list[dict]) -> dict[str, float]:
     """Средняя и максимальная длительность (в минутах) по полю duration (секунды)."""
     durations = [m["duration"] for m in matches if m.get("duration")]

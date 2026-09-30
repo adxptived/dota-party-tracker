@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS matches (
     hero_id      INTEGER,
     duration     INTEGER,
     party_size   INTEGER,
+    average_rank INTEGER,
     gpm          REAL,
     xpm          REAL,
     last_hits    INTEGER,
@@ -125,7 +126,7 @@ class Storage:
             "last_lanes": "TEXT", "last_gpm_median": "REAL", "last_gpm_best": "REAL",
         })
         add_missing("matches", {
-            "duration": "INTEGER", "party_size": "INTEGER",
+            "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
             "gpm": "REAL", "xpm": "REAL", "last_hits": "INTEGER", "denies": "INTEGER",
             "hero_damage": "INTEGER", "tower_damage": "INTEGER", "hero_healing": "INTEGER",
             "net_worth": "INTEGER", "level": "INTEGER", "perf_score": "REAL",
@@ -309,8 +310,8 @@ class Storage:
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO matches "
                     "(player_id, match_id, start_time, player_slot, radiant_win, lobby_type, "
-                    " kills, deaths, assists, hero_id, duration, party_size) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " kills, deaths, assists, hero_id, duration, party_size, average_rank) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         player_id,
                         m["match_id"],
@@ -324,6 +325,7 @@ class Storage:
                         m.get("hero_id"),
                         m.get("duration"),
                         m.get("party_size"),
+                        m.get("average_rank"),
                     ),
                 )
                 inserted += cur.rowcount

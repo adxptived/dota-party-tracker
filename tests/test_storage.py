@@ -217,10 +217,12 @@ def test_add_matches_stores_duration_and_party_size(store):
     m = match(1, 1100)
     m["duration"] = 2400
     m["party_size"] = 3
+    m["average_rank"] = 74
     store.add_matches(p.id, [m])
     row = store.get_matches(p.id)[0]
     assert row["duration"] == 2400
     assert row["party_size"] == 3
+    assert row["average_rank"] == 74
 
 
 def test_update_player_totals(store):

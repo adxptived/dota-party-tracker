@@ -7,6 +7,7 @@ from mmrbot.stats import (
     current_streak,
     duration_stats,
     estimate_mmr_delta,
+    hero_pool,
     infer_role_style,
     is_ranked_lobby,
     is_win,
@@ -16,6 +17,7 @@ from mmrbot.stats import (
     solo_party_split,
     top_heroes,
     winrate_by_hour,
+    wins_losses_split,
 )
 
 
@@ -300,3 +302,35 @@ def test_infer_role_support_by_low_farm():
 
 def test_infer_role_unknown_without_data():
     assert infer_role_style(avg_last_hits=None, avg_hero_healing=None) == ""
+
+
+# --- wins_losses_split / hero_pool --------------------------------------
+
+def test_wins_losses_split():
+    matches = [
+        make(0, True, k=8, d=2, a=6),    # win, мало смертей
+        make(0, True, k=6, d=3, a=8),    # win
+        make(0, False, k=1, d=10, a=2),  # loss, много смертей
+    ]
+    split = wins_losses_split(matches)
+    assert split["win"]["games"] == 2
+    assert split["loss"]["games"] == 1
+    assert split["win"]["avg_deaths"] == pytest.approx(2.5)
+    assert split["loss"]["avg_deaths"] == pytest.approx(10.0)
+
+
+def test_wins_losses_split_no_losses():
+    split = wins_losses_split([make(0, True, k=1, d=1, a=1)])
+    assert split["win"]["games"] == 1
+    assert split["loss"] is None
+
+
+def test_hero_pool_counts_distinct():
+    matches = [
+        {"hero_id": 1}, {"hero_id": 1}, {"hero_id": 2}, {"hero_id": 3}, {"hero_id": None},
+    ]
+    assert hero_pool(matches) == 3
+
+
+def test_hero_pool_empty():
+    assert hero_pool([]) == 0

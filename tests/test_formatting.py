@@ -230,6 +230,20 @@ def test_render_player_card_shows_perf_score():
     assert "перф" in text.lower()
 
 
+def test_render_player_card_shows_new_metrics():
+    s = summary(
+        lobby_rank=74,  # Divine 4
+        hero_pool=8,
+        wins_losses={"win": {"games": 6, "avg_deaths": 5.0, "avg_kda": 4.2},
+                     "loss": {"games": 4, "avg_deaths": 11.0, "avg_kda": 1.3}},
+    )
+    text = render_player_card(s)
+    assert "лобби" in text.lower()
+    assert "Divine" in text            # сложность лобби 74 → Divine 4
+    assert "победах" in text and "поражениях" in text
+    assert "8" in text                 # пул героев
+
+
 def test_render_player_card_shows_skill_breakdown_and_role():
     s = summary(
         role_style="кор (фарм)",

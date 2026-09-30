@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import statistics
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
@@ -84,6 +85,9 @@ class PlayerSummary:
     avg_hero_healing_window: Optional[float] = None
     skill: dict = field(default_factory=dict)
     role_style: str = ""
+    lobby_rank: Optional[int] = None
+    hero_pool: int = 0
+    wins_losses: dict = field(default_factory=dict)
 
 
 def _normalize(raw: dict) -> dict:
@@ -99,6 +103,7 @@ def _normalize(raw: dict) -> dict:
         "hero_id": raw.get("hero_id"),
         "duration": raw.get("duration"),
         "party_size": raw.get("party_size"),
+        "average_rank": raw.get("average_rank"),
     }
 
 
@@ -202,6 +207,11 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
     avg_hero_healing_window = _mean_field("hero_healing")
     role_style = stats.infer_role_style(avg_last_hits_window, avg_hero_healing_window)
 
+    lobby_ranks = [m["average_rank"] for m in all_matches if m.get("average_rank")]
+    lobby_rank = round(statistics.median(lobby_ranks)) if lobby_ranks else None
+    wins_losses = stats.wins_losses_split(all_matches)
+    pool = stats.hero_pool(all_matches)
+
     return PlayerSummary(
         display_name=player.display_name,
         account_id=player.account_id,
@@ -252,6 +262,9 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         avg_hero_healing_window=avg_hero_healing_window,
         skill=skill,
         role_style=role_style,
+        lobby_rank=lobby_rank,
+        hero_pool=pool,
+        wins_losses=wins_losses,
     )
 
 

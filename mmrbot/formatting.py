@@ -10,6 +10,7 @@ import html
 from typing import Optional
 
 from mmrbot.heroes import hero_name
+from mmrbot.ranks import rank_label
 from mmrbot.storage import Player
 from mmrbot.tracker import PlayerSummary, compute_awards
 
@@ -332,6 +333,14 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
         lines.append(f"🌙 лучший час {bh:02d}:00 ({bwr * 100:.0f}%) · худший {wh:02d}:00 ({wwr * 100:.0f}%)")
     if s.avg_duration_min:
         lines.append(f"⏱️ средняя игра {s.avg_duration_min:.0f} мин (макс {s.max_duration_min:.0f})")
+    if s.lobby_rank:
+        lines.append(f"🎖 сложность лобби: {rank_label(s.lobby_rank)}")
+    win, loss = s.wins_losses.get("win"), s.wins_losses.get("loss")
+    if win and loss:
+        lines.append(
+            f"📊 в победах KDA {win['avg_kda']:.1f} ({win['avg_deaths']:.0f} см) · "
+            f"в поражениях KDA {loss['avg_kda']:.1f} ({loss['avg_deaths']:.0f} см)"
+        )
     if s.best_game:
         bg = s.best_game
         lines.append(
@@ -339,7 +348,8 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
         )
     if s.longest_win_streak >= 2:
         lines.append(f"🔥 макс серия побед: {s.longest_win_streak}")
-    lines.append(f"🦸 {_heroes_line(s.top_heroes)}")
+    pool = f"пул {s.hero_pool} · " if s.hero_pool else ""
+    lines.append(f"🦸 {pool}{_heroes_line(s.top_heroes)}")
 
     if standing:
         lines.append("")
