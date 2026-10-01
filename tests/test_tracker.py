@@ -346,6 +346,24 @@ def test_summary_without_anchor_mmr_has_none_current(store):
 
 # --- build_leaderboard --------------------------------------------------
 
+def test_leaderboard_skips_refresh_when_recent(store):
+    now = 100_000
+    p = store.add_player(100, 1, "A", 5000, 1000, 1000)
+    store.update_player_rank(p.id, 80, None, updated_ts=now - 10)  # обновлён 10с назад
+    client = FakeOpenDota()
+    build_leaderboard(store, client, 100, now=now, refresh=True)
+    assert client.refresh_calls == 0  # кулдаун → в OpenDota не ходили
+
+
+def test_leaderboard_refreshes_when_stale(store):
+    now = 100_000
+    p = store.add_player(100, 1, "A", 5000, 1000, 1000)
+    store.update_player_rank(p.id, 80, None, updated_ts=now - 100_000)  # давно
+    client = FakeOpenDota()
+    build_leaderboard(store, client, 100, now=now, refresh=True)
+    assert client.refresh_calls >= 1  # устарело → обновили
+
+
 def test_leaderboard_sorted_by_current_mmr_desc(store):
     now = 100_000
     high = store.add_player(100, 1, "High", anchor_mmr=5000, anchor_ts=1000, created_ts=1000)

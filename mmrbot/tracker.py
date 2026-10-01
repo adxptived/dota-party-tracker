@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 
 ENRICH_CAP = 12  # сколько матчей обогащать деталями за один refresh (лимит запросов)
+REFRESH_COOLDOWN = 180  # сек: не ходить в OpenDota, если игрок обновлён недавно (скорость /stats)
 
 
 class OpenDotaClient(Protocol):
@@ -280,7 +281,9 @@ def build_leaderboard(
 
     summaries: list[PlayerSummary] = []
     for player in players:
-        if refresh:
+        # Кулдаун: если обновляли недавно — берём кэш из БД, не дёргаем OpenDota (скорость).
+        stale = player.updated_ts is None or (now - player.updated_ts) >= REFRESH_COOLDOWN
+        if refresh and stale:
             try:
                 refresh_player(storage, client, player, now)
             except Exception:  # ошибка по одному игроку не должна рушить весь лидерборд
