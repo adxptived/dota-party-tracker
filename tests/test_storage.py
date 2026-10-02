@@ -323,3 +323,17 @@ def test_connection_uses_wal_and_busy_timeout(tmp_path):
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 10_000
     finally:
         conn.close()
+
+
+def test_conn_context_closes_connection(tmp_path):
+    import sqlite3
+
+    storage = Storage(str(tmp_path / "t.db"))
+    with storage._conn() as conn:
+        conn.execute("SELECT 1")
+    try:
+        conn.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        pass
+    else:
+        raise AssertionError("соединение должно быть закрыто после with")
