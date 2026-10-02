@@ -29,7 +29,7 @@ from mmrbot.formatting import (
     render_together,
     standing_line,
 )
-from mmrbot.charts import render_mmr_chart
+from mmrbot.charts import _games_word as games_word, render_mmr_chart, series_stats
 from mmrbot.heroes import find_hero
 from mmrbot.opendota import OpenDota
 from mmrbot.stats import period_since
@@ -105,7 +105,7 @@ async def render_period_board(
 
 
 GRAPH_CACHE_TTL = 60  # сек: повторный график того же периода (переключение кнопок туда-обратно) — мгновенно
-_graph_cache: dict[tuple[str, int, str], tuple[float, Optional[tuple[bytes, str]]]] = {}
+_graph_cache: dict[tuple, tuple[float, Optional[tuple[bytes, str]]]] = {}
 
 
 async def render_graph_board(
@@ -115,7 +115,9 @@ async def render_graph_board(
 
     refresh=False — без запроса в OpenDota (смена периода под уже показанным графиком: данные только что обновлены).
     """
-    cached = _graph_cache.get((storage.db_path, chat_id, period))
+    chat = storage.get_or_create_chat(chat_id)
+    cache_key = (storage.db_path, chat_id, period, chat.mmr_step, chat.tz)  # смена шага/пояса не отдаёт старую картинку
+    cached = _graph_cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < GRAPH_CACHE_TTL:
         return cached[1]
     if refresh:  # для графика нужны только свежие матчи — сводки игроков не собираем
@@ -125,14 +127,20 @@ async def render_graph_board(
     since = period_since(period, now)
     series = await asyncio.to_thread(build_mmr_series, storage, chat_id, since)
     if not series:
-        _graph_cache[(storage.db_path, chat_id, period)] = (time.monotonic(), None)
+        _graph_cache[cache_key] = (time.monotonic(), None)
         return None
-    chat = storage.get_or_create_chat(chat_id)
+    chat = storage.get_or_create_chat(chat_id)  # шаг мог смениться за время обновления
     label = {"day": "за сутки", "week": "за неделю", "month": "за месяц", "year": "за год",
              "all": "за всё время"}[period]
     png = await asyncio.to_thread(render_mmr_chart, series, f"Динамика MMR {label}", chat.tz, since, now)
-    result = (png, f"📈 <b>Динамика MMR {label}</b> · <i>оценка: ±шаг за игру</i>")
-    _graph_cache[(storage.db_path, chat_id, period)] = (time.monotonic(), result)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (name, pts) in enumerate(sorted(series.items(), key=lambda kv: kv[1][-1][1], reverse=True)[:10]):  # лимит подписи фото — 1024
+        games, wins, total = series_stats(pts)
+        lines.append(f"{medals[i] if i < 3 else '▫️'} <b>{html.escape(name)}</b> {total:+d} · {games_word(games)} · {round(wins * 100 / games)}%")
+    caption = f"📈 <b>Динамика MMR {label}</b> · <i>оценка: ±{chat.mmr_step} за игру</i>\n" + "\n".join(lines)
+    result = (png, caption)
+    _graph_cache[cache_key] = (time.monotonic(), result)
     return result
 
 
