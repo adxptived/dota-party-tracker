@@ -418,8 +418,10 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
     step = chat.mmr_step
 
     all_matches = storage.get_matches(player.id)  # вся ранкед-история; MMR-оценка — от якоря ниже
-    anchor_matches = storage.get_matches(player.id, since_ts=player.anchor_ts)
-    today_matches = storage.get_matches(player.id, since_ts=stats.local_day_start(now, chat.tz))
+    # Матчи отсортированы по start_time: окна — срезы той же выборки, без лишних запросов к БД.
+    anchor_matches = [m for m in all_matches if m["start_time"] >= player.anchor_ts]
+    day_start = stats.local_day_start(now, chat.tz)
+    today_matches = [m for m in all_matches if m["start_time"] >= day_start]
 
     agg_all = stats.aggregate(all_matches)
     agg_anchor = stats.aggregate(anchor_matches)

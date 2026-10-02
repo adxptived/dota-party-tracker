@@ -132,10 +132,21 @@ CREATE INDEX IF NOT EXISTS idx_matches_player_time ON matches (player_id, start_
 """
 
 
+class _Connection(sqlite3.Connection):
+    """`with conn:` дополнительно закрывает соединение (стандартное только коммитит) — без утечек дескрипторов."""
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 class Storage:
     def __init__(self, db_path: str):
         self.db_path = db_path
         with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")  # режим хранится в файле БД — достаточно один раз
             conn.executescript(_SCHEMA)
             self._migrate(conn)
 
@@ -177,10 +188,10 @@ class Storage:
 
     def _conn(self) -> sqlite3.Connection:
         # timeout: фоновые джобы и хендлеры пишут из разных потоков — ждём блокировку, а не падаем.
-        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn = sqlite3.connect(self.db_path, timeout=30, factory=_Connection)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")  # читатели не блокируют писателя
+        conn.execute("PRAGMA synchronous = NORMAL")  # в WAL безопасно и заметно быстрее записи
         return conn
 
     # --- chats ----------------------------------------------------------
