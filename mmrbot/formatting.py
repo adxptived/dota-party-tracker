@@ -11,7 +11,7 @@ from typing import Optional
 
 from mmrbot.heroes import hero_name
 from mmrbot.ranks import rank_label
-from mmrbot.tracker import PlayerSummary, compute_awards
+from mmrbot.tracker import PlayerSummary
 
 POSITIONS = {1: "🥇", 2: "🥈", 3: "🥉"}
 LANE_NAMES = {1: "Safe", 2: "Mid", 3: "Off", 4: "Лес"}
@@ -183,13 +183,13 @@ def render_period_leaderboard(rows: list[dict], period: str) -> str:
 
 # --- награды ------------------------------------------------------------
 
-def render_awards(summaries: list[PlayerSummary]) -> str:
-    awards = compute_awards(summaries)
+def render_awards(awards: list[dict], label: str = "за неделю") -> str:
+    """Отличия участников за период (label — «за сутки»/«за неделю»); пусто, если сравнивать нечего."""
     if not awards:
         return ""
-    lines = ["🏅 <b>Отличия участников</b>"]
+    lines = [f"🏅 <b>Отличия участников {label}</b>"]
     for award in awards:
-        lines.append(f"{award['title']} — {_b(award['player'])} ({_esc(award['detail'])})")
+        lines.append(f"{award['emoji']} {_esc(award['title'])} — {_b(award['player'])} ({_esc(award['detail'])})")
     lines.append("\n<i>🌟 Рекорды отдельных игр за день, неделю, месяц, год: /records</i>")
     return "\n".join(lines)
 
@@ -201,12 +201,26 @@ def _form_dots(form: list) -> str:
     return "".join("🟢" if won else "🔴" for won in form)
 
 
-def render_party_pulse(summaries: list[PlayerSummary], week_rows: list[dict], week_records: dict) -> str:
+def render_party_pulse(
+    summaries: list[PlayerSummary], week_rows: list[dict], week_records: dict,
+    day_rows: Optional[list[dict]] = None,
+) -> str:
     """«Пульс пати» под рейтингом: сегодня, неделя, форма игроков, рекорды недели (работает и для одного игрока)."""
     lines = ["📡 <b>Пульс пати</b>"]
 
+    if day_rows is not None:  # ежедневная сводка уходит утром: «сегодня» почти пусто — показываем последние сутки
+        played_day = [r for r in day_rows if r["games"] > 0]
+        d_games = sum(r["games"] for r in played_day)
+        if d_games:
+            d_wins = sum(r["wins"] for r in played_day)
+            d_delta = sum(r["delta"] for r in played_day)
+            lines.append(f"🌅 За сутки: {plural_games(d_games)} · {_fmt_wr(d_games, d_wins)} · {_today_delta(d_delta)}")
+        else:
+            lines.append("🌅 За сутки: игр не было")
     t_games = sum(s.games_today for s in summaries)
-    if t_games:
+    if day_rows is not None:
+        pass  # строка «За сутки» выше заменяет «Сегодня»
+    elif t_games:
         t_wins = sum(s.wins_today for s in summaries)
         t_delta = sum(s.delta_today for s in summaries)
         lines.append(f"📅 Сегодня: {plural_games(t_games)} · {_fmt_wr(t_games, t_wins)} · {_today_delta(t_delta)}")
@@ -588,6 +602,9 @@ def render_achievements(rows: list) -> str:
     return "🏅 <b>Достижения и антирекорды</b>\n\n" + "\n\n".join(blocks)
 
 
+_WEEKLY_DUPLICATES = {"climb", "drop", "games", "win_streak"}  # эти итоги недели уже есть в шапке сводки
+
+
 def render_weekly(report: dict) -> str:
     rows = [r for r in report["rows"] if r["games"] > 0]
     if not rows:
@@ -621,6 +638,12 @@ def render_weekly(report: dict) -> str:
             f"{_pos(i)} {_b(r['name'])} · {_today_delta(r['delta'])} · "
             f"{r['wins']}–{r['losses']} ({r['winrate'] * 100:.0f}%)"
         )
+    awards = [a for a in report.get("awards") or [] if a["key"] not in _WEEKLY_DUPLICATES]
+    if awards:  # лучшие показатели недели (подъём/просадка/активность уже выше в сводке)
+        lines.append("")
+        lines.append("🏅 <b>Лучшие показатели недели</b>")
+        for award in awards:
+            lines.append(f"{award['emoji']} {_esc(award['title'])} — {_b(award['player'])} ({_esc(award['detail'])})")
     return "\n".join(lines)
 
 

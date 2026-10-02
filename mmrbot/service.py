@@ -29,7 +29,7 @@ from mmrbot.formatting import (
     render_together,
     standing_line,
 )
-from mmrbot.charts import render_mmr_chart
+from mmrbot.charts import _games_word as games_word, render_mmr_chart, series_stats
 from mmrbot.heroes import find_hero
 from mmrbot.opendota import OpenDota
 from mmrbot.stats import period_since
@@ -45,6 +45,7 @@ from mmrbot.tracker import (
     build_player_roles,
     build_together,
     build_mmr_series,
+    build_period_awards,
     build_records,
 )
 
@@ -80,18 +81,26 @@ async def render_board(
     today_only: bool = False,
     refresh: bool = True,
     stratz=None,
+    awards_period: str = "week",
 ) -> str:
+    """Рейтинг + «Пульс пати» + отличия за awards_period (week — для /stats, day — для ежедневной сводки)."""
     summaries = await gather_summaries(storage, od, chat_id, refresh, stratz)
     text = render_leaderboard(summaries, today_only=today_only)
     if not today_only:
         since = int(time.time()) - 7 * 86_400
         week_rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
         week_records = await asyncio.to_thread(build_records, storage, chat_id, since)
-        text += "\n\n" + render_party_pulse(summaries, week_rows, week_records)
+        day_rows = None
+        if awards_period == "day":
+            day_rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, int(time.time()) - 86_400)
+        text += "\n\n" + render_party_pulse(summaries, week_rows, week_records, day_rows)
         if len(summaries) >= 2:  # «отличия» — соревнование между игроками: с одним участником смысла нет
-            awards = render_awards(summaries)
-            if awards:
-                text += "\n\n" + awards
+            day = awards_period == "day"
+            awards_since = int(time.time()) - (86_400 if day else 7 * 86_400)
+            awards = await asyncio.to_thread(build_period_awards, storage, chat_id, awards_since, 2 if day else 3)
+            block = render_awards(awards, "за сутки" if day else "за неделю")
+            if block:
+                text += "\n\n" + block
     return text
 
 
@@ -105,17 +114,20 @@ async def render_period_board(
 
 
 GRAPH_CACHE_TTL = 60  # сек: повторный график того же периода (переключение кнопок туда-обратно) — мгновенно
-_graph_cache: dict[tuple[str, int, str], tuple[float, Optional[tuple[bytes, str]]]] = {}
+_graph_cache: dict[tuple, tuple[float, Optional[tuple[bytes, str]]]] = {}
 
 
 async def render_graph_board(
-    storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None, refresh: bool = True
+    storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None, refresh: bool = True,
+    by_games: bool = False,
 ) -> Optional[tuple[bytes, str]]:
     """PNG-график ±MMR за период и подпись; None — за период игр не было.
 
     refresh=False — без запроса в OpenDota (смена периода под уже показанным графиком: данные только что обновлены).
     """
-    cached = _graph_cache.get((storage.db_path, chat_id, period))
+    chat = storage.get_or_create_chat(chat_id)
+    cache_key = (storage.db_path, chat_id, period, chat.mmr_step, chat.tz, by_games)  # смена шага/пояса не отдаёт старую картинку
+    cached = _graph_cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < GRAPH_CACHE_TTL:
         return cached[1]
     if refresh:  # для графика нужны только свежие матчи — сводки игроков не собираем
@@ -125,14 +137,20 @@ async def render_graph_board(
     since = period_since(period, now)
     series = await asyncio.to_thread(build_mmr_series, storage, chat_id, since)
     if not series:
-        _graph_cache[(storage.db_path, chat_id, period)] = (time.monotonic(), None)
+        _graph_cache[cache_key] = (time.monotonic(), None)
         return None
-    chat = storage.get_or_create_chat(chat_id)
+    chat = storage.get_or_create_chat(chat_id)  # шаг мог смениться за время обновления
     label = {"day": "за сутки", "week": "за неделю", "month": "за месяц", "year": "за год",
              "all": "за всё время"}[period]
-    png = await asyncio.to_thread(render_mmr_chart, series, f"Динамика MMR {label}", chat.tz, since, now)
-    result = (png, f"📈 <b>Динамика MMR {label}</b> · <i>оценка: ±шаг за игру</i>")
-    _graph_cache[(storage.db_path, chat_id, period)] = (time.monotonic(), result)
+    png = await asyncio.to_thread(render_mmr_chart, series, f"Динамика MMR {label}", chat.tz, since, now, by_games)
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    for i, (name, pts) in enumerate(sorted(series.items(), key=lambda kv: kv[1][-1][1], reverse=True)[:10]):  # лимит подписи фото — 1024
+        games, wins, total = series_stats(pts)
+        lines.append(f"{medals[i] if i < 3 else '▫️'} <b>{html.escape(name)}</b> {total:+d} · {games_word(games)} · {round(wins * 100 / games)}%")
+    caption = f"📈 <b>Динамика MMR {label}</b> · <i>оценка: ±{chat.mmr_step} за игру</i>\n" + "\n".join(lines)
+    result = (png, caption)
+    _graph_cache[cache_key] = (time.monotonic(), result)
     return result
 
 

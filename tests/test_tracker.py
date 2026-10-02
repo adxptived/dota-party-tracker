@@ -6,7 +6,6 @@ from mmrbot.tracker import (
     build_leaderboard,
     build_player_summary,
     build_together,
-    compute_awards,
     refresh_player,
 )
 
@@ -227,17 +226,6 @@ def test_build_chat_comparison_handles_missing_metrics(store):
     assert "perf" not in comp["players"]["B"]["ranks"]  # нет метрики — нет ранга
 
 
-def test_compute_awards_includes_perf_mvp(store):
-    from dataclasses import replace
-    now = 100_000
-    p = store.add_player(100, 1, "Base", 5000, 1000, 1000)
-    store.add_matches(p.id, [_m(10 + i, 2000 + i, radiant_win=(i % 2 == 0)) for i in range(4)])
-    base = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)[0]
-    a = replace(base, display_name="A", avg_perf=0.82)
-    b = replace(base, display_name="B", avg_perf=0.31)
-    awards = compute_awards([a, b])
-    mvp = next(x for x in awards if "перформанс" in x["title"])
-    assert mvp["player"] == "A"
 
 
 def test_summary_includes_form_lanes_and_records(store):
@@ -277,34 +265,8 @@ def test_summary_includes_solo_party_and_totals(store):
     assert s.avg_duration_min > 0
 
 
-def test_compute_awards_tell_party_story(store):
-    now = 100_000
-    good = store.add_player(100, 1, "Good", 5000, 1000, 1000)
-    bad = store.add_player(100, 2, "Bad", 4000, 1000, 1000)
-    store.add_matches(good.id, [_m(10 + i, 2000 + i, radiant_win=True) for i in range(3)])   # 3 победы → W3
-    store.add_matches(bad.id, [_m(20 + i, 2000 + i, radiant_win=False) for i in range(3)])   # 3 поражения → L3
-    summaries = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)
-    awards = compute_awards(summaries)
-    titles = {a["title"]: a["player"] for a in awards}
-    # Король винрейта → Good; «главный тилт» → Bad (а не активный игрок)
-    assert titles[next(t for t in titles if "инрейт" in t)] == "Good"
-    assert titles[next(t for t in titles if "поражений" in t.lower())] == "Bad"
 
 
-def test_compute_awards_has_many_style_categories(store):
-    from dataclasses import replace
-    now = 100_000
-    p = store.add_player(100, 1, "Base", 5000, 1000, 1000)
-    store.add_matches(p.id, [_m(10 + i, 2000 + i, radiant_win=(i % 2 == 0)) for i in range(4)])
-    base = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)[0]
-    farmer = replace(base, display_name="Farmer", avg_gpm_window=700.0, avg_hero_damage_window=30000.0, avg_assists=8.0)
-    support = replace(base, display_name="Support", avg_gpm_window=300.0, avg_hero_damage_window=8000.0, avg_assists=25.0)
-    awards = compute_awards([farmer, support])
-    titles = {a["title"]: a["player"] for a in awards}
-    # больше категорий, и стили разводятся
-    assert titles[next(t for t in titles if "gpm" in t.lower())] == "Farmer"   # 🌾 Фармила
-    assert titles[next(t for t in titles if "ассистов" in t.lower())] == "Support"   # ✨ Опора (ассисты)
-    assert len(awards) >= 5
 
 
 def test_build_together_counts_shared(store):

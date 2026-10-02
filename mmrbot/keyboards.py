@@ -52,6 +52,7 @@ def settings_menu(chat) -> InlineKeyboardMarkup:
 
 
 PERIODS_RECORDS = [("day", "День"), ("week", "Неделя"), ("month", "Месяц"), ("year", "Год"), ("all", "Всё")]
+GRAPH_PERIODS = PERIODS_RECORDS  # у графика те же периоды, что у рекордов (включая год)
 
 
 def records_buttons(current: str) -> InlineKeyboardMarkup:
@@ -63,13 +64,18 @@ def records_buttons(current: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
 
 
-def graph_buttons(current: str) -> InlineKeyboardMarkup:
-    """Периоды графика (текущий отмечен «•») + навигация."""
+def graph_buttons(current: str, by_games: bool = False) -> InlineKeyboardMarkup:
+    """Периоды графика (текущий отмечен «•») + переключатель оси X (время/игры) + навигация."""
+    suffix = ":n" if by_games else ""
     row = [
-        InlineKeyboardButton(text=f"• {label}" if key == current else label, callback_data=f"g:{key}")
-        for key, label in PERIODS
+        InlineKeyboardButton(text=f"• {label}" if key == current else label, callback_data=f"g:{key}{suffix}")
+        for key, label in GRAPH_PERIODS
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
+    toggle = InlineKeyboardButton(
+        text="🕒 По времени" if by_games else "🔢 По играм",
+        callback_data=f"g:{current}" if by_games else f"g:{current}:n",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[row, [toggle], nav_row()])
 
 
 def nav_row() -> list[InlineKeyboardButton]:

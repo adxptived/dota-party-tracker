@@ -77,7 +77,7 @@ async def send_digest(bot: Bot, storage: Storage, od: OpenDota, chat: Chat, due_
     сделанными: иначе каждый час повторялось бы полное обновление игроков впустую.
     """
     try:
-        text = await render_board(storage, od, chat.chat_id, today_only=False, refresh=True, stratz=stratz)
+        text = await render_board(storage, od, chat.chat_id, today_only=False, refresh=True, stratz=stratz, awards_period="day")
         for chunk in split_message("📰 <b>Ежедневная сводка</b>\n\n" + text):
             await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
         storage.set_last_digest_date(chat.chat_id, due_date)
