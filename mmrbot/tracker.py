@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
@@ -22,6 +23,8 @@ log = logging.getLogger(__name__)
 
 ENRICH_CAP = 12  # сколько матчей обогащать деталями за один refresh (лимит запросов)
 REFRESH_COOLDOWN = 180  # сек: не ходить в OpenDota, если игрок обновлён недавно (скорость /stats)
+INSIGHTS_TTL = 6 * 3600  # сек: totals/линии/GPM-гистограмма — «медленные» агрегаты, не тянем на каждый refresh
+REFRESH_WORKERS = 4  # игроков обновляем параллельно (частоту запросов всё равно держит троттлинг клиента)
 
 
 class OpenDotaClient(Protocol):
@@ -135,23 +138,33 @@ def refresh_player(storage: Storage, client: OpenDotaClient, player: Player, now
     ]
     inserted = storage.add_matches(player.id, fresh)
 
-    # Средние GPM/XPM/last hits (пакет D) — необязательный доп. запрос.
-    try:
-        totals = client.get_totals(player.account_id)
-        storage.update_player_totals(
-            player.id, totals.get("gpm"), totals.get("xpm"), totals.get("last_hits")
-        )
-    except Exception:
-        log.debug("Не удалось получить totals игрока %s", player.account_id, exc_info=True)
+    # Тяжёлые агрегаты (3 запроса) меняются медленно: тянем при новых матчах, первом заходе
+    # или по TTL — иначе каждое обновление стоит лишних ~3 секунд на игрока.
+    insights_stale = (
+        inserted > 0
+        or player.insights_ts is None
+        or (now - player.insights_ts) >= INSIGHTS_TTL
+    )
+    if insights_stale:
+        # Средние GPM/XPM/last hits (пакет D) — необязательный доп. запрос.
+        try:
+            totals = client.get_totals(player.account_id)
+            storage.update_player_totals(
+                player.id, totals.get("gpm"), totals.get("xpm"), totals.get("last_hits")
+            )
+        except Exception:
+            log.debug("Не удалось получить totals игрока %s", player.account_id, exc_info=True)
 
-    # Линии + распределение GPM — тоже необязательные доп. запросы.
-    try:
-        lanes = client.get_lanes(player.account_id)
-        lanes_json = json.dumps({str(lane): list(gw) for lane, gw in lanes.items()})
-        dist = client.get_gpm_distribution(player.account_id)
-        storage.update_player_insights(player.id, lanes_json, dist.get("median"), dist.get("best"))
-    except Exception:
-        log.debug("Не удалось получить lanes/gpm игрока %s", player.account_id, exc_info=True)
+        # Линии + распределение GPM — тоже необязательные доп. запросы.
+        try:
+            lanes = client.get_lanes(player.account_id)
+            lanes_json = json.dumps({str(lane): list(gw) for lane, gw in lanes.items()})
+            dist = client.get_gpm_distribution(player.account_id)
+            storage.update_player_insights(
+                player.id, lanes_json, dist.get("median"), dist.get("best"), insights_ts=now
+            )
+        except Exception:
+            log.debug("Не удалось получить lanes/gpm игрока %s", player.account_id, exc_info=True)
 
     # Обогащение матчей: пер-матч поля + role-normalized perf из benchmarks (по 1 GET на матч).
     for match_id in storage.get_unenriched_match_ids(player.id, player.created_ts, ENRICH_CAP):
@@ -169,9 +182,11 @@ def refresh_player(storage: Storage, client: OpenDotaClient, player: Player, now
 def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int) -> PlayerSummary:
     step = chat.mmr_step
 
+    # Один запрос в БД вместо трёх: окна (с якоря / за сутки) режем в памяти.
     all_matches = storage.get_matches(player.id, since_ts=player.created_ts)
-    anchor_matches = storage.get_matches(player.id, since_ts=player.anchor_ts)
-    today_matches = storage.get_matches(player.id, since_ts=now - TODAY_WINDOW_SEC)
+    anchor_matches = [m for m in all_matches if m["start_time"] >= player.anchor_ts]
+    today_cutoff = now - TODAY_WINDOW_SEC
+    today_matches = [m for m in all_matches if m["start_time"] >= today_cutoff]
 
     agg_all = stats.aggregate(all_matches)
     agg_anchor = stats.aggregate(anchor_matches)
@@ -279,18 +294,31 @@ def build_leaderboard(
     chat = storage.get_or_create_chat(chat_id)
     players = storage.list_players(chat_id)
 
+    def _refresh_safe(player: Player) -> None:
+        try:
+            refresh_player(storage, client, player, now)
+        except Exception:  # ошибка по одному игроку не должна рушить весь лидерборд
+            log.warning("Не удалось обновить игрока %s (id %s), беру кэш",
+                        player.display_name, player.account_id, exc_info=True)
+
+    # Кулдаун: если обновляли недавно — берём кэш из БД, не дёргаем OpenDota (скорость).
+    stale_players = [
+        p for p in players
+        if refresh and (p.updated_ts is None or (now - p.updated_ts) >= REFRESH_COOLDOWN)
+    ]
+    if len(stale_players) > 1:
+        # Игроки независимы: параллелим, чтобы сетевые ожидания перекрывались.
+        with ThreadPoolExecutor(max_workers=min(REFRESH_WORKERS, len(stale_players))) as pool:
+            list(pool.map(_refresh_safe, stale_players))
+    elif stale_players:
+        _refresh_safe(stale_players[0])
+
     summaries: list[PlayerSummary] = []
+    if stale_players:
+        # точная перечитка по account_id (без неоднозначности имён) — одним запросом списка
+        fresh = {p.account_id: p for p in storage.list_players(chat_id)}
+        players = [fresh.get(p.account_id, p) for p in players]
     for player in players:
-        # Кулдаун: если обновляли недавно — берём кэш из БД, не дёргаем OpenDota (скорость).
-        stale = player.updated_ts is None or (now - player.updated_ts) >= REFRESH_COOLDOWN
-        if refresh and stale:
-            try:
-                refresh_player(storage, client, player, now)
-            except Exception:  # ошибка по одному игроку не должна рушить весь лидерборд
-                log.warning("Не удалось обновить игрока %s (id %s), беру кэш",
-                            player.display_name, player.account_id, exc_info=True)
-            # точная перечитка по account_id (без неоднозначности имён)
-            player = storage.get_player_by_account_id(chat_id, player.account_id) or player
         summaries.append(build_player_summary(storage, chat, player, now))
 
     # По убыванию текущего MMR; игроки без оценки MMR — в конце.

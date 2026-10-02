@@ -44,6 +44,7 @@ class Player:
     last_lanes: Optional[str] = None
     last_gpm_median: Optional[float] = None
     last_gpm_best: Optional[float] = None
+    insights_ts: Optional[int] = None  # когда в последний раз тянули totals/lanes/GPM-гистограмму
 
 
 _SCHEMA = """
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS players (
     last_lanes            TEXT,
     last_gpm_median       REAL,
     last_gpm_best         REAL,
+    insights_ts           INTEGER,
     UNIQUE(chat_id, account_id)
 );
 CREATE TABLE IF NOT EXISTS matches (
@@ -101,6 +103,7 @@ CREATE TABLE IF NOT EXISTS matches (
     enriched     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_id, match_id)
 );
+CREATE INDEX IF NOT EXISTS idx_matches_player_time ON matches (player_id, start_time);
 """
 
 
@@ -108,6 +111,7 @@ class Storage:
     def __init__(self, db_path: str):
         self.db_path = db_path
         with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")  # читатели не блокируются писателями
             conn.executescript(_SCHEMA)
             self._migrate(conn)
 
@@ -124,6 +128,7 @@ class Storage:
         add_missing("players", {
             "last_gpm": "REAL", "last_xpm": "REAL", "last_last_hits": "REAL",
             "last_lanes": "TEXT", "last_gpm_median": "REAL", "last_gpm_best": "REAL",
+            "insights_ts": "INTEGER",
         })
         add_missing("matches", {
             "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
@@ -137,6 +142,7 @@ class Storage:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA synchronous = NORMAL")  # безопасно с WAL, заметно быстрее записи
         return conn
 
     # --- chats ----------------------------------------------------------
@@ -202,6 +208,7 @@ class Storage:
             last_lanes=row["last_lanes"],
             last_gpm_median=row["last_gpm_median"],
             last_gpm_best=row["last_gpm_best"],
+            insights_ts=row["insights_ts"],
         )
 
     def add_player(
@@ -292,12 +299,18 @@ class Storage:
             )
 
     def update_player_insights(
-        self, player_id: int, lanes_json: Optional[str], gpm_median: Optional[float], gpm_best: Optional[float]
+        self,
+        player_id: int,
+        lanes_json: Optional[str],
+        gpm_median: Optional[float],
+        gpm_best: Optional[float],
+        insights_ts: Optional[int] = None,
     ) -> None:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE players SET last_lanes = ?, last_gpm_median = ?, last_gpm_best = ? WHERE id = ?",
-                (lanes_json, gpm_median, gpm_best, player_id),
+                "UPDATE players SET last_lanes = ?, last_gpm_median = ?, last_gpm_best = ?, "
+                "insights_ts = COALESCE(?, insights_ts) WHERE id = ?",
+                (lanes_json, gpm_median, gpm_best, insights_ts, player_id),
             )
 
     # --- matches --------------------------------------------------------

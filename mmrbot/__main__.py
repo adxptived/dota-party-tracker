@@ -22,7 +22,7 @@ async def main() -> None:
     config = load_config()
 
     storage = Storage(config.db_path)
-    od = OpenDota(api_key=config.opendota_api_key)
+    od = OpenDota(api_key=config.opendota_api_key, min_interval=config.opendota_min_interval)
 
     bot = Bot(config.bot_token)
     dp = Dispatcher()

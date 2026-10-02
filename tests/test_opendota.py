@@ -150,31 +150,28 @@ def test_get_totals_handles_missing_fields():
     assert totals == {"gpm": None, "xpm": None, "last_hits": None}
 
 
-def test_concurrent_calls_are_serialized_by_lock():
-    """Один общий клиент из нескольких потоков не должен делать запросы одновременно."""
+def test_concurrent_calls_respect_throttle_but_overlap():
+    """Потоки не стоят в очереди целиком (запросы перекрываются), но старты разнесены троттлингом."""
     import threading
     import time
 
-    class ConcurrencyProbe:
-        def __init__(self):
-            self.active = 0
-            self.max_active = 0
-            self._lock = threading.Lock()
+    starts = []
 
+    class Probe:
         def get(self, url, params=None, timeout=None):
-            with self._lock:
-                self.active += 1
-                self.max_active = max(self.max_active, self.active)
-            time.sleep(0.02)
-            with self._lock:
-                self.active -= 1
+            starts.append(time.monotonic())
+            time.sleep(0.05)
             return FakeResp({"rank_tier": 11})
 
-    probe = ConcurrencyProbe()
-    od = OpenDota(session=probe, min_interval=0)
-    threads = [threading.Thread(target=lambda: od.get_profile(1)) for _ in range(8)]
+    od = OpenDota(session=Probe(), min_interval=0.03)
+    threads = [threading.Thread(target=lambda: od.get_profile(1)) for _ in range(5)]
+    t0 = time.monotonic()
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert probe.max_active == 1  # запросы не пересекались
+    elapsed = time.monotonic() - t0
+    starts.sort()
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert all(g >= 0.025 for g in gaps)  # частота запросов в лимите
+    assert elapsed < 5 * 0.05 + 0.05  # быстрее полностью последовательного выполнения
