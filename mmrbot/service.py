@@ -45,6 +45,7 @@ from mmrbot.tracker import (
     build_player_roles,
     build_together,
     build_mmr_series,
+    build_period_awards,
     build_records,
 )
 
@@ -80,7 +81,9 @@ async def render_board(
     today_only: bool = False,
     refresh: bool = True,
     stratz=None,
+    awards_period: str = "week",
 ) -> str:
+    """Рейтинг + «Пульс пати» + отличия за awards_period (week — для /stats, day — для ежедневной сводки)."""
     summaries = await gather_summaries(storage, od, chat_id, refresh, stratz)
     text = render_leaderboard(summaries, today_only=today_only)
     if not today_only:
@@ -89,9 +92,12 @@ async def render_board(
         week_records = await asyncio.to_thread(build_records, storage, chat_id, since)
         text += "\n\n" + render_party_pulse(summaries, week_rows, week_records)
         if len(summaries) >= 2:  # «отличия» — соревнование между игроками: с одним участником смысла нет
-            awards = render_awards(summaries)
-            if awards:
-                text += "\n\n" + awards
+            day = awards_period == "day"
+            awards_since = int(time.time()) - (86_400 if day else 7 * 86_400)
+            awards = await asyncio.to_thread(build_period_awards, storage, chat_id, awards_since, 2 if day else 3)
+            block = render_awards(awards, "за сутки" if day else "за неделю")
+            if block:
+                text += "\n\n" + block
     return text
 
 

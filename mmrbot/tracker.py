@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from mmrbot import achievements, party, records, stats
+from mmrbot.awards import compute_period_awards
 from mmrbot.ranks import rank_emoji, rank_label
 from mmrbot.storage import Chat, Player, Storage
 
@@ -303,6 +304,16 @@ def build_records(storage: Storage, chat_id: int, since_ts: Optional[int]) -> di
     return records.compute_records(named)
 
 
+def build_period_awards(storage: Storage, chat_id: int, since_ts: int, min_games: int = 3) -> list[dict]:
+    """Отличия участников за период (матчи с since_ts, из кэша БД). Без ≥2 участников сравнивать не с кем."""
+    players = storage.list_players(chat_id)
+    if len(players) < 2:
+        return []
+    chat = storage.get_or_create_chat(chat_id)
+    named = [(p.display_name, storage.get_matches(p.id, since_ts=since_ts)) for p in players]
+    return compute_period_awards(named, chat.mmr_step, min_games)
+
+
 def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
     """Итоги недели чата из кэша БД: таблица периода, герой недели, лучшая серия, совместные игры."""
     chat = storage.get_or_create_chat(chat_id)
@@ -331,6 +342,7 @@ def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
         "streak": best_streak if best_streak[1] >= 2 else None,
         "shared": party.together_summary(named),
         "step": chat.mmr_step,
+        "awards": build_period_awards(storage, chat_id, since),
     }
 
 
@@ -679,63 +691,6 @@ def _best_worst_hour(by_hour: dict, min_games: int = 3):
     best = max(qualified, key=lambda x: x[1])
     worst = min(qualified, key=lambda x: x[1])
     return ((best[0], best[1]), (worst[0], worst[1]))
-
-
-def compute_awards(summaries: list[PlayerSummary], min_games: int = 3) -> list[dict]:
-    """Награды, рассказывающие историю пати (не липнут к одному игроку). {title, player, detail}.
-
-    Позитивные — лучшему; «главный тилт» — тому, кто РЕАЛЬНО в просадке (серия поражений),
-    а не самому активному. Метрики по ставкам/сериям, не по абсолютным суммам.
-    """
-    eligible = [s for s in summaries if s.games_total >= min_games]
-    awards: list[dict] = []
-    if not eligible:
-        return awards
-
-    # MVP по role-normalized перформансу (честнее KDA) — самый престижный.
-    perf_eligible = [s for s in eligible if s.avg_perf is not None]
-    if perf_eligible:
-        mvp = max(perf_eligible, key=lambda s: s.avg_perf)
-        awards.append({"title": "Наивысший перформанс", "player": mvp.display_name,
-                       "detail": f"{mvp.avg_perf * 100:.0f}/100"})
-
-    king = max(eligible, key=lambda s: s.winrate)
-    awards.append({"title": "Наивысший винрейт", "player": king.display_name,
-                   "detail": f"{king.winrate * 100:.0f}% ({king.wins_total}–{king.losses_total})"})
-
-    # Стилевые награды (по ставкам/за игру) — разводят кор/саппорт/дамагера.
-    def _best(getter, title, detail):
-        pool = [s for s in eligible if getter(s) is not None]
-        if pool:
-            top = max(pool, key=getter)
-            awards.append({"title": title, "player": top.display_name, "detail": detail(top)})
-
-    _best(lambda s: s.avg_gpm_window, "Наибольший GPM", lambda s: f"{s.avg_gpm_window:.0f} GPM в среднем за игру")
-    _best(lambda s: s.avg_hero_damage_window, "Наибольший урон по героям",
-          lambda s: f"{s.avg_hero_damage_window / 1000:.1f}k урона/игра")
-    _best(lambda s: s.avg_assists or None, "Наибольшее число ассистов", lambda s: f"{s.avg_assists:.0f} ассистов/игра")
-    _best(lambda s: s.best_game["kda"] if s.best_game else None, "Лучшая отдельная игра",
-          lambda s: f"{s.best_game['kills']}/{s.best_game['deaths']}/{s.best_game['assists']}")
-    _best(lambda s: s.hero_pool or None, "Самый широкий пул героев", lambda s: f"{s.hero_pool} героев")
-
-    # На кураже — самая длинная текущая серия ПОБЕД.
-    hot = [s for s in eligible if s.streak_type == "W" and s.streak_len >= 2]
-    if hot:
-        top = max(hot, key=lambda s: s.streak_len)
-        awards.append({"title": "Текущая серия побед", "player": top.display_name,
-                       "detail": f"{top.streak_len} побед подряд"})
-
-    # Камикадзе — больше всего смертей ЗА ИГРУ (не сумма! честно к активности).
-    _best(lambda s: s.avg_deaths or None, "Наибольшее число смертей", lambda s: f"{s.avg_deaths:.0f} смертей/игра")
-
-    # Главный тилт — самая длинная серия ПОРАЖЕНИЙ (реальная просадка).
-    cold = [s for s in eligible if s.streak_type == "L" and s.streak_len >= 2]
-    if cold:
-        bottom = max(cold, key=lambda s: (s.streak_len, -s.winrate))
-        awards.append({"title": "Текущая серия поражений", "player": bottom.display_name,
-                       "detail": f"{bottom.streak_len} поражений подряд, {bottom.winrate * 100:.0f}%"})
-
-    return awards
 
 
 # Метрики для сравнения игроков внутри чата (все — «выше = лучше»).
