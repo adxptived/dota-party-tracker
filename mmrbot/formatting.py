@@ -201,12 +201,26 @@ def _form_dots(form: list) -> str:
     return "".join("🟢" if won else "🔴" for won in form)
 
 
-def render_party_pulse(summaries: list[PlayerSummary], week_rows: list[dict], week_records: dict) -> str:
+def render_party_pulse(
+    summaries: list[PlayerSummary], week_rows: list[dict], week_records: dict,
+    day_rows: Optional[list[dict]] = None,
+) -> str:
     """«Пульс пати» под рейтингом: сегодня, неделя, форма игроков, рекорды недели (работает и для одного игрока)."""
     lines = ["📡 <b>Пульс пати</b>"]
 
+    if day_rows is not None:  # ежедневная сводка уходит утром: «сегодня» почти пусто — показываем последние сутки
+        played_day = [r for r in day_rows if r["games"] > 0]
+        d_games = sum(r["games"] for r in played_day)
+        if d_games:
+            d_wins = sum(r["wins"] for r in played_day)
+            d_delta = sum(r["delta"] for r in played_day)
+            lines.append(f"🌅 За сутки: {plural_games(d_games)} · {_fmt_wr(d_games, d_wins)} · {_today_delta(d_delta)}")
+        else:
+            lines.append("🌅 За сутки: игр не было")
     t_games = sum(s.games_today for s in summaries)
-    if t_games:
+    if day_rows is not None:
+        pass  # строка «За сутки» выше заменяет «Сегодня»
+    elif t_games:
         t_wins = sum(s.wins_today for s in summaries)
         t_delta = sum(s.delta_today for s in summaries)
         lines.append(f"📅 Сегодня: {plural_games(t_games)} · {_fmt_wr(t_games, t_wins)} · {_today_delta(t_delta)}")

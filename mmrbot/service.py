@@ -90,7 +90,10 @@ async def render_board(
         since = int(time.time()) - 7 * 86_400
         week_rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
         week_records = await asyncio.to_thread(build_records, storage, chat_id, since)
-        text += "\n\n" + render_party_pulse(summaries, week_rows, week_records)
+        day_rows = None
+        if awards_period == "day":
+            day_rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, int(time.time()) - 86_400)
+        text += "\n\n" + render_party_pulse(summaries, week_rows, week_records, day_rows)
         if len(summaries) >= 2:  # «отличия» — соревнование между игроками: с одним участником смысла нет
             day = awards_period == "day"
             awards_since = int(time.time()) - (86_400 if day else 7 * 86_400)

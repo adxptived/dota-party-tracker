@@ -66,3 +66,11 @@ def test_board_and_weekly_use_period_awards(tmp_path):
     assert "Отличия участников за сутки" in text and "Вася" in text
     weekly = render_weekly(build_weekly_report(st, 1, now))
     assert "Лучшие показатели недели" in weekly and "Наивысший винрейт" in weekly
+
+
+def test_digest_pulse_shows_last_24h_instead_of_today():
+    from mmrbot.formatting import render_party_pulse
+    rows = [{"name": "Вася", "games": 3, "wins": 2, "losses": 1, "delta": 25, "winrate": 2 / 3, "kda": 3.0}]
+    text = render_party_pulse([], rows, {"records": []}, day_rows=rows)
+    assert "За сутки: 3" in text and "Сегодня" not in text
+    assert "Сегодня: игр пока не было" in render_party_pulse([], rows, {"records": []})
