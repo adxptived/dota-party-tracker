@@ -109,14 +109,15 @@ _graph_cache: dict[tuple, tuple[float, Optional[tuple[bytes, str]]]] = {}
 
 
 async def render_graph_board(
-    storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None, refresh: bool = True
+    storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None, refresh: bool = True,
+    by_games: bool = False,
 ) -> Optional[tuple[bytes, str]]:
     """PNG-график ±MMR за период и подпись; None — за период игр не было.
 
     refresh=False — без запроса в OpenDota (смена периода под уже показанным графиком: данные только что обновлены).
     """
     chat = storage.get_or_create_chat(chat_id)
-    cache_key = (storage.db_path, chat_id, period, chat.mmr_step, chat.tz)  # смена шага/пояса не отдаёт старую картинку
+    cache_key = (storage.db_path, chat_id, period, chat.mmr_step, chat.tz, by_games)  # смена шага/пояса не отдаёт старую картинку
     cached = _graph_cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < GRAPH_CACHE_TTL:
         return cached[1]
@@ -132,7 +133,7 @@ async def render_graph_board(
     chat = storage.get_or_create_chat(chat_id)  # шаг мог смениться за время обновления
     label = {"day": "за сутки", "week": "за неделю", "month": "за месяц", "year": "за год",
              "all": "за всё время"}[period]
-    png = await asyncio.to_thread(render_mmr_chart, series, f"Динамика MMR {label}", chat.tz, since, now)
+    png = await asyncio.to_thread(render_mmr_chart, series, f"Динамика MMR {label}", chat.tz, since, now, by_games)
     medals = ["🥇", "🥈", "🥉"]
     lines = []
     for i, (name, pts) in enumerate(sorted(series.items(), key=lambda kv: kv[1][-1][1], reverse=True)[:10]):  # лимит подписи фото — 1024

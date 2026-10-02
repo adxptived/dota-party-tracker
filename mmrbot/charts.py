@@ -67,7 +67,7 @@ def warmup() -> None:
 
 def render_mmr_chart(
     series: dict[str, list[tuple[int, int]]], title: str, tz_name: str,
-    since_ts: int | None = None, until_ts: int | None = None,
+    since_ts: int | None = None, until_ts: int | None = None, by_games: bool = False,
 ) -> bytes:
     """Динамика ±MMR по игрокам: {имя: [(unix-время, накопленное Δ)]} → PNG-байты.
 
@@ -88,6 +88,11 @@ def render_mmr_chart(
 
     def to_dt(ts: int) -> datetime:
         return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz)
+
+    if by_games:  # ось X — порядковый номер игры: серии разных игроков сравнимы «игра к игре»
+        series = {name: [(i, v) for i, (_, v) in enumerate(pts, 1)] for name, pts in series.items()}
+        since_ts = until_ts = None
+        to_dt = lambda n: n  # noqa: E731
 
     ordered = sorted(series.items(), key=lambda kv: kv[1][-1][1], reverse=True)
     fig = plt.figure(figsize=(10, 5.6 + 0.3 * len(ordered)), dpi=110)
@@ -110,7 +115,9 @@ def render_mmr_chart(
         games, wins, total = series_stats(points)
         shown = _thin(points)
         short = len(shown) <= DOTS_LIMIT
-        start_ts = since_ts if since_ts is not None and since_ts < shown[0][0] else shown[0][0]
+        start_ts = (
+            0 if by_games else since_ts if since_ts is not None and since_ts < shown[0][0] else shown[0][0]
+        )
         xs = [to_dt(start_ts)] + [to_dt(ts) for ts, _ in shown]  # линия стартует с нуля в начале периода
         ys = [0] + [value for _, value in shown]
         label = f"{name}   {total:+d} MMR · {_games_word(games)} · {wins / games * 100:.0f}% побед"
@@ -156,9 +163,13 @@ def render_mmr_chart(
     ax.set_axisbelow(True)
     for spine in ax.spines.values():
         spine.set_visible(False)
-    locator = mdates.AutoDateLocator(tz=tz)
-    ax.xaxis.set_major_locator(locator)
-    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=tz))
+    if by_games:
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
+        ax.set_xlabel("номер игры", color=MUTED, fontsize=10)
+    else:
+        locator = mdates.AutoDateLocator(tz=tz)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=tz))
     ax.margins(x=0.06)
     if since_ts is not None and until_ts is not None:  # ось — выбранный период целиком, а не только где есть игры
         ax.set_xlim(to_dt(since_ts), to_dt(until_ts + (until_ts - since_ts) // 25))
