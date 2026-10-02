@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 ENRICH_CAP = 3  # матчей на refresh в запросе пользователя (~1с на матч); остальное — фоном, backfill_opendota
 RECENT_GAME_SEC = 3 * 3600  # о матче старше этого окна не оповещаем (история при /add, простой бота)
 GAME_REFRESH_COOLDOWN = 120  # сек: фоновая проверка новых игр не дёргает OpenDota чаще
+REFRESH_WORKERS = 4  # игроков обновляем параллельно (частоту запросов держит троттлинг клиента)
 REFRESH_COOLDOWN = 180  # сек: не ходить в OpenDota, если игрок обновлён недавно (скорость /stats)
 
 
@@ -341,7 +343,7 @@ def build_mmr_series(storage: Storage, chat_id: int, since_ts: Optional[int]) ->
     result: dict[str, list[tuple[int, int]]] = {}
     for player in storage.list_players(chat_id):
         start = since_ts if since_ts is not None else 0
-        points = stats.mmr_series(storage.get_matches(player.id, since_ts=start), chat.mmr_step)
+        points = stats.mmr_series(storage.get_outcomes(player.id, since_ts=start), chat.mmr_step)
         if points:
             result[player.display_name] = points
     return result
@@ -516,6 +518,36 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
     )
 
 
+def refresh_chat(
+    storage: Storage, client: OpenDotaClient, chat_id: int, now: int,
+    stratz: Optional[StratzClient] = None, players: Optional[list[Player]] = None,
+) -> list[Player]:
+    """Обновить устаревших игроков чата (параллельно) и вернуть актуальный список игроков.
+
+    Без сборки сводок — этого достаточно, когда нужны только свежие матчи (например, для графика).
+    """
+    players = players if players is not None else storage.list_players(chat_id)
+    # Кулдаун: если обновляли недавно — берём кэш из БД, не дёргаем OpenDota (скорость).
+    stale = [p for p in players if p.updated_ts is None or (now - p.updated_ts) >= REFRESH_COOLDOWN]
+    if not stale:
+        return players
+
+    def _refresh_safe(player: Player) -> None:
+        try:
+            refresh_player(storage, client, player, now, stratz=stratz)
+        except Exception:  # ошибка по одному игроку не должна рушить весь чат
+            log.warning("Не удалось обновить игрока %s (id %s), беру кэш",
+                        player.display_name, player.account_id, exc_info=True)
+
+    if len(stale) > 1:  # игроки независимы: сетевые ожидания перекрываются
+        with ThreadPoolExecutor(max_workers=min(REFRESH_WORKERS, len(stale))) as pool:
+            list(pool.map(_refresh_safe, stale))
+    else:
+        _refresh_safe(stale[0])
+    fresh = {p.account_id: p for p in storage.list_players(chat_id)}  # точная перечитка по account_id
+    return [fresh.get(p.account_id, p) for p in players]
+
+
 def build_leaderboard(
     storage: Storage,
     client: OpenDotaClient,
@@ -527,19 +559,10 @@ def build_leaderboard(
     chat = storage.get_or_create_chat(chat_id)
     players = storage.list_players(chat_id)
 
-    summaries: list[PlayerSummary] = []
-    for player in players:
-        # Кулдаун: если обновляли недавно — берём кэш из БД, не дёргаем OpenDota (скорость).
-        stale = player.updated_ts is None or (now - player.updated_ts) >= REFRESH_COOLDOWN
-        if refresh and stale:
-            try:
-                refresh_player(storage, client, player, now, stratz=stratz)
-            except Exception:  # ошибка по одному игроку не должна рушить весь лидерборд
-                log.warning("Не удалось обновить игрока %s (id %s), беру кэш",
-                            player.display_name, player.account_id, exc_info=True)
-            # точная перечитка по account_id (без неоднозначности имён)
-            player = storage.get_player_by_account_id(chat_id, player.account_id) or player
-        summaries.append(build_player_summary(storage, chat, player, now))
+    if refresh:
+        players = refresh_chat(storage, client, chat_id, now, stratz, players)
+
+    summaries = [build_player_summary(storage, chat, player, now) for player in players]
 
     # По убыванию текущего MMR; игроки без оценки MMR — в конце.
     summaries.sort(key=lambda s: (s.current_mmr is not None, s.current_mmr or 0), reverse=True)

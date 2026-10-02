@@ -38,6 +38,7 @@ from mmrbot.tracker import (
     build_chat_comparison,
     build_hero_view,
     build_leaderboard,
+    refresh_chat,
     build_match_view,
     build_period_leaderboard,
     build_player_heroes,
@@ -117,8 +118,9 @@ async def render_graph_board(
     cached = _graph_cache.get((storage.db_path, chat_id, period))
     if cached and time.monotonic() - cached[0] < GRAPH_CACHE_TTL:
         return cached[1]
-    if refresh:
-        await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    if refresh:  # для графика нужны только свежие матчи — сводки игроков не собираем
+        async with _chat_lock(chat_id):
+            await asyncio.to_thread(refresh_chat, storage, od, chat_id, int(time.time()), stratz)
     now = int(time.time())
     since = period_since(period, now)
     series = await asyncio.to_thread(build_mmr_series, storage, chat_id, since)

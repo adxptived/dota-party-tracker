@@ -652,3 +652,25 @@ def test_summary_today_is_calendar_day_in_chat_tz(store):
     chat = store.get_or_create_chat(100)  # tz по умолчанию Europe/Moscow
     s = build_player_summary(store, chat, player, now=now)
     assert s.games_today == 1
+
+
+def test_refresh_chat_refreshes_only_stale_players_and_returns_fresh_rows(store):
+    from mmrbot.tracker import refresh_chat
+    now = 1_000_000
+    stale = store.add_player(1, 11, "Старый", None, 0, 0)
+    fresh = store.add_player(1, 22, "Свежий", None, 0, 0)
+    store.update_player_rank(fresh.id, 80, None, updated_ts=now - 10)
+    client = FakeOpenDota()
+    players = refresh_chat(store, client, 1, now)
+    assert client.profile_calls == 1  # только устаревший
+    assert {p.account_id: p.updated_ts for p in players}[11] == now
+
+
+def test_get_outcomes_returns_light_rows_in_time_order(store):
+    p = store.add_player(1, 11, "A", None, 0, 0)
+    store.add_matches(p.id, [
+        {**od_match(2, 200), "duration": 1}, {**od_match(1, 100, slot=130, radiant_win=False)},
+    ])
+    rows = store.get_outcomes(p.id)
+    assert [r["start_time"] for r in rows] == [100, 200]
+    assert set(rows[0]) == {"start_time", "player_slot", "radiant_win"}
