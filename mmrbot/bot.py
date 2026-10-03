@@ -5,15 +5,17 @@ import asyncio
 import logging
 import time
 
-from aiogram import Bot, Router
+import re
+
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, InputMediaPhoto, Message
+from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InputMediaPhoto, Message
 
 from mmrbot import commands as cmd
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import STEPS, TIMEZONES, graph_buttons, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import STEPS, TIMEZONES, confirm_remove, graph_buttons, list_actions, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.service import (
     render_board,
@@ -77,7 +79,7 @@ HELP_TEXT = (
     '• KDA — (убийства + помощь) / смерти. GPM — золото в минуту.\n'
     '• 🟢🟡🔴 — винрейт: от 55% / 48–54% / ниже 48%.\n\n'
     '👥 Игроки и настройки\n'
-    '/add <ссылка или ID> [Имя] [MMR] — добавить аккаунт\n'
+    '/add <ссылка или ID> [Имя] [MMR] — добавить аккаунт (или кнопка ➕ в /menu)\n'
     '   пример: /add dotabuff.com/players/123456 Вася 5400\n'
     '/list — список участников\n'
     '/remove <Имя> — удалить игрока\n'
@@ -126,7 +128,7 @@ async def _send_chunks(message: Message, text: str, markup=None) -> None:
         await message.answer(chunk, parse_mode="HTML", reply_markup=markup if i == len(chunks) - 1 else None)
 
 
-async def _reply_board(message: Message, coro, status=None) -> None:
+async def _reply_board(message: Message, coro, status=None, markup=None) -> None:
     """Общий помощник: собрать текст (с обработкой ошибок сети) и отправить чанками.
 
     status — временное сообщение «Формирование…» (удаляется); под отчётом кнопки «В меню»/«Закрыть».
@@ -142,7 +144,7 @@ async def _reply_board(message: Message, coro, status=None) -> None:
     if text is None:
         await message.answer("🔍 Игрок не найден. Список игроков: /list", reply_markup=nav_menu())
         return
-    await _send_chunks(message, text, nav_menu())
+    await _send_chunks(message, text, markup or nav_menu())
 
 
 @router.message(Command("start"))
@@ -156,12 +158,59 @@ async def cmd_menu(message: Message) -> None:
     await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
 
 
+ADD_PROMPT = "➕ Добавить игрока: ответьте на это сообщение ссылкой или ID, при желании — именем и стартовым MMR."
+ADD_EXAMPLE = "Пример: dotabuff.com/players/123456 Вася 5400"
+SETMMR_PROMPT = "✏️ Задать MMR игрока {name} (id {account}): ответьте на это сообщение числом."
+HERO_PROMPT = "🔎 Статистика героя: ответьте на это сообщение названием героя (например, Axe)."
+MATCHID_PROMPT = "🔢 Разбор матча: ответьте на это сообщение ID матча (число из 8+ цифр)."
+_SETMMR_RE = re.compile(r"^✏️ Задать MMR игрока .+ \(id (\d+)\)")
+
+
+async def _prompt_add(message: Message) -> None:
+    await message.answer(
+        f"{ADD_PROMPT}\n{ADD_EXAMPLE}",
+        reply_markup=ForceReply(force_reply=True, input_field_placeholder="ссылка или ID  Имя  MMR"),
+    )
+
+
+async def _prompt_hero(message: Message) -> None:
+    await message.answer(HERO_PROMPT, reply_markup=ForceReply(force_reply=True, input_field_placeholder="Axe"))
+
+
+async def _prompt_matchid(message: Message) -> None:
+    await message.answer(MATCHID_PROMPT, reply_markup=ForceReply(force_reply=True, input_field_placeholder="7812345678"))
+
+
+async def _ask_match(message: Message, storage: Storage) -> None:
+    extra = [
+        [InlineKeyboardButton(text="🕘 Последний в чате", callback_data="pp:match:last")],
+        [InlineKeyboardButton(text="🔢 По ID матча", callback_data="m:matchid")],
+    ]
+    await message.answer(
+        "Чей матч показать?", reply_markup=players_picker(storage.list_players(message.chat.id), "match", extra=extra)
+    )
+
+
+async def _prompt_setmmr(message: Message, player) -> None:
+    await message.answer(
+        SETMMR_PROMPT.format(name=player.display_name, account=player.account_id),
+        reply_markup=ForceReply(force_reply=True, input_field_placeholder="например 5300"),
+    )
+
+
 @router.message(Command("add"))
 async def cmd_add(
     message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None
 ) -> None:
+    if not (command.args or "").strip():
+        await _prompt_add(message)
+        return
+    await do_add(message, storage, od, command.args or "", stratz)
+
+
+async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, stratz=None) -> None:
     try:
-        identifier, name, mmr = cmd.parse_add_args(command.args or "")
+        identifier, name, mmr = cmd.parse_add_args(args)
         account_id = await asyncio.to_thread(resolve_account_id, identifier)
     except ValueError as exc:
         await message.answer(f"⚠️ Ошибка: {exc}")
@@ -209,14 +258,15 @@ async def _roster_text(storage: Storage, chat_id: int) -> str:
 
 @router.message(Command("list"))
 async def cmd_list(message: Message, storage: Storage) -> None:
-    await message.answer(await _roster_text(storage, message.chat.id), parse_mode="HTML")
+    await message.answer(await _roster_text(storage, message.chat.id), parse_mode="HTML", reply_markup=list_actions())
 
 
 @router.message(Command("remove"))
 async def cmd_remove(message: Message, command: CommandObject, storage: Storage) -> None:
     name = (command.args or "").strip()
     if not name:
-        await message.answer("ℹ️ Формат команды: /remove Имя")
+        if await _has_players(message, storage):
+            await _ask_player(message, storage, "remove", "Кого удалить?")
         return
     ok = storage.remove_player(message.chat.id, name)
     await message.answer("🗑️ Игрок удалён." if ok else "🔍 Игрок не найден. Список игроков: /list")
@@ -224,6 +274,10 @@ async def cmd_remove(message: Message, command: CommandObject, storage: Storage)
 
 @router.message(Command("setmmr"))
 async def cmd_setmmr(message: Message, command: CommandObject, storage: Storage) -> None:
+    if not (command.args or "").strip():
+        if await _has_players(message, storage):
+            await _ask_player(message, storage, "setmmr", "Выберите игрока, чтобы задать MMR:")
+        return
     try:
         name, mmr = cmd.parse_name_and_mmr(command.args or "")
     except ValueError as exc:
@@ -284,7 +338,8 @@ async def do_stats(message: Message, storage: Storage, od: OpenDota, stratz=None
         return
     status = await _progress(message, "⏳ Формирование статистики за сегодня…" if today_only else "⏳ Формирование статистики…")
     await _reply_board(
-        message, render_board(storage, od, message.chat.id, today_only=today_only, refresh=True, stratz=stratz), status
+        message, render_board(storage, od, message.chat.id, today_only=today_only, refresh=True, stratz=stratz), status,
+        stats_tabs("today" if today_only else "stats"),
     )
 
 
@@ -292,7 +347,9 @@ async def do_period_stats(message: Message, storage: Storage, od: OpenDota, peri
     if not await _has_players(message, storage):
         return
     status = await _progress(message, "⏳ Формирование статистики за период…")
-    await _reply_board(message, render_period_board(storage, od, message.chat.id, period, stratz), status)
+    await _reply_board(
+        message, render_period_board(storage, od, message.chat.id, period, stratz), status, stats_tabs(period)
+    )
 
 
 async def do_together(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
@@ -365,7 +422,9 @@ async def do_match(message: Message, storage: Storage, od: OpenDota, name, match
 
 async def do_player_card(message: Message, storage: Storage, od: OpenDota, name: str, stratz=None) -> None:
     status = await _progress(message, f"⏳ Формирование карточки игрока {name}…")
-    await _reply_board(message, render_player_board(storage, od, message.chat.id, name, stratz), status)
+    player = storage.get_player(message.chat.id, name)
+    markup = player_actions(player.account_id) if player else None
+    await _reply_board(message, render_player_board(storage, od, message.chat.id, name, stratz), status, markup)
 
 
 async def do_records(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None,
@@ -577,6 +636,51 @@ async def cmd_player(message: Message, command: CommandObject, storage: Storage,
     await do_player_card(message, storage, od, name, stratz)
 
 
+# --- ответы на подсказки кнопок («Добавить», «Задать MMR») ---------------
+
+def _is_reply_to_prompt(message: Message) -> bool:
+    reply = message.reply_to_message
+    return bool(reply and reply.from_user and reply.from_user.is_bot and reply.text and message.text
+                and not message.text.startswith("/"))
+
+
+@router.message(F.reply_to_message, F.text, _is_reply_to_prompt)
+async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
+    prompt = message.reply_to_message.text or ""
+    if prompt.startswith(ADD_PROMPT):
+        await do_add(message, storage, od, message.text or "", stratz)
+        return
+    if prompt.startswith(HERO_PROMPT):
+        query = (message.text or "").strip()
+        status = await _progress(message, "⏳ Формирование статистики по герою…")
+        await _reply_board(message, render_hero_board(storage, od, message.chat.id, query, "all", stratz), status)
+        return
+    if prompt.startswith(MATCHID_PROMPT):
+        match_id, name = cmd.parse_match_args(message.text or "")
+        if match_id is None:
+            await message.answer("⚠️ Нужен ID матча — число из 8 и более цифр.")
+            return
+        await do_match(message, storage, od, name, match_id, stratz)
+        return
+    match = _SETMMR_RE.match(prompt)
+    if match is None:
+        return
+    player = storage.get_player(message.chat.id, match.group(1))
+    if player is None:
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    try:
+        mmr = cmd.parse_mmr_value(message.text or "")
+    except ValueError as exc:
+        await message.answer(f"⚠️ Ошибка: {exc}")
+        return
+    storage.set_player_anchor(player.id, mmr, int(time.time()))
+    await message.answer(
+        f"MMR игрока {player.display_name} установлен на ≈ {mmr}. Дальнейшая оценка ведётся от этого значения.",
+        reply_markup=nav_menu(),
+    )
+
+
 # --- кнопки -------------------------------------------------------------
 
 async def _on_settings(message: Message, storage: Storage, args: list[str]) -> None:
@@ -672,7 +776,7 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             await message.answer(HELP_TEXT, reply_markup=nav_menu())
         elif action == "list":
             await message.answer(
-                await _roster_text(storage, message.chat.id), parse_mode="HTML", reply_markup=nav_menu()
+                await _roster_text(storage, message.chat.id), parse_mode="HTML", reply_markup=list_actions()
             )
         elif action == "stats":
             await do_stats(message, storage, od, stratz)
@@ -685,10 +789,16 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         elif action == "together":
             await do_together(message, storage, od, stratz)
         elif action == "match":
-            await do_match(message, storage, od, None, None, stratz)
-        elif action in {"heroes", "roles", "player", "steam"}:
+            await _ask_match(message, storage)
+        elif action == "matchid":
+            await _prompt_matchid(message)
+        elif action == "hero":
+            await _prompt_hero(message)
+        elif action == "add":
+            await _prompt_add(message)
+        elif action in {"remove", "setmmr", "heroes", "roles", "player", "steam"}:
             if await _has_players(message, storage):
-                label = {"heroes": "Выберите игрока для просмотра героев", "roles": "Выберите игрока для просмотра позиций", "player": "Выберите игрока для просмотра карточки", "steam": "Выберите игрока для просмотра Steam-профиля"}[action]
+                label = {"remove": "Кого удалить", "setmmr": "Выберите игрока, чтобы задать MMR", "heroes": "Выберите игрока для просмотра героев", "roles": "Выберите игрока для просмотра позиций", "player": "Выберите игрока для просмотра карточки", "steam": "Выберите игрока для просмотра Steam-профиля"}[action]
                 await _ask_player(message, storage, action, f"{label}:")
         return
 
@@ -702,6 +812,29 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             await do_player_card(message, storage, od, account, stratz)
         elif pick == "steam":
             await do_steam(message, storage, od, account)
+        elif pick == "remove":
+            player = storage.get_player(message.chat.id, account)
+            if player is None:
+                await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+            else:
+                await message.answer(
+                    f"🗑️ Удалить игрока {player.display_name}? История его матчей и достижения будут стёрты.",
+                    reply_markup=confirm_remove(player.account_id),
+                )
+        elif pick == "achv":
+            await do_achievements(message, storage, account)
+        elif pick == "match":
+            player = None if account == "last" else storage.get_player(message.chat.id, account)
+            await do_match(message, storage, od, player.display_name if player else None, None, stratz)
+        elif pick == "rmyes":
+            ok = storage.remove_player(message.chat.id, account)
+            await message.answer("🗑️ Игрок удалён." if ok else NOT_FOUND_TEXT, reply_markup=nav_menu())
+        elif pick == "setmmr":
+            player = storage.get_player(message.chat.id, account)
+            if player is None:
+                await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+            else:
+                await _prompt_setmmr(message, player)
         return
 
     if kind in {"hp", "rp"} and len(args) == 2:

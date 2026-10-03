@@ -367,7 +367,8 @@ def test_menu_button_deletes_source_message_and_status(env):
     assert cb.message.deleted  # старое меню убрано
     assert cb.message.statuses[0].deleted  # «Формирование…» убрано
     markup = cb.message.sent[-1][1]["reply_markup"]  # под отчётом «В меню» / «Закрыть»
-    assert {b.callback_data for row in markup.inline_keyboard for b in row} == {"m:menu", "x:close"}
+    data = {b.callback_data for row in markup.inline_keyboard for b in row}
+    assert {"m:menu", "x:close"} <= data and {"m:stats", "m:today", "m:week", "m:month"} <= data  # + вкладки периодов
 
 
 def test_close_button_deletes_message(env):

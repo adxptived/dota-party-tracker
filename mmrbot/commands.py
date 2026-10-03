@@ -53,6 +53,14 @@ def parse_name_and_mmr(args: str) -> tuple[str, int]:
     return name, mmr
 
 
+def parse_mmr_value(text: str) -> int:
+    """Ответ на подсказку кнопки «Задать MMR»: одно число в допустимом диапазоне."""
+    token = (text or "").strip()
+    if not _is_int(token):
+        raise ValueError("Нужно одно число, например 5300.")
+    return _validate_mmr(int(token))
+
+
 def parse_step(args: str) -> int:
     """`/setstep <шаг>` → положительный int."""
     token = (args or "").strip()
