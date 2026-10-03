@@ -44,17 +44,21 @@ class OpenDota:
         self.max_retries = max_retries
         self._session = session or requests.Session()
         self._last_call = 0.0
-        # Один клиент шарится между to_thread-воркерами: сериализуем запросы,
-        # чтобы не ломать троттлинг и не делить requests.Session между потоками гонкой.
+        # Лок защищает только резервирование «слота» запроса (троттлинг): сами HTTP-запросы идут
+        # параллельно — ожидание сети перекрывается между потоками, частота остаётся в лимите.
         self._lock = threading.Lock()
 
     def _throttle(self) -> None:
+        """Резервируем слот под локом, спим вне лока — потоки не стоят в очереди целиком."""
         if self.min_interval <= 0:
             return
-        wait = self.min_interval - (time.monotonic() - self._last_call)
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._last_call + self.min_interval)
+            self._last_call = slot
+        wait = slot - now
         if wait > 0:
             time.sleep(wait)
-        self._last_call = time.monotonic()
 
     def _get(self, path: str, params: Optional[dict] = None):
         params = dict(params or {})
@@ -62,26 +66,25 @@ class OpenDota:
             params["api_key"] = self.api_key
         url = f"{BASE_URL}{path}"
 
-        with self._lock:  # сериализация запросов между потоками (троттлинг + общая Session)
-            last_exc: Optional[Exception] = None
-            for attempt in range(self.max_retries):
-                self._throttle()
-                delay = 1.5 * (attempt + 1)
-                try:
-                    resp = self._session.get(url, params=params, timeout=self.timeout)
-                    if resp.status_code in _RETRY_STATUSES:
-                        last_exc = RuntimeError(f"OpenDota HTTP {resp.status_code}")
-                        delay = _retry_after(resp, delay)
-                    else:
-                        resp.raise_for_status()  # 4xx — не ретраим, сразу наверх
-                        return resp.json()
-                except requests.HTTPError:
-                    raise
-                except (requests.RequestException, ValueError) as exc:  # сеть / битый JSON
-                    last_exc = exc
-                if attempt < self.max_retries - 1:  # после последней попытки не спим зря
-                    time.sleep(delay)
-            raise last_exc or RuntimeError("OpenDota: не удалось получить ответ")
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.max_retries):
+            self._throttle()
+            delay = 1.5 * (attempt + 1)
+            try:
+                resp = self._session.get(url, params=params, timeout=self.timeout)
+                if resp.status_code in _RETRY_STATUSES:
+                    last_exc = RuntimeError(f"OpenDota HTTP {resp.status_code}")
+                    delay = _retry_after(resp, delay)
+                else:
+                    resp.raise_for_status()  # 4xx — не ретраим, сразу наверх
+                    return resp.json()
+            except requests.HTTPError:
+                raise
+            except (requests.RequestException, ValueError) as exc:  # сеть / битый JSON
+                last_exc = exc
+            if attempt < self.max_retries - 1:  # после последней попытки не спим зря
+                time.sleep(delay)
+        raise last_exc or RuntimeError("OpenDota: не удалось получить ответ")
 
     def refresh(self, account_id: int) -> bool:
         """Попросить OpenDota перечитать историю матчей игрока (POST /refresh).
@@ -89,13 +92,12 @@ class OpenDota:
         Обновление у OpenDota асинхронное: свежие матчи появятся не мгновенно, а
         через некоторое время — зато следующий опрос будет актуальнее. Best-effort.
         """
-        with self._lock:
-            self._throttle()
-            try:
-                self._session.post(f"{BASE_URL}/players/{account_id}/refresh", timeout=self.timeout)
-                return True
-            except Exception:
-                return False
+        self._throttle()
+        try:
+            self._session.post(f"{BASE_URL}/players/{account_id}/refresh", timeout=self.timeout)
+            return True
+        except Exception:
+            return False
 
     def get_profile(self, account_id: int) -> dict:
         data = self._get(f"/players/{account_id}") or {}

@@ -555,3 +555,34 @@ def test_graph_cache_avoids_second_render(store, monkeypatch):
     for _ in range(2):
         asyncio.run(service.render_graph_board(store, FakeOD(), 100, "week", refresh=False))
     assert len(calls) == 1
+
+
+def test_chart_spread_labels_separates_close_values():
+    from mmrbot.charts import _spread_labels
+    out = _spread_labels([50, 50, 51], 10)
+    assert all(b - a >= 10 for a, b in zip(sorted(out), sorted(out)[1:]))
+
+
+def test_graph_caption_lists_players_and_cache_depends_on_step(store, monkeypatch):
+    import mmrbot.service as service
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    store.add_matches(p.id, [m(1, now - 3600), m(2, now - 1800, False), m(3, now - 900)])
+    monkeypatch.setattr(service, "render_mmr_chart", lambda *a, **k: b"\x89PNG")
+    service._graph_cache.clear()
+    _, caption = asyncio.run(service.render_graph_board(store, FakeOD(), 100, "week", refresh=False))
+    assert "Вася" in caption and "+25" in caption and "3 игры" in caption and "67%" in caption
+    store.set_chat_step(100, 30)
+    _, caption = asyncio.run(service.render_graph_board(store, FakeOD(), 100, "week", refresh=False))
+    assert "+30" in caption
+
+
+def test_graph_buttons_toggle_and_year():
+    buttons = [b for row in graph_buttons("week", by_games=True).inline_keyboard for b in row]
+    data = [b.callback_data for b in buttons]
+    assert "g:year:n" in data and "g:week" in data  # период сохраняет режим; тумблер возвращает к времени
+
+
+def test_render_chart_by_games_returns_png():
+    png = render_mmr_chart({"Вася": [(NOW, 25), (NOW + 60, 0)], "Петя": [(NOW, -25)]}, "t", "UTC", by_games=True)
+    assert png.startswith(b"\x89PNG")

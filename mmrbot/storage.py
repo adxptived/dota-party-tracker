@@ -128,13 +128,25 @@ CREATE TABLE IF NOT EXISTS matches (
     notified     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_id, match_id)
 );
+CREATE INDEX IF NOT EXISTS idx_matches_player_time ON matches (player_id, start_time);
 """
+
+
+class _Connection(sqlite3.Connection):
+    """`with conn:` дополнительно закрывает соединение (стандартное только коммитит) — без утечек дескрипторов."""
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
 
 
 class Storage:
     def __init__(self, db_path: str):
         self.db_path = db_path
         with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")  # режим хранится в файле БД — достаточно один раз
             conn.executescript(_SCHEMA)
             self._migrate(conn)
 
@@ -176,10 +188,10 @@ class Storage:
 
     def _conn(self) -> sqlite3.Connection:
         # timeout: фоновые джобы и хендлеры пишут из разных потоков — ждём блокировку, а не падаем.
-        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn = sqlite3.connect(self.db_path, timeout=30, factory=_Connection)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")  # читатели не блокируют писателя
+        conn.execute("PRAGMA synchronous = NORMAL")  # в WAL безопасно и заметно быстрее записи
         return conn
 
     # --- chats ----------------------------------------------------------
@@ -530,6 +542,18 @@ class Storage:
                 "INSERT OR IGNORE INTO achievements (player_id, code, earned_ts, detail) VALUES (?, ?, ?, ?)",
                 [(player_id, code, earned_ts, detail) for code, detail in items.items()],
             )
+
+    def get_outcomes(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
+        """Лёгкая выборка исходов (время/слот/победа) — для графиков, без тяжёлых полей вроде bench_json."""
+        query = "SELECT start_time, player_slot, radiant_win FROM matches WHERE player_id = ?"
+        params: list = [player_id]
+        if since_ts is not None:
+            query += " AND start_time >= ?"
+            params.append(since_ts)
+        query += " ORDER BY start_time"
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
 
     def get_matches(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
         query = "SELECT * FROM matches WHERE player_id = ?"

@@ -146,19 +146,14 @@ def test_leaderboard_shows_perf_in_line():
 
 # --- awards -------------------------------------------------------------
 
-def test_render_awards_lists_leaders():
-    players = [
-        summary(display_name="A", winrate=0.8, wins_total=8, losses_total=2, games_total=10, streak_type="W", streak_len=3),
-        summary(display_name="B", winrate=0.3, wins_total=3, losses_total=7, games_total=10, streak_type="L", streak_len=4),
-    ]
-    text = render_awards(players)
-    assert "A" in text  # король винрейта / на кураже
-    assert "B" in text  # главный тилт (серия поражений)
+def test_render_awards_lists_leaders_with_period_label():
+    awards = [{"key": "winrate", "emoji": "👑", "title": "Наивысший винрейт", "player": "A", "detail": "80%"}]
+    text = render_awards(awards, "за сутки")
+    assert "Отличия участников за сутки" in text and "A" in text and "80%" in text
 
 
-def test_render_awards_empty_when_no_eligible():
-    text = render_awards([summary(games_total=0, wins_total=0, losses_total=0)])
-    assert text == ""
+def test_render_awards_empty_when_no_awards():
+    assert render_awards([]) == ""
 
 
 # --- together -----------------------------------------------------------

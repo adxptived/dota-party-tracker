@@ -25,7 +25,7 @@ async def main() -> None:
     config = load_config()
 
     storage = Storage(config.db_path)
-    od = OpenDota(api_key=config.opendota_api_key)
+    od = OpenDota(api_key=config.opendota_api_key, min_interval=config.opendota_min_interval)
     stratz = Stratz(config.stratz_api_key) if config.stratz_api_key else None
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(link_preview_is_disabled=True))

@@ -19,13 +19,24 @@ def _games_word(n: int) -> str:
     return f"{n} {word}"
 
 
-def _stats(points: list[tuple[int, int]]) -> tuple[int, int, int]:
+def series_stats(points: list[tuple[int, int]]) -> tuple[int, int, int]:
     """(игр, побед, итог ±MMR) по серии накопленных значений."""
     wins, prev = 0, 0
     for _, value in points:
         wins += 1 if value > prev else 0
         prev = value
     return len(points), wins, points[-1][1]
+
+
+def _spread_labels(ys: list[float], min_gap: float) -> list[float]:
+    """Раздвигает подписи итогов, чтобы они не наезжали друг на друга (порядок по y сохраняется)."""
+    order = sorted(range(len(ys)), key=lambda i: ys[i])
+    placed = list(ys)
+    for prev, cur in zip(order, order[1:]):
+        if placed[cur] - placed[prev] < min_gap:
+            placed[cur] = placed[prev] + min_gap
+    shift = (sum(placed) - sum(ys)) / len(ys)  # возвращаем облако подписей к центру исходных значений
+    return [y - shift for y in placed]
 
 
 def _thin(points: list[tuple[int, int]], limit: int = MAX_POINTS) -> list[tuple[int, int]]:
@@ -56,7 +67,7 @@ def warmup() -> None:
 
 def render_mmr_chart(
     series: dict[str, list[tuple[int, int]]], title: str, tz_name: str,
-    since_ts: int | None = None, until_ts: int | None = None,
+    since_ts: int | None = None, until_ts: int | None = None, by_games: bool = False,
 ) -> bytes:
     """Динамика ±MMR по игрокам: {имя: [(unix-время, накопленное Δ)]} → PNG-байты.
 
@@ -78,6 +89,11 @@ def render_mmr_chart(
     def to_dt(ts: int) -> datetime:
         return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz)
 
+    if by_games:  # ось X — порядковый номер игры: серии разных игроков сравнимы «игра к игре»
+        series = {name: [(i, v) for i, (_, v) in enumerate(pts, 1)] for name, pts in series.items()}
+        since_ts = until_ts = None
+        to_dt = lambda n: n  # noqa: E731
+
     ordered = sorted(series.items(), key=lambda kv: kv[1][-1][1], reverse=True)
     fig = plt.figure(figsize=(10, 5.6 + 0.3 * len(ordered)), dpi=110)
     fig.patch.set_facecolor(BG)
@@ -93,12 +109,16 @@ def render_mmr_chart(
     ax.axhspan(low - pad, 0, color=LOSS, alpha=0.05, zorder=0)
     ax.axhline(0, color=FG, linewidth=1, alpha=0.4, zorder=1)
 
+    ends: list[tuple] = []
     for i, (name, points) in enumerate(ordered):
         color = PALETTE[i % len(PALETTE)]
-        games, wins, total = _stats(points)
+        games, wins, total = series_stats(points)
         shown = _thin(points)
         short = len(shown) <= DOTS_LIMIT
-        xs = [to_dt(shown[0][0])] + [to_dt(ts) for ts, _ in shown]
+        start_ts = (
+            0 if by_games else since_ts if since_ts is not None and since_ts < shown[0][0] else shown[0][0]
+        )
+        xs = [to_dt(start_ts)] + [to_dt(ts) for ts, _ in shown]  # линия стартует с нуля в начале периода
         ys = [0] + [value for _, value in shown]
         label = f"{name}   {total:+d} MMR · {_games_word(games)} · {wins / games * 100:.0f}% побед"
         if short:
@@ -112,11 +132,9 @@ def render_mmr_chart(
         else:  # длинная история: гладкая линия без точек
             ax.plot(xs, ys, color=color, linewidth=2.2, label=label, zorder=3, solid_joinstyle="round")
             ax.fill_between(xs, ys, 0, color=color, alpha=0.10, zorder=2, linewidth=0)
-        ax.annotate(
-            f"{total:+d}", (xs[-1], ys[-1]), xytext=(8, 0), textcoords="offset points", va="center",
-            color=color, fontsize=11, fontweight="bold", zorder=6,
-            bbox={"facecolor": PANEL, "edgecolor": "none", "pad": 1.5, "alpha": 0.85},
-        )
+        if until_ts is not None and until_ts > shown[-1][0]:  # после последней игры значение держится до «сейчас»
+            ax.hlines(ys[-1], xs[-1], to_dt(until_ts), color=color, linewidth=1.4, linestyles=":", alpha=0.7, zorder=3)
+        ends.append((xs[-1], ys[-1], total, color))
         if len(ordered) == 1 and games >= 3:  # у одного игрока подписываем пик и просадку
             full_ys = [value for _, value in points]
             hi, lo = max(full_ys), min(full_ys)
@@ -128,6 +146,14 @@ def render_mmr_chart(
                 ax.annotate(f"▼ просадка {lo:+d}", (to_dt(lo_ts), lo), xytext=(0, -16), textcoords="offset points",
                             ha="center", color=LOSS, fontsize=9, zorder=6)
 
+    label_ys = _spread_labels([e[1] for e in ends], (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.055)
+    for (x_end, y_end, total, color), y_label in zip(ends, label_ys):
+        ax.annotate(
+            f"{total:+d}", (x_end, y_label), xytext=(8, 0), textcoords="offset points", va="center",
+            color=color, fontsize=11, fontweight="bold", zorder=6, annotation_clip=False,
+            bbox={"facecolor": PANEL, "edgecolor": "none", "pad": 1.5, "alpha": 0.85},
+        )
+
     fig.text(0.075, 0.935, title, color=FG, fontsize=16, fontweight="bold", ha="left")
     ax.set_ylabel("± MMR (оценка)", color=MUTED, fontsize=10)
     ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=8))
@@ -137,9 +163,13 @@ def render_mmr_chart(
     ax.set_axisbelow(True)
     for spine in ax.spines.values():
         spine.set_visible(False)
-    locator = mdates.AutoDateLocator(tz=tz)
-    ax.xaxis.set_major_locator(locator)
-    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=tz))
+    if by_games:
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
+        ax.set_xlabel("номер игры", color=MUTED, fontsize=10)
+    else:
+        locator = mdates.AutoDateLocator(tz=tz)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator, tz=tz))
     ax.margins(x=0.06)
     if since_ts is not None and until_ts is not None:  # ось — выбранный период целиком, а не только где есть игры
         ax.set_xlim(to_dt(since_ts), to_dt(until_ts + (until_ts - since_ts) // 25))

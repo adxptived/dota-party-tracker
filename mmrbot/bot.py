@@ -451,13 +451,15 @@ async def do_records(message: Message, storage: Storage, od: OpenDota, period: s
     await _send_chunks(message, text, markup)
 
 
-async def do_graph(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None) -> None:
+async def do_graph(
+    message: Message, storage: Storage, od: OpenDota, period: str, stratz=None, by_games: bool = False
+) -> None:
     """График ±MMR по игрокам за период (картинка + кнопки периодов)."""
     if not await _has_players(message, storage):
         return
     status = await _progress(message, "⏳ Рисую график…")
     try:
-        result = await render_graph_board(storage, od, message.chat.id, period, stratz)
+        result = await render_graph_board(storage, od, message.chat.id, period, stratz, by_games=by_games)
     except Exception:
         logging.getLogger(__name__).exception("Ошибка построения графика для чата %s", message.chat.id)
         await _delete(status)
@@ -465,32 +467,34 @@ async def do_graph(message: Message, storage: Storage, od: OpenDota, period: str
         return
     await _delete(status)
     if result is None:
-        await message.answer("💤 За выбранный период ранкед-игр не было.", reply_markup=graph_buttons(period))
+        await message.answer("💤 За выбранный период ранкед-игр не было.", reply_markup=graph_buttons(period, by_games))
         return
     png, caption = result
     await message.answer_photo(
         BufferedInputFile(png, filename="mmr.png"), caption=caption, parse_mode="HTML",
-        reply_markup=graph_buttons(period),
+        reply_markup=graph_buttons(period, by_games),
     )
 
 
-async def edit_graph(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None) -> None:
+async def edit_graph(
+    message: Message, storage: Storage, od: OpenDota, period: str, stratz=None, by_games: bool = False
+) -> None:
     """Смена периода под графиком: подменяем картинку и подпись в том же сообщении."""
     try:
-        result = await render_graph_board(storage, od, message.chat.id, period, stratz, refresh=False)
+        result = await render_graph_board(storage, od, message.chat.id, period, stratz, refresh=False, by_games=by_games)
     except Exception:
         logging.getLogger(__name__).exception("Ошибка построения графика для чата %s", message.chat.id)
         return
     try:
         if result is None:
             await message.edit_caption(
-                caption="💤 За выбранный период ранкед-игр не было.", reply_markup=graph_buttons(period)
+                caption="💤 За выбранный период ранкед-игр не было.", reply_markup=graph_buttons(period, by_games)
             )
             return
         png, caption = result
         await message.edit_media(
             InputMediaPhoto(media=BufferedInputFile(png, filename="mmr.png"), caption=caption, parse_mode="HTML"),
-            reply_markup=graph_buttons(period),
+            reply_markup=graph_buttons(period, by_games),
         )
     except Exception as exc:
         if "not modified" in str(exc):
@@ -743,12 +747,13 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
 
     if kind == "g":
         period = args[0] if args else "week"
-        if period in {"day", "week", "month", "all"}:
+        by_games = "n" in args[1:]
+        if period in {"day", "week", "month", "year", "all"}:
             if getattr(message, "photo", None):
-                await edit_graph(message, storage, od, period, stratz)  # график меняется на месте
+                await edit_graph(message, storage, od, period, stratz, by_games)  # график меняется на месте
             else:
                 await _delete(message)
-                await do_graph(message, storage, od, period, stratz)
+                await do_graph(message, storage, od, period, stratz, by_games)
         return
 
     # переход в другой раздел: старое сообщение (меню/выбор игрока/прошлый отчёт) убираем, чтобы не засорять чат;
