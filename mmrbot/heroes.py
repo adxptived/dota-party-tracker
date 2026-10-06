@@ -132,18 +132,76 @@ HERO_NAMES: dict[int, str] = {
 }
 
 
+
+
+# Русские названия и ходовые прозвища → английское имя (ищем по имени, а не по id: переживает новые id).
+_RU_NAMES = {
+    "антимаг": "Anti-Mage", "акс": "Axe", "мирана": "Mirana", "джаггернаут": "Juggernaut", "джаггер": "Juggernaut",
+    "пудж": "Pudge", "инвокер": "Invoker", "инвок": "Invoker", "зевс": "Zeus", "лина": "Lina", "лион": "Lion",
+    "снайпер": "Sniper", "сф": "Shadow Fiend", "шэдоу фиенд": "Shadow Fiend", "шадоу фиенд": "Shadow Fiend",
+    "рики": "Riki", "сларк": "Slark", "свен": "Sven", "тини": "Tiny",
+    "канкка": "Kunkka", "кункка": "Kunkka", "лич": "Lich", "фантом ассасин": "Phantom Assassin",
+    "фантомка": "Phantom Assassin", "па": "Phantom Assassin", "некрофос": "Necrophos", "некр": "Necrophos",
+    "тайдхантер": "Tidehunter", "тайд": "Tidehunter", "венга": "Vengeful Spirit", "виндренджер": "Windranger",
+    "ренджер": "Windranger", "виндрейнджер": "Windranger", "морф": "Morphling", "морфлинг": "Morphling",
+    "рубик": "Rubick", "пак": "Puck", "пуга": "Pugna", "пугна": "Pugna", "дазл": "Dazzle",
+    "дэзл": "Dazzle", "бристл": "Bristleback", "бристлбэк": "Bristleback", "спектра": "Spectre",
+    "спектр": "Spectre", "медуза": "Medusa", "мипо": "Meepo", "мепо": "Meepo", "энигма": "Enigma",
+    "войд": "Faceless Void", "фейслес войд": "Faceless Void", "сайленсер": "Silencer", "варлок": "Warlock",
+    "ликан": "Lycan", "луна": "Luna", "омникнайт": "Omniknight", "оракул": "Oracle",
+    "тролль": "Troll Warlord", "троль": "Troll Warlord", "урса": "Ursa", "виверн": "Winter Wyvern",
+    "тинкер": "Tinker", "техис": "Techies", "техиз": "Techies", "ио": "Io", "дум": "Doom",
+    "марси": "Marci", "марс": "Mars", "магнус": "Magnus", "хускар": "Huskar",
+    "клинкз": "Clinkz", "клокверк": "Clockwerk", "клок": "Clockwerk", "джакиро": "Jakiro",
+    "таск": "Tusk", "терор": "Terrorblade",
+    "террорблейд": "Terrorblade", "кристалка": "Crystal Maiden", "цм": "Crystal Maiden",
+    "дро": "Drow Ranger", "дровка": "Drow Ranger", "дроу рейнджер": "Drow Ranger", "эмбер": "Ember Spirit",
+    "шторм": "Storm Spirit", "сторм": "Storm Spirit", "войд спирит": "Void Spirit", "вк": "Wraith King",
+    "скелет": "Wraith King",
+    "бх": "Bounty Hunter",
+}
 _ALIASES = {"am": 1, "cm": 5, "sf": 11, "pa": 44, "bb": 99, "wk": 42, "tb": 109, "ember": 106, "ls": 54}
+SUBSTRING_MIN = 4  # подстрока внутри слова — только от 4 символов: «od» не должен находить Bloodseeker
+
+
+def update_heroes(data) -> int:
+    """Дополнить/обновить справочник из ответа OpenDota /heroes ([{id, localized_name}]). Вернуть число новых."""
+    added = 0
+    for hero in data if isinstance(data, list) else []:
+        try:
+            hid, name = int(hero["id"]), hero["localized_name"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not isinstance(name, str) or not name:
+            continue
+        added += hid not in HERO_NAMES
+        HERO_NAMES[hid] = name
+    return added
 
 
 def find_hero(query: str):
-    """Имя героя (регистр не важен; префикс/подстрока и короткие алиасы) → hero_id | None."""
+    """Имя героя (регистр не важен; английское/русское, префикс слова, алиасы) → hero_id | None."""
     q = (query or "").strip().lower()
     if not q:
         return None
     if q in _ALIASES:
         return _ALIASES[q]
     names = {hid: name.lower() for hid, name in HERO_NAMES.items()}
-    for match in (lambda n: n == q, lambda n: n.startswith(q), lambda n: q in n):
+    ru = _RU_NAMES.get(q)
+    if ru:
+        q = ru.lower()
+    elif any("а" <= ch <= "я" or ch == "ё" for ch in q):  # кириллица: префикс русского названия
+        hits = [en for key, en in _RU_NAMES.items() if key.strip().startswith(q) and len(q) >= 3]
+        if hits:
+            q = hits[0].lower()
+    matchers = [
+        lambda n: n == q,
+        lambda n: n.startswith(q),
+        lambda n: any(word.startswith(q) for word in n.replace("-", " ").split()),
+    ]
+    if len(q) >= SUBSTRING_MIN:
+        matchers.append(lambda n: q in n)
+    for match in matchers:
         for hid, name in names.items():
             if match(name):
                 return hid

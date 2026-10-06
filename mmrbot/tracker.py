@@ -15,7 +15,7 @@ from typing import Optional, Protocol
 
 from mmrbot import achievements, party, records, stats
 from mmrbot.awards import compute_period_awards
-from mmrbot.ranks import rank_emoji, rank_label
+from mmrbot.ranks import mmr_rank_mismatch, rank_emoji, rank_label
 from mmrbot.storage import Chat, Player, Storage
 
 log = logging.getLogger(__name__)
@@ -37,10 +37,9 @@ class OpenDotaClient(Protocol):
     def get_profile(self, account_id: int) -> dict: ...
     def get_matches(self, account_id: int, limit: Optional[int] = 200) -> list[dict]: ...
     # get_recent_matches(account_id) -> list[dict] — необязателен: есть у настоящего клиента, лёгкая сверка
-    def get_totals(self, account_id: int) -> dict: ...
-    def get_lanes(self, account_id: int) -> dict: ...
-    def get_gpm_distribution(self, account_id: int) -> dict: ...
-    def get_match_player_stats(self, match_id: int, account_id: int) -> Optional[dict]: ...
+    def get_match_player_stats(
+        self, match_id: int, account_id: int, player_slot: Optional[int] = None
+    ) -> Optional[dict]: ...
 
 
 @dataclass
@@ -78,6 +77,7 @@ class PlayerSummary:
     max_duration_min: float = 0.0
     solo: tuple = (0, 0)
     party: tuple = (0, 0)
+    party_unknown: tuple = (0, 0)  # игры, где размер пати неизвестен
     best_hour: Optional[tuple] = None
     worst_hour: Optional[tuple] = None
     lanes: dict = field(default_factory=dict)
@@ -88,6 +88,7 @@ class PlayerSummary:
     gpm_best: Optional[float] = None
     avg_perf: Optional[float] = None
     enriched_games: int = 0
+    detail_games: int = 0  # игр, по которым известны GPM/нетворт/урон (средние считаются только по ним)
     avg_gpm_window: Optional[float] = None
     avg_hero_damage_window: Optional[float] = None
     avg_net_worth_window: Optional[float] = None
@@ -99,6 +100,8 @@ class PlayerSummary:
     hero_pool: int = 0
     wins_losses: dict = field(default_factory=dict)
     steam_name: Optional[str] = None
+    mmr_drift: bool = False  # оценка MMR разошлась с медалью — стоит обновить /setmmr
+    history_closed: bool = False  # история матчей закрыта у OpenDota — цифры могут быть неполными
 
 
 def _normalize(raw: dict) -> dict:
@@ -122,6 +125,7 @@ def _normalize(raw: dict) -> dict:
         "hero_damage": raw.get("hero_damage"),
         "tower_damage": raw.get("tower_damage"),
         "hero_healing": raw.get("hero_healing"),
+        "leaver_status": raw.get("leaver_status"),
     }
 
 
@@ -134,9 +138,15 @@ HISTORY_LIMIT_REFRESH = 200  # дальше хватает свежих матч
 STRATZ_CAP = 50  # сколько матчей дозаполнять у Stratz за один refresh (пачкой, 1–2 запроса)
 
 
-def _enrich_from_stratz(storage: Storage, stratz: StratzClient, player: Player) -> None:
-    """Дозаполнить позицию/роль/лейн/IMP. Нет недостающих матчей — нет и запроса."""
-    pending = storage.get_match_ids_without_stratz(player.id, 0, STRATZ_CAP)
+def _enrich_from_stratz(
+    storage: Storage, stratz: StratzClient, player: Player, now: Optional[int] = None
+) -> None:
+    """Дозаполнить позицию/роль/лейн/IMP. Нет недостающих матчей — нет и запроса.
+
+    Промах (Stratz ещё не разобрал матч) откладывает повтор с растущей паузой, а не сжигает попытки подряд.
+    """
+    now = int(time.time()) if now is None else now
+    pending = storage.get_match_ids_without_stratz(player.id, 0, STRATZ_CAP, now=now)
     if not pending:
         return
     try:
@@ -148,7 +158,7 @@ def _enrich_from_stratz(storage: Storage, stratz: StratzClient, player: Player) 
         if match_id in data:
             storage.update_match_stratz(player.id, match_id, data[match_id])
     # Матч без ответа или без размера пати считаем промахом — чтобы очередь не крутилась вечно.
-    storage.mark_stratz_miss(player.id, [m for m in pending if (data.get(m) or {}).get("party_size") is None])
+    storage.mark_stratz_miss(player.id, [m for m in pending if (data.get(m) or {}).get("party_size") is None], now)
 
 
 def backfill_stratz(storage: Storage, stratz: StratzClient, rounds: int = 6) -> int:
@@ -161,7 +171,7 @@ def backfill_stratz(storage: Storage, stratz: StratzClient, rounds: int = 6) -> 
                 continue
             seen.add(player.account_id)
             for _ in range(rounds):
-                before = len(storage.get_match_ids_without_stratz(player.id, 0, STRATZ_CAP))
+                before = len(storage.get_match_ids_without_stratz(player.id, 0, STRATZ_CAP, now=int(time.time())))
                 if not before:
                     break
                 _enrich_from_stratz(storage, stratz, player)
@@ -174,11 +184,12 @@ def _enrich_from_opendota(storage: Storage, client: OpenDotaClient, player: Play
     ids = storage.get_unenriched_match_ids(player.id, 0, cap)
     for match_id in ids:
         try:
-            details = client.get_match_player_stats(match_id, player.account_id)
-        except Exception:
-            log.debug("Не удалось обогатить матч %s", match_id, exc_info=True)
-            storage.mark_enrich_miss(player.id, match_id)
-            continue
+            details = client.get_match_player_stats(
+                match_id, player.account_id, storage.get_match_slot(player.id, match_id)
+            )
+        except Exception:  # сбой/лимит — не «нет данных»: попытку не тратим и остальные матчи не дёргаем
+            log.debug("OpenDota не ответил по матчу %s, остановка прогона", match_id, exc_info=True)
+            break
         if not details:
             storage.mark_enrich_miss(player.id, match_id)
             continue
@@ -193,8 +204,6 @@ def backfill_opendota(storage: Storage, client: OpenDotaClient, per_player: int 
     seen: set[int] = set()
     for chat in storage.list_chats():
         for player in storage.list_players(chat.chat_id):
-            if player.insights_dirty:  # фон после команды не успел/не смог — догоняем здесь
-                _refresh_insights(storage, client, player)
             if player.account_id in seen:
                 continue
             seen.add(player.account_id)
@@ -207,36 +216,16 @@ def _store_profile(storage: Storage, player: Player, profile: dict, now: int) ->
     tier, board = profile.get("rank_tier"), profile.get("leaderboard_rank")
     if tier is None and not profile.get("personaname"):
         tier, board = player.last_rank_tier, player.last_leaderboard_rank
-    storage.set_player_rank(player.id, tier, board, now)
-
-
-def _refresh_insights(storage: Storage, client: OpenDotaClient, player: Player) -> None:
-    """Средние GPM/XPM/last hits, линии и распределение GPM игрока (3 необязательных запроса)."""
-    ok = True
-    try:
-        totals = client.get_totals(player.account_id)
-        storage.update_player_totals(player.id, totals.get("gpm"), totals.get("xpm"), totals.get("last_hits"))
-    except Exception:
-        ok = False
-        log.debug("Не удалось получить totals игрока %s", player.account_id, exc_info=True)
-    try:
-        lanes = client.get_lanes(player.account_id)
-        lanes_json = json.dumps({str(lane): list(gw) for lane, gw in lanes.items()})
-        dist = client.get_gpm_distribution(player.account_id)
-        storage.update_player_insights(player.id, lanes_json, dist.get("median"), dist.get("best"))
-    except Exception:
-        ok = False
-        log.debug("Не удалось получить lanes/gpm игрока %s", player.account_id, exc_info=True)
-    if ok and player.insights_dirty:
-        storage.set_insights_dirty(player.id, False)
+    closed = profile.get("fh_unavailable")
+    storage.set_player_rank(player.id, tier, board, now, None if closed is None else bool(closed))
 
 
 def finish_refresh(storage: Storage, client: OpenDotaClient, chat_id: int, per_player: int = ENRICH_CAP) -> int:
     """Вторая, необязательная для ответа половина обновления чата — выполняется фоном после команды.
 
     Быстрое обновление (refresh_player(fast=True)) забирает матчи, ранг и позиции Stratz. Здесь
-    догоняем медленное у OpenDota: пинок перечитать историю, средние/линии игроков с новыми играми,
-    perf/benchmarks свежих матчей. Нечего догонять — запросов нет. Вернуть число запросов деталей матчей.
+    догоняем медленное у OpenDota: пинок перечитать историю и perf/benchmarks свежих матчей.
+    (Карьерные средние GPM/XPM, линии и медиану GPM больше не запрашиваем: бот их нигде не показывает.) Нечего догонять — запросов нет. Вернуть число запросов деталей матчей.
     """
     done = 0
     for player in storage.list_players(chat_id):
@@ -244,10 +233,14 @@ def finish_refresh(storage: Storage, client: OpenDotaClient, chat_id: int, per_p
             client.refresh(player.account_id)
         except Exception:
             pass
-        if player.insights_dirty:
-            _refresh_insights(storage, client, player)
         done += _enrich_from_opendota(storage, client, player, per_player)
     return done
+
+
+def refresh_heroes(client: OpenDotaClient) -> int:
+    """Подтянуть справочник героев с OpenDota (новый герой — не «hero 156»). Вернуть число новых героев."""
+    from mmrbot.heroes import update_heroes
+    return update_heroes(client.get_heroes())
 
 
 def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional[int] = None) -> list[dict]:
@@ -283,14 +276,16 @@ def check_achievements(storage: Storage, player: Player, now: int) -> list[tuple
 
     Первая проверка игрока только запоминает уже заработанное (без оповещений, чтобы не «завалить» чат).
     """
-    earned = achievements.evaluate(storage.get_matches(player.id))
+    earned = achievements.evaluate_timed(storage.get_matches(player.id))
     known = storage.get_achievements(player.id)
     if "_seeded" not in known:
-        storage.add_achievements(player.id, dict(earned, _seeded=None), now)
+        storage.add_achievements(player.id, {code: detail for code, (_, detail) in earned.items()}, now,
+                                 {code: ts for code, (ts, _) in earned.items()})
+        storage.add_achievements(player.id, {"_seeded": None}, now)
         return []
-    new = {code: detail for code, detail in earned.items() if code not in known}
+    new = {code: detail for code, (_, detail) in earned.items() if code not in known}
     if new:
-        storage.add_achievements(player.id, new, now)
+        storage.add_achievements(player.id, new, now, {code: earned[code][0] for code in new})
     return list(new.items())
 
 
@@ -302,11 +297,8 @@ def list_achievements(storage: Storage, chat_id: int, now: int, name: Optional[s
         players = [player] if player else []
     result = []
     for player in players:
-        earned = achievements.evaluate(storage.get_matches(player.id))
-        stored = storage.get_achievements(player.id)
-        result.append((player.display_name, {
-            code: (stored[code][0] if code in stored else now, detail) for code, detail in earned.items()
-        }))
+        earned = achievements.evaluate_timed(storage.get_matches(player.id))
+        result.append((player.display_name, dict(earned)))  # дата — матч, на котором порог достигнут
     return result
 
 
@@ -500,20 +492,11 @@ def refresh_player(
         except Exception:
             log.debug("Не удалось получить профиль игрока %s", player.account_id, exc_info=True)
 
-    # Агрегаты (totals/линии/GPM) меняются только с новыми матчами. Если их нет, а инсайты уже
-    # сохранены — пропускаем 3 запроса (каждый ≈1.1 с троттлинга OpenDota).
-    insights_fresh = inserted == 0 and player.last_lanes is not None
-    if fast:
-        if not insights_fresh and not player.insights_dirty:
-            storage.set_insights_dirty(player.id, True)
-    else:
-        if not insights_fresh:
-            _refresh_insights(storage, client, player)
-        if enrich_cap > 0:
-            _enrich_from_opendota(storage, client, player, enrich_cap)
+    if not fast and enrich_cap > 0:
+        _enrich_from_opendota(storage, client, player, enrich_cap)
 
     if stratz is not None:
-        _enrich_from_stratz(storage, stratz, player)
+        _enrich_from_stratz(storage, stratz, player, now)
 
     return inserted
 
@@ -575,7 +558,7 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
     role_style = stats.infer_role_style(avg_last_hits_window, avg_hero_healing_window)
 
     lobby_ranks = [m["average_rank"] for m in all_matches if m.get("average_rank")]
-    lobby_rank = round(statistics.median(lobby_ranks)) if lobby_ranks else None
+    lobby_rank = median_rank_tier(lobby_ranks)
     wins_losses = stats.wins_losses_split(all_matches)
     pool = stats.hero_pool(all_matches)
 
@@ -613,6 +596,7 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         max_duration_min=duration["max_minutes"],
         solo=split["solo"],
         party=split["party"],
+        party_unknown=split["unknown"],
         best_hour=best_hour,
         worst_hour=worst_hour,
         lanes=lanes,
@@ -623,6 +607,7 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         gpm_best=player.last_gpm_best,
         avg_perf=avg_perf,
         enriched_games=len(enriched),
+        detail_games=sum(1 for m in all_matches if m.get("gpm") is not None),
         avg_gpm_window=_mean_field("gpm"),
         avg_hero_damage_window=_mean_field("hero_damage"),
         avg_net_worth_window=_mean_field("net_worth"),
@@ -633,6 +618,8 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         lobby_rank=lobby_rank,
         hero_pool=pool,
         wins_losses=wins_losses,
+        history_closed=player.fh_unavailable,
+        mmr_drift=mmr_rank_mismatch(current_mmr, player.last_rank_tier),
     )
 
 
@@ -783,22 +770,34 @@ def _parse_lanes(lanes_json: Optional[str]) -> dict:
     return result
 
 
+def median_rank_tier(tiers: list[int]) -> Optional[int]:
+    """Медиана rank_tier, всегда существующее значение набора (среднее 45 и 52 дало бы невозможный «Archon 8»)."""
+    return statistics.median_low(tiers) if tiers else None
+
+
 def _best_worst_hour(by_hour: dict, min_games: int = 3):
-    """Из {час: (игр, побед)} выбрать лучший/худший час (по винрейту, порог по играм)."""
+    """Из {час: (игр, побед)} выбрать лучший/худший час (по винрейту, порог по играм).
+
+    Нужны минимум два часа с разным винрейтом: иначе один и тот же час был бы и лучшим, и худшим.
+    """
     qualified = [(hour, wins / games, games) for hour, (games, wins) in by_hour.items() if games >= min_games]
-    if not qualified:
+    if len(qualified) < 2:
         return (None, None)
     best = max(qualified, key=lambda x: x[1])
     worst = min(qualified, key=lambda x: x[1])
+    if best[1] == worst[1]:
+        return (None, None)
     return ((best[0], best[1]), (worst[0], worst[1]))
 
 
 # Метрики для сравнения игроков внутри чата (все — «выше = лучше»).
+MIN_COMPARE_GAMES = 5  # перф/GPM сравниваем, только если они посчитаны хотя бы по стольким играм (иначе это шум)
+
 _COMPARE_METRICS = {
-    "perf": lambda s: s.avg_perf,
+    "perf": lambda s: s.avg_perf if s.enriched_games >= MIN_COMPARE_GAMES else None,
     "winrate": lambda s: s.winrate if s.games_total else None,
     "kda": lambda s: s.kda_ratio if s.games_total else None,
-    "gpm": lambda s: s.avg_gpm_window,
+    "gpm": lambda s: s.avg_gpm_window if s.detail_games >= MIN_COMPARE_GAMES else None,
 }
 
 

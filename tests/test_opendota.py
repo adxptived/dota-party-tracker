@@ -386,3 +386,27 @@ def test_failed_refresh_post_can_be_retried():
     od = OpenDota(session=Flaky({}), min_interval=0)
     assert od.refresh(42) is False
     assert od.refresh(42) is True
+
+
+def test_party_id_zero_means_unknown_not_a_group():
+    """party_id = 0 у одиночек: пять одиночек на стороне не должны стать «пати из 5»."""
+    match = {"players": [{"account_id": i, "player_slot": i - 1, "party_id": 0} for i in range(1, 6)]}
+    od = OpenDota(session=FakeSession(match), min_interval=0)
+    assert od.get_match_player_stats(2, 1)["party_size"] is None
+
+
+def test_hidden_profile_found_by_player_slot():
+    """У скрытого профиля account_id в матче обнулён — игрока находим по сохранённому слоту."""
+    match = {"players": [
+        {"account_id": None, "player_slot": 3, "gold_per_min": 555},
+        {"account_id": 9, "player_slot": 130, "gold_per_min": 100},
+    ]}
+    od = OpenDota(session=FakeSession(match), min_interval=0)
+    assert od.get_match_player_stats(3, 42) is None
+    assert od.get_match_player_stats(3, 42, player_slot=3)["gpm"] == 555
+
+
+def test_get_heroes_returns_list_or_empty():
+    heroes = [{"id": 1, "localized_name": "Anti-Mage"}]
+    assert OpenDota(session=FakeSession(heroes), min_interval=0).get_heroes() == heroes
+    assert OpenDota(session=FakeSession({"oops": 1}), min_interval=0).get_heroes() == []

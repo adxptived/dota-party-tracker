@@ -32,6 +32,7 @@ from mmrbot.tracker import (
     build_weekly_report,
     detect_new_games,
     detect_steam_changes,
+    refresh_heroes,
 )
 
 log = logging.getLogger(__name__)
@@ -123,6 +124,15 @@ def setup_scheduler(
         except Exception:
             log.exception("Фоновое обогащение матчей OpenDota не удалось")
 
+    async def heroes_refresh() -> None:
+        """Справочник героев: раз в сутки и вскоре после старта."""
+        try:
+            added = await asyncio.to_thread(refresh_heroes, od)
+            if added:
+                log.info("Справочник героев пополнен: +%d", added)
+        except Exception:
+            log.exception("Обновление справочника героев не удалось")
+
     async def steam_watch() -> None:
         """Оповещения о смене ника/аватарки Steam (профили берём из OpenDota)."""
         try:
@@ -140,6 +150,9 @@ def setup_scheduler(
                     await bot.send_message(event["chat_id"], text, parse_mode="HTML")
             except Exception:
                 log.warning("Не удалось отправить оповещение Steam в чат %s", event["chat_id"], exc_info=True)
+
+    scheduler.add_job(heroes_refresh, "cron", hour=5, minute=10, misfire_grace_time=3600)
+    scheduler.add_job(heroes_refresh, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=45))
 
     # Каждые 30 минут сверяем ник/аватарку; первый прогон через минуту после старта (заполняет базу).
     scheduler.add_job(

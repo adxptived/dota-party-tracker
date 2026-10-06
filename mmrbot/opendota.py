@@ -47,7 +47,7 @@ def _party_size(players: list, me: dict) -> Optional[int]:
     if size:
         return size
     party_id = me.get("party_id")
-    if party_id is None or me.get("player_slot") is None:
+    if not party_id or me.get("player_slot") is None:  # 0 — «нет пати» у одиночек: по нему группу не собрать
         return None
     side = me["player_slot"] < 128
     same = sum(
@@ -173,6 +173,11 @@ class OpenDota:
                 self._refresh_at.pop(account_id, None)  # не дошло — в следующий раз попробуем снова
             return False
 
+    def get_heroes(self) -> list[dict]:
+        """Справочник героев /heroes: [{id, localized_name, ...}] (пусто при сбое формата)."""
+        data = self._get("/heroes")
+        return data if isinstance(data, list) else []
+
     def get_profile(self, account_id: int) -> dict:
         data = self._get(f"/players/{account_id}") or {}
         profile = data.get("profile") or {}
@@ -186,6 +191,7 @@ class OpenDota:
             "loccountrycode": profile.get("loccountrycode"),
             "plus": bool(profile.get("plus")),
             "last_login": profile.get("last_login"),
+            "fh_unavailable": profile.get("fh_unavailable"),  # None — признака нет в ответе
         }
 
     def get_matches(self, account_id: int, limit: Optional[int] = 200, lobby_type: Optional[int] = 7) -> list[dict]:
@@ -262,7 +268,7 @@ class OpenDota:
     _MATCH_FIELDS = {
         "gold_per_min": "gpm", "xp_per_min": "xpm", "last_hits": "last_hits", "denies": "denies",
         "hero_damage": "hero_damage", "tower_damage": "tower_damage", "hero_healing": "hero_healing",
-        "net_worth": "net_worth", "level": "level",
+        "net_worth": "net_worth", "level": "level", "leaver_status": "leaver_status",
     }
 
     def get_match(self, match_id: int) -> dict:
@@ -294,7 +300,9 @@ class OpenDota:
                         self._match_cache.popitem(last=False)
             return match
 
-    def get_match_player_stats(self, match_id: int, account_id: int) -> Optional[dict]:
+    def get_match_player_stats(
+        self, match_id: int, account_id: int, player_slot: Optional[int] = None
+    ) -> Optional[dict]:
         """Пер-матч статистика игрока из /matches/{id} + benchmarks (перцентиль vs тот же герой).
 
         GPM/урон/хил/нетворт и benchmarks приходят БЕЗ парса (из сводки Valve).
@@ -303,6 +311,8 @@ class OpenDota:
         match = self.get_match(match_id)
         players = match.get("players") or []
         player = next((p for p in players if p.get("account_id") == account_id), None)
+        if player is None and player_slot is not None:  # скрытый профиль: account_id в матче обнулён — ищем по слоту
+            player = next((p for p in players if p.get("player_slot") == player_slot), None)
         if player is None:
             return None
         result = {out: player.get(src) for src, out in self._MATCH_FIELDS.items()}

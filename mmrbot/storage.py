@@ -52,7 +52,8 @@ class Player:
     steam_avatar: Optional[str] = None
     profile_ts: Optional[int] = None  # когда последний раз получили профиль (ранг) из OpenDota
     history_ts: Optional[int] = None  # когда последний раз сверяли историю глубоко (список на 200 матчей)
-    insights_dirty: bool = False  # пришли новые игры, а средние/линии ещё не пересчитаны (догонит фон)
+    insights_dirty: bool = False  # устарело: средние/линии больше не запрашиваются (колонка осталась ради старых баз)
+    fh_unavailable: bool = False  # OpenDota: история матчей игрока закрыта — цифры могут быть неполными
 
 
 _SCHEMA = """
@@ -96,6 +97,7 @@ CREATE TABLE IF NOT EXISTS players (
     profile_ts            INTEGER,
     history_ts            INTEGER,
     insights_dirty        INTEGER NOT NULL DEFAULT 0,
+    fh_unavailable        INTEGER NOT NULL DEFAULT 0,
     UNIQUE(chat_id, account_id)
 );
 CREATE TABLE IF NOT EXISTS matches (
@@ -131,6 +133,7 @@ CREATE TABLE IF NOT EXISTS matches (
     stratz_done  INTEGER NOT NULL DEFAULT 0,
     stratz_tries INTEGER NOT NULL DEFAULT 0,
     enrich_tries INTEGER NOT NULL DEFAULT 0,
+    stratz_next_ts INTEGER NOT NULL DEFAULT 0,
     notified     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (player_id, match_id)
 );
@@ -181,6 +184,7 @@ class Storage:
             "steam_name": "TEXT", "steam_avatar": "TEXT",
             "profile_ts": "INTEGER", "history_ts": "INTEGER",
             "insights_dirty": "INTEGER NOT NULL DEFAULT 0",
+            "fh_unavailable": "INTEGER NOT NULL DEFAULT 0",
         })
         add_missing("matches", {
             "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
@@ -192,6 +196,8 @@ class Storage:
             "stratz_done": "INTEGER NOT NULL DEFAULT 0",
             "stratz_tries": "INTEGER NOT NULL DEFAULT 0",
             "enrich_tries": "INTEGER NOT NULL DEFAULT 0",
+            "stratz_next_ts": "INTEGER NOT NULL DEFAULT 0",
+            "leaver_status": "INTEGER",
         })
 
     def _conn(self) -> sqlite3.Connection:
@@ -299,6 +305,7 @@ class Storage:
             profile_ts=row["profile_ts"],
             history_ts=row["history_ts"],
             insights_dirty=bool(row["insights_dirty"]),
+            fh_unavailable=bool(row["fh_unavailable"]),
         )
 
     def update_player_steam(self, player_id: int, name: Optional[str], avatar: Optional[str]) -> dict:
@@ -334,6 +341,8 @@ class Storage:
         anchor_ts: int,
         created_ts: int,
     ) -> Player:
+        if self.nick_taken(chat_id, display_name):  # «Вася» и «вася» — один ник: команды находят игрока без учёта регистра
+            raise ValueError(f"Ник «{display_name}» в этом чате уже занят (регистр не важен) — выберите другой.")
         with self._conn() as conn:
             try:
                 cur = conn.execute(
@@ -345,6 +354,11 @@ class Storage:
                 raise ValueError("Этот аккаунт уже добавлен в этот чат.") from exc
             row = conn.execute("SELECT * FROM players WHERE id = ?", (cur.lastrowid,)).fetchone()
             return self._player_from_row(row)
+
+    def nick_taken(self, chat_id: int, name: str) -> bool:
+        """Есть ли в чате игрок с таким ником (без учёта регистра; SQLite lower() кириллицу не трогает)."""
+        wanted = (name or "").strip().lower()
+        return any(p.display_name.lower() == wanted for p in self.list_players(chat_id))
 
     def get_player(self, chat_id: int, key: str) -> Optional[Player]:
         # Регистронезависимое сравнение делаем в Python: SQLite lower() не трогает кириллицу.
@@ -405,14 +419,22 @@ class Storage:
             )
 
     def set_player_rank(
-        self, player_id: int, rank_tier: Optional[int], leaderboard_rank: Optional[int], profile_ts: int
+        self, player_id: int, rank_tier: Optional[int], leaderboard_rank: Optional[int], profile_ts: int,
+        fh_unavailable: Optional[bool] = None,
     ) -> None:
-        """Сохранить ранг из профиля, не трогая updated_ts (тот отмечает успешную сверку матчей)."""
+        """Сохранить ранг из профиля, не трогая updated_ts (тот отмечает успешную сверку матчей).
+
+        fh_unavailable=None — профиль признака не дал (сбой), прежнее значение не трогаем.
+        """
         with self._conn() as conn:
             conn.execute(
                 "UPDATE players SET last_rank_tier = ?, last_leaderboard_rank = ?, profile_ts = ? WHERE id = ?",
                 (rank_tier, leaderboard_rank, profile_ts, player_id),
             )
+            if fh_unavailable is not None:
+                conn.execute(
+                    "UPDATE players SET fh_unavailable = ? WHERE id = ?", (1 if fh_unavailable else 0, player_id)
+                )
 
     def touch_player(self, player_id: int, updated_ts: int, deep: bool = False) -> None:
         """Отметить успешную сверку матчей (deep — сверяли глубоко, списком на 200 матчей)."""
@@ -451,7 +473,7 @@ class Storage:
     # Поля, которые OpenDota может отдать позже (матч ещё не разобран) — дозаполняем при повторной выдаче.
     _FILL_FIELDS = (
         "hero_id", "duration", "party_size", "average_rank",
-        "gpm", "xpm", "last_hits", "hero_damage", "tower_damage", "hero_healing",
+        "gpm", "xpm", "last_hits", "hero_damage", "tower_damage", "hero_healing", "leaver_status",
     )
 
     def add_matches(self, player_id: int, matches: list[dict]) -> int:
@@ -533,7 +555,7 @@ class Storage:
 
     _DETAIL_FIELDS = (
         "gpm", "xpm", "last_hits", "denies", "hero_damage",
-        "tower_damage", "hero_healing", "net_worth", "level",
+        "tower_damage", "hero_healing", "net_worth", "level", "leaver_status",
     )
 
     def update_match_details(self, player_id: int, match_id: int, details: dict, perf_score) -> None:
@@ -566,25 +588,42 @@ class Storage:
                 params,
             )
 
+    # Пауза перед следующей попыткой после промаха: Stratz разбирает матч не сразу, а иногда — часами.
+    STRATZ_BACKOFF = (300, 900, 2700, 7200, 21600, 43200, 86400)
+
     def get_match_ids_without_stratz(
-        self, player_id: int, since_ts: int, limit: int = 20, max_tries: int = 5
+        self, player_id: int, since_ts: int, limit: int = 20, max_tries: int = 8, now: Optional[int] = None
     ) -> list[int]:
-        """Матчи, которых Stratz ещё не отдал (свежие первыми); после max_tries промахов — сдаёмся."""
+        """Матчи, которых Stratz ещё не отдал (свежие первыми).
+
+        После max_tries промахов сдаёмся; при заданном now матчи, чья пауза повтора ещё не вышла, пропускаем.
+        """
+        due = "" if now is None else "AND stratz_next_ts <= ? "
+        params: list = [player_id, max_tries] + ([] if now is None else [now]) + [since_ts, limit]
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT match_id FROM matches WHERE player_id = ? AND (stratz_done = 0 OR party_size IS NULL) "
-                "AND stratz_tries < ? AND start_time >= ? ORDER BY start_time DESC LIMIT ?",
-                (player_id, max_tries, since_ts, limit),
+                f"AND stratz_tries < ? {due}AND start_time >= ? ORDER BY start_time DESC LIMIT ?",
+                params,
             ).fetchall()
         return [r["match_id"] for r in rows]
 
-    def mark_stratz_miss(self, player_id: int, match_ids: list[int]) -> None:
-        """Stratz не вернул матч — копим попытки, чтобы не спрашивать вечно."""
+    def mark_stratz_miss(self, player_id: int, match_ids: list[int], now: int = 0) -> None:
+        """Stratz не вернул матч — копим попытки и откладываем следующую с растущей паузой."""
         with self._conn() as conn:
-            conn.executemany(
-                "UPDATE matches SET stratz_tries = stratz_tries + 1 WHERE player_id = ? AND match_id = ?",
-                [(player_id, mid) for mid in match_ids],
-            )
+            for mid in match_ids:
+                row = conn.execute(
+                    "SELECT stratz_tries FROM matches WHERE player_id = ? AND match_id = ?", (player_id, mid)
+                ).fetchone()
+                if row is None:
+                    continue
+                tries = row["stratz_tries"]
+                delay = self.STRATZ_BACKOFF[min(tries, len(self.STRATZ_BACKOFF) - 1)]
+                conn.execute(
+                    "UPDATE matches SET stratz_tries = stratz_tries + 1, stratz_next_ts = ? "
+                    "WHERE player_id = ? AND match_id = ?",
+                    (now + delay, player_id, mid),
+                )
 
     def get_unenriched_match_ids(
         self, player_id: int, since_ts: int, limit: int, max_tries: int = 3
@@ -598,6 +637,13 @@ class Storage:
             ).fetchall()
         return [r["match_id"] for r in rows]
 
+    def get_match_slot(self, player_id: int, match_id: int) -> Optional[int]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT player_slot FROM matches WHERE player_id = ? AND match_id = ?", (player_id, match_id)
+            ).fetchone()
+        return None if row is None else row["player_slot"]
+
     def mark_enrich_miss(self, player_id: int, match_id: int) -> None:
         """OpenDota не отдал детали матча — копим попытки, чтобы он не блокировал очередь."""
         with self._conn() as conn:
@@ -607,10 +653,14 @@ class Storage:
             )
 
     def get_unnotified_matches(self, player_id: int, since_ts: int) -> list[dict]:
-        """Матчи, о которых ещё не оповещали, не старше since_ts (свежие — кандидаты на оповещение)."""
+        """Матчи, о которых ещё не оповещали и которые закончились не раньше since_ts (кандидаты на оповещение).
+
+    Возраст считаем от конца матча: длинная игра при задержке OpenDota иначе молча выпадала из окна.
+    """
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM matches WHERE player_id = ? AND notified = 0 AND start_time >= ? ORDER BY start_time",
+                "SELECT * FROM matches WHERE player_id = ? AND notified = 0 "
+                "AND start_time + COALESCE(duration, 0) >= ? ORDER BY start_time",
                 (player_id, since_ts),
             ).fetchall()
         return [dict(r) for r in rows]
@@ -629,11 +679,13 @@ class Storage:
             ).fetchall()
         return {r["code"]: (r["earned_ts"], r["detail"]) for r in rows}
 
-    def add_achievements(self, player_id: int, items: dict, earned_ts: int) -> None:
+    def add_achievements(self, player_id: int, items: dict, earned_ts: int, times: Optional[dict] = None) -> None:
+        """times — {code: реальное время получения}; без него (и для кода без записи) — earned_ts."""
+        times = times or {}
         with self._conn() as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO achievements (player_id, code, earned_ts, detail) VALUES (?, ?, ?, ?)",
-                [(player_id, code, earned_ts, detail) for code, detail in items.items()],
+                [(player_id, code, times.get(code, earned_ts), detail) for code, detail in items.items()],
             )
 
     def get_outcomes(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:

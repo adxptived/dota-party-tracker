@@ -25,7 +25,7 @@ class FakeOpenDota:
         self.refresh_calls += 1
         return True
 
-    def get_match_player_stats(self, match_id, account_id):
+    def get_match_player_stats(self, match_id, account_id, player_slot=None):
         return self.match_stats
 
     def get_profile(self, account_id):
@@ -202,8 +202,8 @@ def test_build_chat_comparison_ranks_and_power(store):
     store.add_matches(p.id, [_m(10 + i, 2000 + i, radiant_win=(i % 2 == 0)) for i in range(4)])
     base = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)[0]
     # A лучше по всем метрикам, B хуже
-    a = replace(base, display_name="A", avg_perf=0.8, winrate=0.6, kda_ratio=4.0, avg_gpm_window=500.0, games_total=5)
-    b = replace(base, display_name="B", avg_perf=0.4, winrate=0.4, kda_ratio=2.0, avg_gpm_window=400.0, games_total=5)
+    a = replace(base, display_name="A", avg_perf=0.8, winrate=0.6, kda_ratio=4.0, avg_gpm_window=500.0, games_total=5, enriched_games=5, detail_games=5)
+    b = replace(base, display_name="B", avg_perf=0.4, winrate=0.4, kda_ratio=2.0, avg_gpm_window=400.0, games_total=5, enriched_games=5, detail_games=5)
     comp = build_chat_comparison([a, b])
     assert comp["size"] == 2
     assert comp["players"]["A"]["ranks"]["perf"] == 1
@@ -219,7 +219,7 @@ def test_build_chat_comparison_handles_missing_metrics(store):
     p = store.add_player(100, 1, "Base", 5000, 1000, 1000)
     store.add_matches(p.id, [_m(10, 2000)])
     base = build_leaderboard(store, FakeOpenDota(), 100, now=now, refresh=False)[0]
-    a = replace(base, display_name="A", avg_perf=0.7, games_total=5)
+    a = replace(base, display_name="A", avg_perf=0.7, games_total=5, enriched_games=5)
     b = replace(base, display_name="B", avg_perf=None, games_total=5)  # без перфа
     comp = build_chat_comparison([a, b])
     assert comp["players"]["A"]["ranks"]["perf"] == 1
@@ -236,7 +236,7 @@ def test_summary_includes_form_lanes_and_records(store):
         _m(1, 2000, radiant_win=True),
         _m(2, 3000, radiant_win=True),
         _m(3, 4000, radiant_win=False),
-        _m(4, 5000, radiant_win=True),
+        _m(4, 5000, radiant_win=True, k=8, d=2, a=8),
     ])
     p = store.get_player(100, "Вася")
     chat = store.get_or_create_chat(100)
@@ -452,9 +452,9 @@ def test_stratz_miss_is_retried_then_given_up(store):
     player = store.add_player(1, 42, "Вася", None, 0, 0)
     od = FakeOpenDota(matches=[od_match(100, 1000)])
     stratz = FakeStratz({})  # Stratz этот матч не знает
-    for i in range(8):
-        refresh_player(store, od, player, 2000 + i, stratz=stratz)
-    assert stratz.calls == 5  # дальше max_tries — не спрашиваем
+    for i in range(12):  # между попытками проходит достаточно времени, чтобы пауза всегда успевала выйти
+        refresh_player(store, od, player, 2000 + i * 100_000, stratz=stratz)
+    assert stratz.calls == 8  # дальше max_tries — не спрашиваем
     assert store.get_matches(player.id)[0]["position"] is None
 
 
@@ -508,7 +508,7 @@ def test_refresh_enriches_only_few_matches_in_request(store):
     client = FakeOpenDota(match_stats={"gpm": 500, "benchmarks": {"gold_per_min": 0.5}})
     calls = []
     orig = client.get_match_player_stats
-    client.get_match_player_stats = lambda m, a: (calls.append(m), orig(m, a))[1]
+    client.get_match_player_stats = lambda m, a, s=None: (calls.append(m), orig(m, a, s))[1]
     refresh_player(store, client, player, now=100)
     assert len(calls) <= tr.ENRICH_CAP <= 4
 
@@ -558,23 +558,14 @@ class InsightsOpenDota(FakeOpenDota):
         return {"median": 400, "best": 700}
 
 
-def test_refresh_skips_slow_insights_when_no_new_matches(store):
-    player = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
-    client = InsightsOpenDota(matches=[od_match(3, 1500)])
-    refresh_player(store, client, player, now=3000)
-    assert client.extra_calls == 3                      # первый раз — всё тянем
-    player = store.get_player(100, "Вася")
-    refresh_player(store, client, player, now=4000)     # новых матчей нет
-    assert client.extra_calls == 3                      # лишние 3 запроса не делали
-
-
-def test_refresh_refetches_insights_when_new_matches(store):
+def test_refresh_never_requests_unused_career_aggregates(store):
+    """Средние GPM/XPM, линии и медиана GPM нигде не показываются — запросов за ними нет."""
     player = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
     client = InsightsOpenDota(matches=[od_match(3, 1500)])
     refresh_player(store, client, player, now=3000)
     client.matches.append(od_match(4, 2500))
     refresh_player(store, client, store.get_player(100, "Вася"), now=4000)
-    assert client.extra_calls == 6
+    assert client.extra_calls == 0
 
 
 # --- лидерборд за период (/stats неделя|месяц) --------------------------------
@@ -797,35 +788,22 @@ def test_fast_refresh_fetches_only_matches_and_background_finishes_the_rest(stor
                               match_stats={"gpm": 500, "benchmarks": {"gold_per_min": 0.5}})
     calls = []
     orig = client.get_match_player_stats
-    client.get_match_player_stats = lambda m, a: (calls.append(m), orig(m, a))[1]
+    client.get_match_player_stats = lambda m, a, s=None: (calls.append(m), orig(m, a, s))[1]
     stratz = FakeStratz({99: {"position": 2, "role": "CORE", "lane": "MID", "imp": 7, "party_size": 1}})
 
     refresh_chat(store, client, 100, 1_000_000, stratz, fast=True)
     # Команда пользователя: у OpenDota только матчи (+ профиль, раз есть новая игра) — два запроса.
     assert (client.match_calls, client.profile_calls) == (1, 1)
     assert (client.refresh_calls, client.extra_calls, calls) == (0, 0, [])
-    assert store.get_player(100, "Вася").insights_dirty is True
     new = next(m for m in store.get_matches(player.id) if m["match_id"] == 99)
     assert new["position"] == 2 and stratz.calls == 1     # новая игра и её позиция (Stratz, пачкой) — сразу
 
     assert finish_refresh(store, client, 100, per_player=3) == 3   # остальное догоняет фон
-    assert (client.refresh_calls, client.extra_calls, len(calls)) == (1, 3, 3)
-    got = store.get_player(100, "Вася")
-    assert got.insights_dirty is False and got.last_gpm == 400.0
+    assert (client.refresh_calls, client.extra_calls, len(calls)) == (1, 0, 3)
 
     client.extra_calls = 0
     finish_refresh(store, client, 100, per_player=0)
     assert client.extra_calls == 0                        # всё актуально — лишних запросов нет
-
-
-def test_backfill_picks_up_insights_left_dirty(store):
-    from mmrbot.tracker import backfill_opendota
-    store.get_or_create_chat(100)
-    player = store.add_player(100, 42, "Вася", None, 0, 0)
-    store.set_insights_dirty(player.id, True)             # фон после команды не успел/упал
-    client = InsightsOpenDota()
-    backfill_opendota(store, client, per_player=0)
-    assert client.extra_calls == 3 and store.get_player(100, "Вася").insights_dirty is False
 
 
 def test_idle_party_is_polled_less_often_without_api_key(store):
@@ -864,3 +842,123 @@ def test_active_party_is_polled_often_even_without_api_key(store):
     client.api_key = None
     detect_new_games(store, client, store.get_or_create_chat(100), now)
     assert client.match_calls == 1
+
+
+# --- аудит данных: точность ---------------------------------------------
+
+def test_best_worst_hour_needs_two_distinct_hours():
+    from mmrbot.tracker import _best_worst_hour
+    assert _best_worst_hour({10: (5, 3)}) == (None, None)          # один час не бывает и лучшим, и худшим
+    assert _best_worst_hour({10: (4, 2), 11: (4, 2)}) == (None, None)  # одинаковый винрейт
+    best, worst = _best_worst_hour({10: (4, 3), 11: (4, 1)})
+    assert best[0] == 10 and worst[0] == 11
+
+
+def test_lobby_rank_is_a_real_rank_tier(store):
+    """Медиана 45 и 52 — не «Archon 8»: берём реальное значение из набора."""
+    import statistics
+    from mmrbot.ranks import rank_label
+    from mmrbot.tracker import median_rank_tier
+    assert median_rank_tier([45, 52]) in (45, 52)
+    assert rank_label(median_rank_tier([45, 52])) in ("Archon 5", "Legend 2")
+    assert median_rank_tier([]) is None
+    assert median_rank_tier([54, 54, 61]) == 54
+
+
+def test_enrich_failure_does_not_burn_attempts(store):
+    """Сбой/лимит OpenDota — не «нет данных»: попытки не тратятся, цикл останавливается."""
+    from mmrbot.tracker import backfill_opendota
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    _seed_matches(store, player, 3)
+    client = FakeOpenDota()
+    calls = []
+
+    def boom(match_id, account_id, player_slot=None):
+        calls.append(match_id)
+        raise RuntimeError("opendota down")
+
+    client.get_match_player_stats = boom
+    for _ in range(6):
+        backfill_opendota(store, client, per_player=5)
+    assert len(store.get_unenriched_match_ids(player.id, 0, 10)) == 3   # все ещё в очереди
+    assert len(calls) == 6                                              # по одному запросу за прогон, не по матчу
+
+
+def test_stratz_failure_does_not_burn_attempts(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    od = FakeOpenDota(matches=[od_match(100, 1000)])
+    for _ in range(8):
+        refresh_player(store, od, player, 2000, stratz=FakeStratz(fail=True))
+    assert store.get_match_ids_without_stratz(player.id, 0, 10) == [100]
+
+
+def test_stratz_miss_backs_off_then_retries(store):
+    """Stratz ещё не разобрал матч: повтор не сразу, а через растущую паузу, и позже всё же происходит."""
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    od = FakeOpenDota(matches=[od_match(100, 1000)])
+    stratz = FakeStratz({})                               # матч не найден
+    refresh_player(store, od, player, 2000, stratz=stratz)
+    assert stratz.calls == 1
+    refresh_player(store, od, player, 2100, stratz=stratz)   # пауза не вышла — запроса нет
+    assert stratz.calls == 1
+    refresh_player(store, od, player, 2000 + 301, stratz=stratz)
+    assert stratz.calls == 2
+    # паузы растут, а сдаёмся не раньше чем через сутки-двое, а не через 15 минут
+    assert sum(store.STRATZ_BACKOFF) >= 86400
+    stratz.data = {100: {"position": 1, "role": "CORE", "lane": "SAFE_LANE", "imp": 1, "party_size": 1}}
+    refresh_player(store, od, player, 2000 + 301 + 901, stratz=stratz)
+    assert store.get_matches(player.id)[0]["position"] == 1
+
+
+def test_refresh_heroes_uses_opendota_list():
+    from mmrbot import heroes
+    from mmrbot.tracker import refresh_heroes
+
+    class C:
+        def get_heroes(self):
+            return [{"id": 9998, "localized_name": "Test Hero"}]
+
+    try:
+        assert refresh_heroes(C()) == 1 and heroes.hero_name(9998) == "Test Hero"
+    finally:
+        heroes.HERO_NAMES.pop(9998, None)
+
+
+def test_closed_history_flag_saved_from_profile(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    od = FakeOpenDota(profile={"rank_tier": 55, "leaderboard_rank": None, "personaname": "x", "fh_unavailable": True},
+                      matches=[od_match(1, 1000)])
+    refresh_player(store, od, player, 2000)
+    assert store.get_player(1, "Вася").fh_unavailable is True
+    chat = store.get_or_create_chat(1)
+    s = build_player_summary(store, chat, store.get_player(1, "Вася"), now=2000)
+    assert s.history_closed is True
+    from mmrbot.formatting import render_player_card
+    assert "🔒" in render_player_card(s)
+    # профиль без признака (сбой) флаг не сбрасывает
+    refresh_player(store, FakeOpenDota(profile={"rank_tier": 55, "leaderboard_rank": None, "personaname": "x"},
+                                       matches=[od_match(2, 1500)]), store.get_player(1, "Вася"), 90_000)
+    assert store.get_player(1, "Вася").fh_unavailable is True
+
+
+def test_leaver_status_stored_and_shown(store):
+    from mmrbot.formatting import render_match_card
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [{**_m(5, 1000), "leaver_status": 3}])
+    row = store.get_matches(player.id)[0]
+    assert row["leaver_status"] == 3
+    assert "покинул" in render_match_card({"player": player, "match": row})
+
+
+def test_comparison_ignores_perf_built_on_too_few_games(store):
+    """Перф по 3 матчам не ставят рядом с перфом по 500: ниже порога метрика в сравнении не участвует."""
+    from dataclasses import replace
+    p = store.add_player(100, 1, "Base", 5000, 1000, 1000)
+    store.add_matches(p.id, [_m(10, 2000)])
+    base = build_leaderboard(store, FakeOpenDota(), 100, now=100_000, refresh=False)[0]
+    a = replace(base, display_name="A", avg_perf=0.9, enriched_games=3, avg_gpm_window=900.0, detail_games=2)
+    b = replace(base, display_name="B", avg_perf=0.5, enriched_games=50, avg_gpm_window=400.0, detail_games=50)
+    comp = build_chat_comparison([a, b])
+    assert "perf" not in comp["players"]["A"]["ranks"] and "gpm" not in comp["players"]["A"]["ranks"]
+    assert comp["players"]["B"]["ranks"]["perf"] == 1

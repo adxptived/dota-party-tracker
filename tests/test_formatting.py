@@ -262,8 +262,8 @@ def test_render_player_card_with_standing_block():
 # --- сравнение в чате ---------------------------------------------------
 
 def _two_player_comparison():
-    a = summary(display_name="A", avg_perf=0.8, winrate=0.6, kda_ratio=4.0, avg_gpm_window=500.0)
-    b = summary(display_name="B", avg_perf=0.4, winrate=0.4, kda_ratio=2.0, avg_gpm_window=400.0)
+    a = summary(display_name="A", avg_perf=0.8, winrate=0.6, kda_ratio=4.0, avg_gpm_window=500.0, enriched_games=9, detail_games=9)
+    b = summary(display_name="B", avg_perf=0.4, winrate=0.4, kda_ratio=2.0, avg_gpm_window=400.0, enriched_games=9, detail_games=9)
     return build_chat_comparison([a, b]), [a, b]
 
 
@@ -424,3 +424,51 @@ def test_player_roster_without_mmr_or_games():
 def test_player_roster_empty_gives_hint():
     from mmrbot.formatting import render_player_list
     assert "/add" in render_player_list([])
+
+
+def test_find_hero_no_random_substring_and_russian_names():
+    from mmrbot.heroes import find_hero, hero_name
+    assert find_hero("od") is None                       # «od» сидит внутри Bloodseeker — это не поиск
+    assert hero_name(find_hero("пудж")) == "Pudge"
+    assert hero_name(find_hero("Джаггернаут")) == "Juggernaut"
+    assert hero_name(find_hero("вк")) == "Wraith King"
+    assert hero_name(find_hero("wind")) == "Windranger"
+    assert hero_name(find_hero("seeker")) == "Bloodseeker"  # от 4 символов подстрока работает
+
+
+def test_update_heroes_adds_new_hero_and_renames():
+    from mmrbot import heroes
+    try:
+        added = heroes.update_heroes([{"id": 9999, "localized_name": "Новый Герой"}, {"id": "x"}, {"id": 2, "localized_name": "Axe"}])
+        assert added == 1 and heroes.hero_name(9999) == "Новый Герой"
+        assert heroes.hero_name(2) == "Axe"
+        assert heroes.update_heroes(None) == 0
+    finally:
+        heroes.HERO_NAMES.pop(9999, None)
+
+
+def test_card_labels_do_not_overclaim():
+    text = render_player_card(summary(
+        games_total=40, enriched_games=6, detail_games=9, avg_perf=0.6, avg_gpm_window=500.0,
+    ))
+    assert "Вся ранкед-история" in text and "Период анализа" not in text
+    assert "по 9 из 40" in text                  # экономика усреднена не по всем играм
+    assert "по 6 из 40" in text                  # и перф тоже
+
+
+def test_steam_profile_does_not_claim_last_dota_login():
+    from mmrbot.formatting import render_steam_profile
+    import inspect
+    sig = inspect.signature(render_steam_profile)
+    kwargs = {n: None for n in sig.parameters}
+    profile = {"personaname": "x", "last_login": "2015-01-01T00:00:00.000Z"}
+    # аргументы у функции свои — подставим по именам
+    kwargs.update({"profile": profile, "account_id": 1, "rank": "Divine 1"})
+    text = render_steam_profile(**{k: v for k, v in kwargs.items() if k in sig.parameters})
+    assert "Последний вход" not in text and "2015" not in text
+
+
+def test_card_shows_unknown_party_and_mmr_drift_hint():
+    text = render_player_card(summary(party_unknown=(3, 1), mmr_drift=True))
+    assert "размер пати неизвестен" in text and "3 игры" in text
+    assert "/setmmr" in text
