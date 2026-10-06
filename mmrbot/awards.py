@@ -12,6 +12,13 @@ from typing import Callable, Optional
 from mmrbot.stats import estimate_mmr_delta, is_win, longest_win_streak
 
 
+def _games(n: int) -> str:
+    """«1 игра», «2 игры», «21 игра», «11 игр»."""
+    n10, n100 = n % 10, n % 100
+    word = "игра" if n10 == 1 and n100 != 11 else "игры" if 2 <= n10 <= 4 and not 12 <= n100 <= 14 else "игр"
+    return f"{n} {word}"
+
+
 def _mean(values: list) -> Optional[float]:
     values = [v for v in values if v is not None]
     return sum(values) / len(values) if values else None
@@ -74,11 +81,11 @@ def compute_period_awards(
         awards.pop()
 
     add("games", "🕹️", "Больше всех играл", {n: len(ms) for n, ms in played.items()},
-        lambda n: f"{len(played[n])} игр")
+        lambda n: _games(len(played[n])))
 
     winrates = {n: sum(is_win(m["player_slot"], m["radiant_win"]) for m in ms) / len(ms) for n, ms in regular.items()}
     add("winrate", "👑", "Лучший винрейт", winrates,
-        lambda n: f"{winrates[n] * 100:.0f}% за {len(regular[n])} игр")
+        lambda n: f"{winrates[n] * 100:.0f}% за {_games(len(regular[n]))}")
 
     def averages(field: str) -> dict[str, float]:
         result = {}

@@ -216,7 +216,7 @@ async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, per
     await refresh_only(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     data = await asyncio.to_thread(build_records, storage, chat_id, since)
-    return _with_stale(storage, chat_id, render_records(data, period))
+    return _with_stale(storage, chat_id, render_records(data, period, storage.get_or_create_chat(chat_id).tz))
 
 
 async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
@@ -358,9 +358,9 @@ async def render_match_board(
     if full is not None:
         if focus is None:
             focus = next((p["account_id"] for p in full["players"] if p["account_id"] in tracked), None)
-        return render_full_match(full, tracked, focus)
+        return render_full_match(full, tracked, focus, storage.get_or_create_chat(chat_id).tz)
     if cached is not None:
-        return render_match_card(cached)
+        return render_match_card(cached, storage.get_or_create_chat(chat_id).tz)
     if stratz is None:
         return STRATZ_OFF
     return f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт)."

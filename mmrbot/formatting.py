@@ -87,9 +87,21 @@ def _mmr_str(current: Optional[int]) -> str:
     return f"≈ {current} MMR" if current is not None else "≈ ? MMR"
 
 
+def fmt_local(ts: int, tz_name: str = "UTC", fmt: str = "%d.%m.%Y") -> str:
+    """Unix-время → дата в часовом поясе чата (так же, как «сегодня»); для UTC добавляет пометку времени."""
+    from datetime import datetime, timezone
+    import pytz
+    try:
+        tz = pytz.timezone(tz_name)
+    except Exception:
+        tz, tz_name = pytz.utc, "UTC"
+    text = datetime.fromtimestamp(ts or 0, tz=timezone.utc).astimezone(tz).strftime(fmt)
+    return f"{text} UTC" if tz_name == "UTC" and "%H" in fmt else text
+
+
 def _rank_with_emoji(s: PlayerSummary) -> str:
     prefix = f"{s.rank_emoji} " if s.rank_emoji else ""
-    return f"{prefix}{s.rank}"
+    return f"{prefix}{s.rank}{' 🔒' if s.history_closed else ''}"
 
 
 def _streak_str(s: PlayerSummary) -> str:
@@ -175,7 +187,7 @@ def render_leaderboard(summaries: list[PlayerSummary], today_only: bool = False)
         blocks = [_card_today(i, s) for i, s in enumerate(summaries, start=1)]
         return header + "\n\n" + "\n\n".join(blocks)
 
-    header = "🏆 <b>Рейтинг</b>\n<i>за всё время</i>"
+    header = "🏆 <b>Рейтинг</b>\n<i>игры — с начала отслеживания, ±MMR — оценка от стартового MMR</i>"
     blocks = [_card_full(i, s) for i, s in enumerate(summaries, start=1)]
     return header + "\n\n" + "\n\n".join(blocks)
 
@@ -319,7 +331,7 @@ def render_heroes(summaries: list[PlayerSummary]) -> str:
 
 SKILL_GROUPS = [
     ("Фарм", ["gold_per_min", "last_hits_per_min", "xp_per_min"]),
-    ("Урон", ["hero_damage_per_min", "tower_damage_per_min"]),
+    ("Урон", ["hero_damage_per_min", "tower_damage"]),
     ("Участие в боях", ["kills_per_min", "assists_per_min"]),
     ("Поддержка", ["hero_healing_per_min"]),
 ]
@@ -412,11 +424,13 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
     if s.games_total == 0:
         return header + f"\n{NO_GAMES}"
 
-    lines = [header, f"<i>🔎 Период анализа: последние {plural_games(s.games_total)}</i>", ""]
+    lines = [header, f"<i>🔎 Вся ранкед-история с момента добавления: {plural_games(s.games_total)}</i>", ""]
 
     # Заголовочная строка: MMR + честный перф рядом.
     perf = f"    перф {_b(f'{s.avg_perf * 100:.0f}/100')}" if s.avg_perf is not None else ""
     lines.append(f"{_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}{perf}")
+    if s.mmr_drift:
+        lines.append(f"<i>⚠️ Оценка MMR расходится с медалью {_esc(s.rank)} — обновите стартовый: /setmmr</i>")
     lines.append(f"{s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)   последние игры: {_form_icons(s.recent_form)}")
 
     # Бой + экономика (всё за окно).
@@ -429,7 +443,8 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
     if s.avg_hero_damage_window is not None:
         econ.append(f"{_k(s.avg_hero_damage_window)} урон")
     if econ:
-        lines.append("💰 Экономика: " + " · ".join(econ))
+        part = f" (по {s.detail_games} из {s.games_total})" if 0 < s.detail_games < s.games_total else ""
+        lines.append("💰 Экономика: " + " · ".join(econ) + part)
 
     # Объективный скилл (перцентиль в мире) + стиль/роль.
     if s.role_style:
@@ -447,6 +462,8 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
     if solo_wr is not None and party_wr is not None and s.party[0] >= 2 and party_wr < solo_wr - 0.2:
         note = "   (в группе результат ниже)"
     lines.append(f"👤 Соло: {_fmt_wr(*s.solo)} · в группе: {_fmt_wr(*s.party)}{note}")
+    if s.party_unknown[0]:
+        lines.append(f"      <i>размер пати неизвестен: {plural_games(s.party_unknown[0])} — в разбивку не вошли</i>")
 
     if s.best_hour and s.worst_hour:
         bh, bwr = s.best_hour
@@ -476,6 +493,8 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
         lines.append("")
         lines.append(standing)
 
+    if s.history_closed:
+        lines.append("<i>🔒 История матчей закрыта у OpenDota — игры могли не загрузиться, цифры неполные.</i>")
     lines.append("")
     lines.append(
         f'🔗 <a href="{dotabuff_player_url(s.account_id)}">Dotabuff</a> · '
@@ -483,7 +502,8 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
     )
     if s.avg_perf is not None:
         pct = f"{s.avg_perf * 100:.0f}"
-        lines.append(f"<i>ℹ️ Перф {pct} — лучше, чем у {pct}% игроков на том же герое.</i>")
+        part = f" Посчитан по {s.enriched_games} из {s.games_total} игр." if s.enriched_games < s.games_total else ""
+        lines.append(f"<i>ℹ️ Перф {pct} — лучше, чем у {pct}% игроков на том же герое.{part}</i>")
     else:
         lines.append("<i>ℹ️ Перф — сравнение с игроками на том же герое.</i>")
     return "\n".join(lines)
@@ -499,6 +519,8 @@ def render_player_list(summaries: list[PlayerSummary]) -> str:
     for i, s in enumerate(summaries, start=1):
         if s.current_mmr is not None:
             mmr = f"🎯 {_b(_mmr_str(s.current_mmr))} (старт {s.anchor_mmr}{_trend(s.mmr_delta)})"
+            if s.mmr_drift:
+                mmr += " ⚠️ расходится с медалью — /setmmr"
         else:
             mmr = "🎯 MMR не указан (задать: /setmmr)"
         if s.games_total:
@@ -540,9 +562,7 @@ def render_steam_profile(display_name: str, account_id: int, profile: dict, rank
     if profile.get("steamid"):
         ids += f" · SteamID64 {_esc(profile['steamid'])}"
     lines.append(ids)
-    last = profile.get("last_login")
-    if last:
-        lines.append(f"🕒 Последний вход в Dota: {_esc(str(last)[:16].replace('T', ' '))} UTC")
+    # last_login в OpenDota — вход на сайт OpenDota, а не в Dota; выводить его как «последний вход» нельзя.
     return "\n".join(lines)
 
 
@@ -601,9 +621,8 @@ def render_achievement_alert(event: dict) -> str:
     return "\n".join(lines)
 
 
-def render_achievements(rows: list) -> str:
+def render_achievements(rows: list, tz: str = "UTC") -> str:
     """rows: [(имя, {code: (earned_ts, detail)})] — достижения и антирекорды по игрокам."""
-    from datetime import datetime, timezone
     from mmrbot.achievements import CATALOG
     if not rows:
         return NO_PLAYERS
@@ -617,7 +636,7 @@ def render_achievements(rows: list) -> str:
         items.sort(key=lambda kv: (CATALOG[kv[0]].anti, kv[1][0]))
         body = []
         for code, (ts, detail) in items:
-            date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m.%Y")
+            date = fmt_local(ts, tz, "%d.%m.%Y")
             body.append(f"    {_achievement_text(code, detail)} · {date}")
         blocks.append(head + "\n" + "\n".join(body))
     return "🏅 <b>Достижения и антирекорды</b>\n\n" + "\n\n".join(blocks)
@@ -668,9 +687,8 @@ def render_weekly(report: dict) -> str:
     return "\n".join(lines)
 
 
-def render_records(data: dict, period: str) -> str:
+def render_records(data: dict, period: str, tz: str = "UTC") -> str:
     """Рекорды пати за период: лучшая отдельная игра по каждому показателю (герой, значение, матч)."""
-    from datetime import datetime, timezone
     title = f"🌟 <b>Рекорды пати {PERIOD_LABELS.get(period, '')}</b>"
     records = data.get("records") or []
     if not records:
@@ -678,7 +696,7 @@ def render_records(data: dict, period: str) -> str:
     lines = [title, ""]
     for r in records:
         match = r["match"]
-        date = datetime.fromtimestamp(match["start_time"], tz=timezone.utc).strftime("%d.%m.%y")
+        date = fmt_local(match["start_time"], tz, "%d.%m.%y")
         lines.append(
             f"{r['emoji']} {r['title']}: {_b(r['player'])} — <b>{_esc(r['text'])}</b>\n"
             f"      {_esc(hero_name(match.get('hero_id')))} · {date} · "
@@ -788,12 +806,11 @@ def render_roles(name: str, rows: list[dict], period: str = "all") -> str:
     return title + "\n\n" + "\n".join(blocks)
 
 
-def render_match_card(view: dict) -> str:
-    from datetime import datetime, timezone
+def render_match_card(view: dict, tz: str = "UTC") -> str:
     from mmrbot.stats import is_win
     player, row = view["player"], view["match"]
     win = is_win(row["player_slot"], row["radiant_win"])
-    when = datetime.fromtimestamp(row["start_time"], tz=timezone.utc).strftime("%d.%m %H:%M UTC")
+    when = fmt_local(row["start_time"], tz, "%d.%m %H:%M")
     duration = f" · {row['duration'] // 60} мин" if row.get("duration") else ""
     lines = [
         f"🎮 <b>Матч {row['match_id']}</b> <i>{when}{duration}</i>",
@@ -826,6 +843,8 @@ def render_match_card(view: dict) -> str:
         dmg.append(f"хил {_k(row['hero_healing'])}")
     if dmg:
         lines.append("💥 Влияние: " + " · ".join(dmg))
+    if (row.get("leaver_status") or 0) >= 2:  # 2+ — отключился надолго / покинул / AFK: Dota считает такую игру иначе
+        lines.append("🚪 Игрок покинул игру (отключение/AFK) — MMR за неё мог считаться иначе.")
     lines.append(f'🔗 <a href="{dotabuff_match_url(row["match_id"])}">Матч на Dotabuff</a>')
     return "\n".join(lines)
 
@@ -851,7 +870,7 @@ def _team_lines(players: list[dict], tracked: dict) -> list[str]:
     return lines
 
 
-def render_full_match(match: dict, tracked: dict, focus=None) -> str:
+def render_full_match(match: dict, tracked: dict, focus=None, tz: str = "UTC") -> str:
     """Полный матч (все 10 игроков). tracked: {account_id: имя в боте} — отмечаются ★.
 
     focus — account_id игрока, чья подробная карточка (GPM, урон…) идёт сверху; без него — только шапка.
@@ -867,9 +886,9 @@ def render_full_match(match: dict, tracked: dict, focus=None) -> str:
                    duration=match.get("duration"), radiant_win=match.get("radiant_win"),
                    player_slot=0 if target["is_radiant"] else 128)
         name = tracked.get(focus) or target.get("name") or "—"
-        head = render_match_card({"player": SimpleNamespace(display_name=name), "match": row})
+        head = render_match_card({"player": SimpleNamespace(display_name=name), "match": row}, tz)
     else:
-        when = datetime.fromtimestamp(match.get("start_time") or 0, tz=timezone.utc).strftime("%d.%m %H:%M UTC")
+        when = fmt_local(match.get("start_time") or 0, tz, "%d.%m %H:%M")
         duration = f" · {match['duration'] // 60} мин" if match.get("duration") else ""
         head = (
             f"🎮 <b>Матч {match['match_id']}</b> <i>{when}{duration}</i>\n"

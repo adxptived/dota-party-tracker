@@ -410,3 +410,12 @@ def test_get_match_sides_is_light_and_ordered(store):
     assert [r["match_id"] for r in rows] == [1, 2]
     assert set(rows[0]) == {"match_id", "start_time", "player_slot", "radiant_win"}
     assert [r["match_id"] for r in store.get_match_sides(p.id, since_ts=200)] == [2]
+
+
+def test_add_player_rejects_nick_differing_only_in_case(tmp_path):
+    store = Storage(str(tmp_path / "n.db"))
+    store.add_player(1, 10, "Вася", None, 0, 0)
+    with pytest.raises(ValueError):
+        store.add_player(1, 11, "вася", None, 0, 0)
+    assert store.nick_taken(1, "ВАСЯ") and not store.nick_taken(2, "Вася")
+    store.add_player(2, 11, "вася", None, 0, 0)  # в другом чате можно

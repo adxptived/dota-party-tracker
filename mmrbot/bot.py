@@ -205,6 +205,8 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
             name = profile.get("personaname") or f"id{account_id}"
         except Exception:
             name = f"id{account_id}"
+        if storage.nick_taken(message.chat.id, name):  # автоник совпал с чужим — делаем уникальным
+            name = f"{name}#{account_id % 10000}"
 
     try:
         player = storage.add_player(message.chat.id, account_id, name, mmr, now, now)
@@ -480,7 +482,8 @@ async def do_achievements(message: Message, storage: Storage, name) -> None:
     if not rows:
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
-    for chunk in split_message(render_achievements(rows)):
+    tz = storage.get_or_create_chat(message.chat.id).tz
+    for chunk in split_message(render_achievements(rows, tz)):
         await message.answer(chunk, parse_mode="HTML", reply_markup=nav_menu())
 
 

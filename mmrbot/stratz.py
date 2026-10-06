@@ -18,7 +18,7 @@ _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _PLAYER_FIELDS = """
     lobbyType
     players {
-      steamAccountId isRadiant partyId
+      steamAccountId isRadiant partyId heroId
       position role lane imp
       goldPerMinute experiencePerMinute networth heroDamage towerDamage heroHealing
       numLastHits numDenies level
@@ -126,12 +126,17 @@ class Stratz:
                 time.sleep(self.retry_sleep * (attempt + 1))
         raise last_exc or RuntimeError("Stratz: не удалось получить ответ")
 
-    def get_matches(self, account_id: int, match_ids: list[int]) -> dict[int, dict]:
+    def get_matches(
+        self, account_id: int, match_ids: list[int], hints: Optional[dict] = None
+    ) -> dict[int, dict]:
         """Данные игрока по конкретным матчам → {match_id: поля}.
 
         История игрока у Stratz отстаёт (и lobbyType там ненадёжен), а запрос по match(id)
         отдаёт свежие матчи — поэтому берём по id, пачками через алиасы GraphQL (один запрос
         на chunk матчей). Матчей, которых у Stratz ещё нет, в результате не будет.
+
+        hints — {match_id: (is_radiant, hero_id)} из сохранённых матчей: у скрытого профиля steamAccountId
+        в ответе обнулён, и тогда игрока находим по стороне и герою (если такая строка ровно одна).
         """
         result: dict[int, dict] = {}
         for i in range(0, len(match_ids), self.chunk):
@@ -143,6 +148,10 @@ class Stratz:
                 if not rows:
                     continue
                 row = next((r for r in rows if r.get("steamAccountId") == account_id), None)
+                if row is None and hints and mid in hints:
+                    is_radiant, hero_id = hints[mid]
+                    same = [r for r in rows if r.get("isRadiant") == is_radiant and r.get("heroId") == hero_id]
+                    row = same[0] if len(same) == 1 else None
                 if row is None and not any("steamAccountId" in r for r in rows):
                     row = rows[0]  # ответ без id игроков — единственная строка
                 if row is None:

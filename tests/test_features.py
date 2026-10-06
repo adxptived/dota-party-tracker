@@ -653,7 +653,7 @@ def test_command_does_not_wait_for_per_match_requests(store):
     took = {}
 
     class SlowDetails(FakeOD):
-        def get_match_player_stats(self, match_id, account_id):
+        def get_match_player_stats(self, match_id, account_id, player_slot=None):
             release.wait(5)                                    # «медленный» OpenDota: висит, пока не отпустим
             return {"gpm": 500, "benchmarks": {"gold_per_min": 0.5}}
 
@@ -670,3 +670,64 @@ def test_command_does_not_wait_for_per_match_requests(store):
     assert took["reply"] < 2                                   # ответ собран, не дожидаясь запросов на матч
     assert all(row["enriched"] for row in store.get_matches(p.id))
     assert not service._finish_running
+
+
+# --- аудит данных: подписи и даты ----------------------------------------
+
+def test_achievement_dates_are_real_match_dates():
+    from mmrbot.achievements import evaluate_timed
+    day = 86_400
+    matches = [
+        {"match_id": i, "start_time": 1_000_000 + i * day, "duration": 1800, "player_slot": 0,
+         "radiant_win": True, "hero_id": 1, "kills": 1, "deaths": 1, "assists": 1}
+        for i in range(1, 8)
+    ]
+    got = evaluate_timed(matches)
+    ts, detail = got["win_streak_5"]
+    assert ts == 1_000_000 + 5 * day + 1800          # серия достигла 5 на пятом матче, а не «сегодня»
+    assert detail == "7"
+    assert "win_streak_10" not in got
+
+
+def test_seeded_achievements_keep_real_dates(tmp_path):
+    from mmrbot.storage import Storage
+    from mmrbot.tracker import check_achievements
+    store = Storage(str(tmp_path / "a.db"))
+    player = store.add_player(1, 5, "Вася", None, 0, 0)
+    store.add_matches(player.id, [
+        {"match_id": i, "start_time": 1000 * i, "player_slot": 0, "radiant_win": True, "lobby_type": 7, "duration": 600}
+        for i in range(1, 7)
+    ])
+    assert check_achievements(store, player, now=9_999_999) == []        # первая проверка — молча
+    stored = store.get_achievements(player.id)
+    assert stored["win_streak_5"][0] == 5000 + 600                        # не 9_999_999
+
+
+def test_fmt_local_uses_chat_timezone():
+    from mmrbot.formatting import fmt_local
+    ts = 1_700_000_000 + 21 * 3600 - 1_700_000_000 % 86400   # 21:00 UTC
+    assert fmt_local(ts, "UTC", "%d.%m %H:%M").endswith("21:00 UTC")
+    assert fmt_local(ts, "Europe/Moscow", "%d.%m %H:%M").endswith("00:00")  # полночь следующего дня по МСК
+    assert fmt_local(ts, "Europe/Moscow", "%d.%m %H:%M").startswith(fmt_local(ts + 86400, "UTC", "%d.%m"))
+
+
+def test_awards_detail_declines_games_word():
+    from mmrbot.awards import _games
+    assert [_games(n) for n in (1, 2, 5, 11, 21, 22, 25, 111)] == [
+        "1 игра", "2 игры", "5 игр", "11 игр", "21 игра", "22 игры", "25 игр", "111 игр"]
+
+
+def test_long_match_still_notified_when_it_ended_inside_window(tmp_path):
+    """Матч начался 3 ч 20 мин назад, но закончился 20 минут назад — оповестить надо."""
+    from mmrbot.storage import Storage
+    store = Storage(str(tmp_path / "w.db"))
+    player = store.add_player(1, 5, "Вася", None, 0, 0)
+    now = 1_000_000
+    store.add_matches(player.id, [
+        {"match_id": 1, "start_time": now - 3 * 3600 - 1200, "duration": 3 * 3600, "player_slot": 0,
+         "radiant_win": True, "lobby_type": 7},
+        {"match_id": 2, "start_time": now - 6 * 3600, "duration": 2400, "player_slot": 0,
+         "radiant_win": True, "lobby_type": 7},      # давно закончился
+    ])
+    got = store.get_unnotified_matches(player.id, now - 3 * 3600)
+    assert [m["match_id"] for m in got] == [1]
