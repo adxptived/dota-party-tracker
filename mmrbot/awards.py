@@ -77,7 +77,7 @@ def compute_period_awards(
         lambda n: f"{len(played[n])} игр")
 
     winrates = {n: sum(is_win(m["player_slot"], m["radiant_win"]) for m in ms) / len(ms) for n, ms in regular.items()}
-    add("winrate", "👑", "Наивысший винрейт", winrates,
+    add("winrate", "👑", "Лучший винрейт", winrates,
         lambda n: f"{winrates[n] * 100:.0f}% за {len(regular[n])} игр")
 
     def averages(field: str) -> dict[str, float]:
@@ -89,7 +89,7 @@ def compute_period_awards(
         return result
 
     perf = averages("perf_score")
-    add("perf", "⭐", "Наивысший перформанс", perf, lambda n: f"{perf[n] * 100:.0f}/100")
+    add("perf", "⭐", "Лучший перф", perf, lambda n: f"{perf[n] * 100:.0f}/100")
     gpm = averages("gpm")
     add("gpm", "💰", "Наибольший GPM", gpm, lambda n: f"{gpm[n]:.0f} GPM в среднем")
     damage = averages("hero_damage")

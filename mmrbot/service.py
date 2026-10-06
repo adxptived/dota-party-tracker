@@ -29,6 +29,7 @@ from mmrbot.formatting import (
     render_together,
     standing_line,
 )
+from mmrbot.texts import HIDDEN_HINT, NO_PLAYERS, NOT_FOUND, STRATZ_OFF
 from mmrbot.charts import _games_word as games_word, render_mmr_chart, series_stats
 from mmrbot.heroes import find_hero
 from mmrbot.opendota import OpenDota
@@ -98,6 +99,8 @@ async def render_board(
             day = awards_period == "day"
             awards_since = int(time.time()) - (86_400 if day else 7 * 86_400)
             awards = await asyncio.to_thread(build_period_awards, storage, chat_id, awards_since, 2 if day else 3)
+            if not day:  # «Лидер недели» в «Пульсе» уже называет того, кто поднялся больше всех
+                awards = [a for a in awards if a["key"] != "climb"]
             block = render_awards(awards, "за сутки" if day else "за неделю")
             if block:
                 text += "\n\n" + block
@@ -187,7 +190,7 @@ async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name
 async def render_compare_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
     if not summaries:
-        return "В данном чате нет игроков. Для добавления используйте: /add «ссылка или ID» Имя [MMR]"
+        return NO_PLAYERS
     comparison = build_chat_comparison(summaries)
     return render_compare_table(comparison, summaries)
 
@@ -227,15 +230,6 @@ def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
 
 
 # --- герои / позиции / матч (данные из кэша БД после обновления) ---------
-
-NOT_FOUND = "Игрок не найден. Список игроков: /list"
-
-HIDDEN_HINT = (
-    "Матчи не найдены ни в OpenDota, ни в Stratz. Как правило, причина в отключённой в Dota 2 опции "
-    "«Настройки → Социальные → Выставлять публичные данные матчей». Необходимо включить её и сыграть матч: "
-    "после этого данные станут доступны (история до включения опции сервисам не видна)."
-)
-
 
 def _empty_players(storage: Storage, chat_id: int, name: Optional[str]) -> list[str]:
     """Имена игроков (одного или всех в чате), у которых в БД нет ни одного матча."""
@@ -290,7 +284,7 @@ async def render_match_board(
         if view is None:
             empty = _empty_players(storage, chat_id, name)
             who = html.escape(", ".join(empty)) if empty else "участников пати"  # уйдёт с parse_mode=HTML
-            return f"Ранкед-матчи не найдены ({who}). " + HIDDEN_HINT
+            return f"Ранкед-матчей не видно ({who}). " + HIDDEN_HINT
         cached = view
         match_id = view["match"]["match_id"]
         focus = view["player"].account_id
@@ -313,8 +307,8 @@ async def render_match_board(
     if cached is not None:
         return render_match_card(cached)
     if stratz is None:
-        return "Для разбора произвольного матча требуется STRATZ_API_KEY."
-    return f"Матч {match_id} в Stratz не найден (возможно, он не ранкед либо скрыт). Повторите запрос позднее."
+        return STRATZ_OFF
+    return f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт)."
 
 
 async def render_hero_board(
@@ -322,7 +316,7 @@ async def render_hero_board(
 ) -> str:
     hero_id = find_hero(query)
     if hero_id is None:
-        return f"Герой «{query}» не найден. Попробуйте английское название, например: /heroes Axe"
+        return f"Герой «{query}» не найден. Пишите по-английски, например: /heroes Axe"
     await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
     since = period_since(period, int(time.time()))
     entries = await asyncio.to_thread(build_hero_view, storage, chat_id, hero_id, since)
