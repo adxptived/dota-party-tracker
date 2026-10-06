@@ -1,6 +1,6 @@
 """Inline-клавиатуры бота (чистые билдеры, без обработчиков).
 
-Схема callback_data (до 64 байт): `m:<действие>` — главное меню; `pp:<вид>:<account_id>` —
+Схема callback_data (до 64 байт): `m:<действие>` — главное меню, `m:c:<категория>` — его подменю; `pp:<вид>:<account_id>` —
 выбор игрока; `x:close` — удалить сообщение; `r:<период>` — рекорды; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом.
 """
 from __future__ import annotations
@@ -9,18 +9,32 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 PERIODS = [("day", "День"), ("week", "Неделя"), ("month", "Месяц"), ("all", "Всё")]
 
-_MENU = [
-    [("🏆 Рейтинг", "stats"), ("📅 Сегодня", "today")],
-    [("🗓️ За неделю", "week"), ("📆 За месяц", "month")],
-    [("⚖️ Сравнение", "compare"), ("🤝 Совместные игры", "together")],
-    [("🦸 Герои и позиции", "heroes"), ("🔎 Статистика героя", "hero")],
-    [("🎮 Матч", "match")],
-    [("🪪 Карточка игрока", "player"), ("🎭 Steam-профиль", "steam")],
-    [("🌟 Рекорды", "records"), ("📈 График MMR", "graph")],
-    [("🏅 Достижения", "achv")],
-    [("👥 Игроки", "list"), ("➕ Добавить", "add")],
-    [("✏️ Задать MMR", "setmmr"), ("🗑️ Удалить", "remove")],
-    [("📖 Справка", "help"), ("ℹ️ Термины", "terms"), ("⚙️ Настройки", "settings")],
+# Главное меню — категории (`m:c:<ключ>`) и две «быстрые» кнопки; внутри категории — действия `m:<действие>`.
+CATEGORIES = {
+    "stats": ("🏆 Статистика", [
+        [("🏆 Рейтинг", "stats"), ("📅 Сегодня", "today")],
+        [("🗓️ За неделю", "week"), ("📆 За месяц", "month")],
+        [("⚖️ Сравнение", "compare"), ("🤝 Совместные игры", "together")],
+    ]),
+    "players": ("🎮 Игроки и матчи", [
+        [("🪪 Карточка игрока", "player"), ("🎭 Steam-профиль", "steam")],
+        [("🦸 Герои и позиции", "heroes"), ("🔎 Статистика героя", "hero")],
+        [("🎮 Матч", "match")],
+    ]),
+    "records": ("🌟 Рекорды и графики", [
+        [("🌟 Рекорды", "records"), ("📈 График MMR", "graph")],
+        [("🏅 Достижения", "achv")],
+    ]),
+    "party": ("👥 Пати", [
+        [("👥 Игроки", "list"), ("➕ Добавить", "add")],
+        [("✏️ Задать MMR", "setmmr"), ("🗑️ Удалить", "remove")],
+        [("🙋 Это я", "me"), ("🏷️ Теги с MMR", "tags")],
+    ]),
+}
+_MAIN = [
+    [(CATEGORIES["stats"][0], "c:stats"), (CATEGORIES["players"][0], "c:players")],
+    [(CATEGORIES["records"][0], "c:records"), (CATEGORIES["party"][0], "c:party")],
+    [("⚙️ Настройки", "settings"), ("📖 Справка", "help")],
 ]
 _CLOSE = ("✖️ Закрыть", "x:close")
 
@@ -47,8 +61,9 @@ def settings_menu(chat) -> InlineKeyboardMarkup:
     ]
     rows += [tz_buttons[i:i + 4] for i in range(0, len(tz_buttons), 4)]
     rows.append([btn(f"🔔 Steam-профиль: {'вкл' if chat.notify_steam else 'выкл'}", "s:steam")])
-    rows.append([btn(f"🎮 Новые игры и достижения: {'вкл' if chat.notify_games else 'выкл'}", "s:games")])
+    rows.append([btn(f"🎮 Конец матча и достижения: {'вкл' if chat.notify_games else 'выкл'}", "s:games")])
     rows.append([btn(f"📅 Недельная сводка: {'вкл' if chat.notify_weekly else 'выкл'}", "s:weekly")])
+    rows.append([btn(f"🏷️ Теги с MMR: {'вкл' if chat.tag_mmr else 'выкл'}", "s:tags")])
     rows.append(nav_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -93,8 +108,18 @@ def nav_menu() -> InlineKeyboardMarkup:
 
 
 def main_menu() -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=t, callback_data=f"m:{a}") for t, a in row] for row in _MENU]
-    rows.append([InlineKeyboardButton(text=_CLOSE[0], callback_data=_CLOSE[1])])
+    rows = [[InlineKeyboardButton(text=t, callback_data=f"m:{a}") for t, a in row] for row in _MAIN]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def category_title(key: str) -> str:
+    return CATEGORIES[key][0]
+
+
+def category_menu(key: str) -> InlineKeyboardMarkup:
+    """Подменю категории: её действия + «В меню»/«Закрыть»."""
+    rows = [[InlineKeyboardButton(text=t, callback_data=f"m:{a}") for t, a in row] for row in CATEGORIES[key][1]]
+    rows.append(nav_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

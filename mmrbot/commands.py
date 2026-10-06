@@ -123,3 +123,13 @@ def parse_match_args(args: str) -> tuple[Optional[int], Optional[str]]:
         else:
             rest.append(token)
     return match_id, _clean_name(rest)
+
+
+def parse_on_off(args: str) -> bool:
+    """`/tags on|off` → True/False."""
+    token = (args or "").strip().lower()
+    if token in {"on", "вкл", "включить", "1"}:
+        return True
+    if token in {"off", "выкл", "выключить", "0"}:
+        return False
+    raise ValueError("Формат: /tags on или /tags off")

@@ -505,7 +505,7 @@ def test_cmd_records_and_period_buttons_edit_in_place(store):
     assert marked[0].callback_data == "r:year"
 
 
-# --- «Пульс пати» вместо «Отличий» -------------------------------------
+# --- «Стата пати» вместо «Отличий» -------------------------------------
 
 def test_party_pulse_for_single_player():
     from mmrbot.formatting import render_party_pulse
@@ -515,7 +515,7 @@ def test_party_pulse_for_single_player():
     rows = [{"name": "Вася", "games": 10, "wins": 6, "losses": 4, "delta": 50, "winrate": 0.6, "kda": 3.0}]
     records = compute_records([("Вася", [rec(7, NOW, gpm=800, hero_id=5, kills=20)])])
     text = render_party_pulse([s], rows, records)
-    assert "Пульс пати" in text and "Сегодня: 3 игры · 2–1" in text and "За неделю: 10 игр · 6–4" in text
+    assert "Стата пати" in text and "Сегодня: 3 игры · 2–1" in text and "За неделю: 10 игр · 6–4" in text
     assert "🟢🟢🔴🟢🟢" in text  # хронология слева направо, новые справа
     assert "800 GPM" in text and "dotabuff.com/matches/7" in text and "/records" in text
     assert "Лидер недели" not in text  # один игрок — лидера нет

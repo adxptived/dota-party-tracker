@@ -10,7 +10,7 @@ import html
 from typing import Optional
 
 from mmrbot.heroes import hero_name
-from mmrbot.ranks import rank_label
+from mmrbot.ranks import rank_emoji, rank_label
 from mmrbot.texts import NO_GAMES, NO_PLAYERS
 from mmrbot.tracker import PlayerSummary
 
@@ -225,7 +225,7 @@ def render_awards(awards: list[dict], label: str = "за неделю") -> str:
     return "\n".join(lines)
 
 
-PULSE_RECORDS = ("gpm", "kills", "imp")  # какие рекорды недели выносим в «Пульс»
+PULSE_RECORDS = ("gpm", "kills", "imp")  # какие рекорды недели выносим в «Стату пати»
 
 
 def _form_dots(form: list) -> str:
@@ -236,8 +236,8 @@ def render_party_pulse(
     summaries: list[PlayerSummary], week_rows: list[dict], week_records: dict,
     day_rows: Optional[list[dict]] = None,
 ) -> str:
-    """«Пульс пати» под рейтингом: сегодня, неделя, форма игроков, рекорды недели (работает и для одного игрока)."""
-    lines = ["📡 <b>Пульс пати</b>"]
+    """«Стата пати» под рейтингом: сегодня, неделя, форма игроков, рекорды недели (работает и для одного игрока)."""
+    lines = ["📊 <b>Стата пати</b>"]
 
     if day_rows is not None:  # ежедневная сводка уходит утром: «сегодня» почти пусто — показываем последние сутки
         played_day = [r for r in day_rows if r["games"] > 0]
@@ -581,20 +581,72 @@ def render_steam_change(player, changes: dict) -> str:
 
 # --- оповещения, достижения, недельная сводка --------------------------
 
+def _thousands(value) -> str:
+    """31250 → «31.2k»; меньше тысячи — как есть."""
+    value = int(value)
+    return f"{value // 100 / 10:.1f}k" if value >= 1000 else str(value)
+
+
+def render_start_alert(event: dict) -> str:
+    """Оповещение «зашёл в Dota 2»: кто и сколько пати сейчас в игре (Steam не отдаёт героя и момент старта матча)."""
+    names = ", ".join(_b(n) for n in event["names"])
+    verb = "зашли" if len(event["names"]) > 1 else "зашёл"
+    line = f"🟢 {names} {verb} в Dota 2"
+    if event.get("in_game", 0) >= 2:
+        line += f" · в игре {event['in_game']}/{event['total']}"
+    return line
+
+
+def _mvp_name(rows: list) -> Optional[str]:
+    """Лучший в матче среди игроков пати (нужно ≥2): по IMP, если он есть у всех, иначе по (K+A)/D."""
+    if len(rows) < 2:
+        return None
+    if all(r.get("imp") is not None for r in rows):
+        key = lambda r: r["imp"]  # noqa: E731
+    else:
+        key = lambda r: (r["kills"] + r["assists"]) / max(r["deaths"], 1)  # noqa: E731
+    return max(rows, key=key)["name"]
+
+
 def render_game_alert(event: dict) -> str:
-    """Оповещение о новой игре: по строке на каждого отслеживаемого игрока этого матча."""
+    """Оповещение о конце матча: результат пати, длительность и по строке на каждого отслеживаемого игрока."""
+    rows = event["rows"]
+    wins = sum(1 for r in rows if r["won"])
+    result = "Победа" if wins == len(rows) else "Поражение" if wins == 0 else "Разные стороны"
+    icon = "🏆" if wins == len(rows) else "💀" if wins == 0 else "⚔️"
     duration = f" · {event['duration'] // 60} мин" if event.get("duration") else ""
-    lines = [f'🎮 <b>Новая игра</b>{duration} · <a href="{dotabuff_match_url(event["match_id"])}">Dotabuff</a>']
-    for r in event["rows"]:
+    match_id = event["match_id"]
+    mvp = _mvp_name(rows)
+    lines = [
+        f"🏁 <b>Матч завершён</b> · {icon} {result}{duration} · "
+        f'<a href="{dotabuff_match_url(match_id)}">Dotabuff</a> · '
+        f'<a href="https://www.opendota.com/matches/{match_id}">OpenDota</a>'
+    ]
+    if event.get("average_rank"):
+        lines.append(f"🎚 Лобби: {rank_emoji(event['average_rank'])} {_esc(rank_label(event['average_rank']))}".replace("  ", " "))
+    for r in rows:
         delta = r["step"] if r["won"] else -r["step"]
         line = (
-            f"{'🏆' if r['won'] else '💀'} {_b(r['name'])} — {_esc(hero_name(r['hero_id']))} "
+            f"{'🏆' if r['won'] else '💀'} {_b(r['name'])}{' ⭐' if r['name'] == mvp else ''} — {_esc(hero_name(r['hero_id']))} "
             f"{r['kills']}/{r['deaths']}/{r['assists']} · {_today_delta(delta)}"
         )
         if r.get("current_mmr") is not None:
             line += f" ➜ ≈{r['current_mmr']} MMR"
         if r.get("streak_len", 0) >= 3:
             line += f"  {'🔥' if r['streak_type'] == 'W' else '💧'}{r['streak_len']} подряд"
+        extra = []
+        if r.get("position"):
+            extra.append(f"Pos {r['position']}")
+        if r.get("imp") is not None:
+            extra.append(f"IMP {r['imp']:+d}")
+        if r.get("gpm"):
+            extra.append(f"{round(r['gpm'])} GPM")
+        if r.get("hero_damage"):
+            extra.append(f"{_thousands(r['hero_damage'])} урона")
+        if extra:
+            line += f"\n      <i>{' · '.join(extra)}</i>"
+        if (r.get("leaver_status") or 0) >= 2:
+            line += "\n      ⚠️ <i>покинул игру — такая игра считается иначе</i>"
         lines.append(line)
     shared = event.get("shared")
     if shared and shared.get("games"):
@@ -730,8 +782,9 @@ def render_settings(chat) -> str:
         f"⏰ Ежедневная сводка: <b>{chat.digest_hour:02d}:00</b>\n"
         f"🌍 Часовой пояс: <b>{_esc(tz_label(chat.tz))}</b>\n"
         f"🔔 Оповещения о смене ника/аватарки Steam: <b>{state(chat.notify_steam)}</b>\n"
-        f"🎮 Оповещения о новых играх и достижениях: <b>{state(chat.notify_games)}</b>\n"
-        f"📅 Недельная сводка (понедельник): <b>{state(chat.notify_weekly, 'включена', 'выключена')}</b>\n\n"
+        f"🎮 Оповещения о конце матча и достижениях: <b>{state(chat.notify_games)}</b>\n"
+        f"📅 Недельная сводка (понедельник): <b>{state(chat.notify_weekly, 'включена', 'выключена')}</b>\n"
+        f"🏷️ Теги участников с MMR: <b>{state(chat.tag_mmr)}</b> <i>(привязка: Пати → «Это я»)</i>\n\n"
         "<i>Часовой пояс влияет на «сегодня» и время сводки.</i>"
     )
 

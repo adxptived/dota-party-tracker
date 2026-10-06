@@ -316,8 +316,9 @@ def test_period_buttons_edit_message_in_place(env):
 
 
 def test_all_menu_buttons_have_handlers():
-    from mmrbot.keyboards import main_menu
-    actions = {b.callback_data for row in main_menu().inline_keyboard for b in row}
+    from mmrbot.keyboards import CATEGORIES, category_menu, main_menu
+    markups = [main_menu()] + [category_menu(key) for key in CATEGORIES]
+    actions = {b.callback_data for m in markups for row in m.inline_keyboard for b in row}
     assert "m:roles" not in actions and {"m:heroes", "m:match", "m:stats"} <= actions
 
 
@@ -359,16 +360,27 @@ class DeletableMessage(FakeMessage):
         self.deleted = True
 
 
-def test_menu_button_deletes_source_message_and_status(env):
+def test_menu_button_edits_source_message_in_place(env):
     storage, od, sz = env
     cb = FakeCallback("m:week")
     cb.message = DeletableMessage()
     run(botmod.on_callback(cb, storage, od, sz))
-    assert cb.message.deleted  # старое меню убрано
-    assert cb.message.statuses[0].deleted  # «Формирование…» убрано
+    assert not cb.message.deleted and not cb.message.statuses  # одно сообщение: новых не плодим
+    assert len(cb.message.sent) >= 2  # сначала «ждём», потом отчёт — оба правят то же сообщение
     markup = cb.message.sent[-1][1]["reply_markup"]  # под отчётом «В меню» / «Закрыть»
     data = {b.callback_data for row in markup.inline_keyboard for b in row}
     assert {"m:menu", "x:close"} <= data and {"m:stats", "m:today", "m:week", "m:month"} <= data  # + вкладки периодов
+
+
+def test_category_button_opens_submenu(env):
+    storage, od, sz = env
+    cb = FakeCallback("m:c:stats")
+    cb.message = DeletableMessage()
+    run(botmod.on_callback(cb, storage, od, sz))
+    assert not cb.message.deleted and not cb.message.statuses  # подменю правит то же сообщение
+    markup = cb.message.sent[-1][1]["reply_markup"]
+    data = {b.callback_data for row in markup.inline_keyboard for b in row}
+    assert {"m:stats", "m:week", "m:menu"} <= data
 
 
 def test_close_button_deletes_message(env):

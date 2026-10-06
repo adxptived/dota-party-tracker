@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from mmrbot import achievements, party, records, stats
+from mmrbot.presence import advance
 from mmrbot.awards import compute_period_awards
 from mmrbot.ranks import mmr_rank_mismatch, rank_emoji, rank_label
 from mmrbot.storage import Chat, Player, Storage
@@ -346,6 +347,7 @@ def detect_new_games(
             entry = by_match.setdefault(match["match_id"], {
                 "kind": "match", "chat_id": chat.chat_id, "match_id": match["match_id"],
                 "start_time": match["start_time"], "duration": match.get("duration"), "rows": [], "shared": None,
+                "average_rank": match.get("average_rank"),
             })
             entry["rows"].append({
                 "name": player.display_name, "hero_id": match.get("hero_id"),
@@ -354,6 +356,8 @@ def detect_new_games(
                 "won": stats.is_win(match["player_slot"], match["radiant_win"]),
                 "step": chat.mmr_step, "current_mmr": summary.current_mmr,
                 "streak_type": summary.streak_type, "streak_len": summary.streak_len,
+                "gpm": match.get("gpm"), "hero_damage": match.get("hero_damage"), "position": match.get("position"),
+                "imp": match.get("imp"), "leaver_status": match.get("leaver_status"),
             })
         new_ach = check_achievements(storage, player, now)
         if new_ach:
@@ -364,6 +368,37 @@ def detect_new_games(
             day_start = stats.local_day_start(now, chat.tz)
             entry["shared"] = shared_games_since(storage, chat.chat_id, day_start)
     return matches_events + events
+
+
+def detect_presence(storage: Storage, steam, now: int) -> list[dict]:
+    """Кто из игроков зашёл в Dota 2 (по Steam): события «start» по чатам, одним на всех зашедших за опрос.
+
+    Статус запрашивается одним батчем на все аккаунты. Игроки с закрытым статусом пропускаются.
+    Состояние (ingame_since/ingame_misses) хранится у игрока; конец сессии — после MISS_LIMIT опросов без Dota.
+    """
+    chats = [c for c in storage.list_chats() if c.notify_start]
+    players_by_chat = {c.chat_id: storage.list_players(c.chat_id) for c in chats}
+    ids = sorted({p.account_id for players in players_by_chat.values() for p in players})
+    if not ids:
+        return []
+    states = steam.get_in_dota(ids)
+    events: list[dict] = []
+    for chat in chats:
+        players = players_by_chat[chat.chat_id]
+        started: list[str] = []
+        in_game = 0
+        for player in players:
+            since, misses, event = advance(player.ingame_since, player.ingame_misses, states.get(player.account_id), now)
+            if (since, misses) != (player.ingame_since, player.ingame_misses):
+                storage.set_player_presence(player.id, since, misses)
+            if event == "start":
+                started.append(player.display_name)
+            if since is not None:
+                in_game += 1
+        if started:
+            events.append({"kind": "start", "chat_id": chat.chat_id, "names": started,
+                           "in_game": in_game, "total": len(players)})
+    return events
 
 
 def build_records(storage: Storage, chat_id: int, since_ts: Optional[int]) -> dict:

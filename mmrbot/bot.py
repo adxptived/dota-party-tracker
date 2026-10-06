@@ -7,7 +7,7 @@ import time
 
 import re
 
-from aiogram import Bot, F, Router
+from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InputMediaPhoto, Message
 
@@ -15,7 +15,7 @@ from mmrbot import commands as cmd
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import STEPS, TIMEZONES, confirm_remove, graph_buttons, list_actions, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.service import (
     render_board,
@@ -33,11 +33,49 @@ from mmrbot.service import (
     split_message,
 )
 from mmrbot.storage import Storage
+from mmrbot.tags import auto_link_user, clear_member_tag, link_adder, sync_member_tags
 from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
 from mmrbot.ranks import rank_label
 from mmrbot.tracker import build_leaderboard, check_achievements, list_achievements, refresh_player
 
 router = Router()
+
+
+class DeleteCommandMiddleware(BaseMiddleware):
+    """После ответа на команду удаляет само сообщение с командой (/menu и т.п.), чтобы не засорять чат.
+
+    Без права «удалять сообщения» (в группе) или у старых сообщений — молча пропускаем.
+    """
+
+    async def __call__(self, handler, event, data):
+        try:
+            return await handler(event, data)
+        finally:
+            if (getattr(event, "text", None) or "").startswith("/"):
+                try:
+                    await event.delete()
+                except Exception:
+                    pass
+
+
+router.message.middleware(DeleteCommandMiddleware())
+
+
+class AutoLinkMiddleware(BaseMiddleware):
+    """В чатах с включёнными тегами привязывает автора сообщения к игроку с совпавшим ником (без /me)."""
+
+    async def __call__(self, handler, event, data):
+        try:
+            storage = data.get("storage")
+            user = getattr(event, "from_user", None)
+            if storage is not None and user is not None and event.chat.type != "private"                     and storage.get_or_create_chat(event.chat.id).tag_mmr:
+                auto_link_user(storage, event.chat.id, user)
+        except Exception:
+            logging.getLogger(__name__).warning("Автопривязка не удалась", exc_info=True)
+        return await handler(event, data)
+
+
+router.message.middleware(AutoLinkMiddleware())
 
 # Меню команд (всплывает по «/», особенно полезно в группах).
 BOT_COMMANDS = [
@@ -60,6 +98,8 @@ BOT_COMMANDS = [
     BotCommand(command="setmmr", description="✏️ Задать MMR"),
     BotCommand(command="setstep", description="⚙️ Шаг MMR за игру"),
     BotCommand(command="settime", description="⏰ Час сводки"),
+    BotCommand(command="me", description="🙋 Привязать себя к игроку"),
+    BotCommand(command="tags", description="🏷️ Теги с MMR (вкл/выкл)"),
     BotCommand(command="remove", description="🗑️ Удалить игрока"),
     BotCommand(command="help", description="📖 Справка"),
 ]
@@ -97,15 +137,55 @@ async def _delete(message) -> None:
         pass
 
 
+class _InPlace:
+    """Обёртка над сообщением с нажатой кнопкой: `answer` правит его на месте, а не шлёт новое.
+
+    Так чат не засоряется — каждый клик меняет одно и то же сообщение. Не получилось отредактировать
+    (фото, ForceReply, старое сообщение) — убираем старое и шлём новое. Дополнительные куски длинного
+    текста — через `answer_new`.
+    """
+
+    def __init__(self, message: Message) -> None:
+        self._m = message
+
+    def __getattr__(self, name):
+        return getattr(self._m, name)
+
+    async def answer_new(self, *args, **kwargs):
+        return await self._m.answer(*args, **kwargs)
+
+    async def answer(self, text: str, **kwargs):
+        markup = kwargs.get("reply_markup")
+        if markup is None:
+            kwargs["reply_markup"] = nav_menu()  # без кнопок сообщение стало бы тупиком
+        if not isinstance(markup, ForceReply) and not getattr(self._m, "photo", None):
+            try:
+                await self._m.edit_text(text, **kwargs)
+                return self._m
+            except Exception as exc:
+                if "not modified" in str(exc):
+                    return self._m
+        await _delete(self._m)
+        return await self._m.answer(text, **kwargs)
+
+    async def answer_photo(self, *args, **kwargs):
+        sent = await self._m.answer_photo(*args, **kwargs)
+        await _delete(self._m)  # «Считаю…» убираем, когда картинка уже отправлена
+        return sent
+
+
 async def _progress(message: Message, text: str):
-    """Временное «⏳ Считаю…» — удаляется, когда отчёт готов."""
-    return await message.answer(text)
+    """Временное «⏳ Считаю…» — удаляется, когда отчёт готов (на месте кнопки — просто подменяет текст)."""
+    result = await message.answer(text)
+    return None if isinstance(message, _InPlace) else result
 
 
 async def _send_chunks(message: Message, text: str, markup=None) -> None:
     chunks = split_message(text)
+    send_more = getattr(message, "answer_new", message.answer)
     for i, chunk in enumerate(chunks):
-        await message.answer(chunk, parse_mode="HTML", reply_markup=markup if i == len(chunks) - 1 else None)
+        send = message.answer if i == 0 else send_more
+        await send(chunk, parse_mode="HTML", reply_markup=markup if i == len(chunks) - 1 else None)
 
 
 async def _reply_board(message: Message, coro, status=None, markup=None) -> None:
@@ -127,12 +207,12 @@ async def _reply_board(message: Message, coro, status=None, markup=None) -> None
     await _send_chunks(message, text, markup or nav_menu())
 
 
-@router.message(Command("start"))
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     await message.answer(HELP_TEXT, reply_markup=main_menu())
 
 
+@router.message(Command("start"))
 @router.message(Command("menu"))
 async def cmd_menu(message: Message) -> None:
     await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
@@ -214,6 +294,9 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
         await message.answer(f"⚠️ {exc}")
         return
 
+    if getattr(message.chat, "type", None) != "private":  # кто добавил — того и считаем этим игроком (если своего ещё нет)
+        link_adder(storage, message.chat.id, player, getattr(message, "from_user", None))
+
     try:
         await asyncio.to_thread(refresh_player, storage, od, player, now, stratz)
     except Exception:
@@ -291,6 +374,72 @@ async def cmd_settime(message: Message, command: CommandObject, storage: Storage
     storage.set_chat_digest_hour(message.chat.id, hour)
     tz = storage.get_or_create_chat(message.chat.id).tz
     await message.answer(f"✅ Сводка в {hour:02d}:00 ({tz_label(tz)})")
+
+
+@router.message(Command("me"))
+async def cmd_me(message: Message, command: CommandObject, storage: Storage, bot: Bot) -> None:
+    """`/me ник` — привязать свой Telegram к игроку (для тега с MMR); `/me off` — отвязать."""
+    user = message.from_user
+    if user is None or message.chat.type == "private":
+        await message.answer("🙋 Команда работает в группе.")
+        return
+    name = (command.args or "").strip()
+    if name.lower() in {"off", "выкл"}:
+        await _unlink_me(message, storage, bot, user)
+        return
+    if not name:
+        mine = next((p for p in storage.list_players(message.chat.id) if p.tg_user_id == user.id), None)
+        hint = f"Вы — {mine.display_name}. Отвязать: /me off" if mine else "Формат: /me ник (ник из /list)"
+        await message.answer(hint)
+        return
+    player = storage.get_player(message.chat.id, name.lstrip("@"))
+    if player is None:
+        await message.answer(NOT_FOUND_TEXT)
+        return
+    await _link_me(message, storage, bot, user, player)
+
+
+async def _link_me(message, storage: Storage, bot: Bot, user, player) -> None:
+    """Привязать аккаунт `user` к игроку и сразу поставить тег, если теги в чате включены."""
+    storage.link_user(message.chat.id, player.id, user.id)
+    note = ""
+    if storage.get_or_create_chat(message.chat.id).tag_mmr:
+        await sync_member_tags(bot, storage, message.chat.id, int(time.time()))
+    else:
+        note = " Теги с MMR включаются в ⚙️ Настройках (или /tags on)."
+    await message.answer(f"✅ Вы — {player.display_name}.{note}", reply_markup=nav_menu())
+
+
+async def _unlink_me(message, storage: Storage, bot: Bot, user) -> None:
+    player = storage.unlink_user(message.chat.id, user.id)
+    if player is None:
+        await message.answer("Вы ни к кому не привязаны.", reply_markup=nav_menu())
+        return
+    await clear_member_tag(bot, message.chat.id, user.id)
+    await message.answer(f"✅ Отвязал от {player.display_name}.", reply_markup=nav_menu())
+
+
+@router.message(Command("tags"))
+async def cmd_tags(message: Message, command: CommandObject, storage: Storage, bot: Bot) -> None:
+    """`/tags on|off` — теги участников с их MMR (боту нужно право админа «Управлять тегами»)."""
+    args = (command.args or "").strip()
+    if not args:
+        on = storage.get_or_create_chat(message.chat.id).tag_mmr
+        await message.answer(
+            f"🏷️ Теги с MMR: {'включены' if on else 'выключены'}.\n"
+            "Каждый привязывает себя командой /me ник. Боту нужно право админа «Управлять тегами»; "
+            "админам и владельцу чата Telegram тег поставить не даёт."
+        )
+        return
+    try:
+        enabled = cmd.parse_on_off(args)
+    except ValueError as exc:
+        await message.answer(f"⚠️ {exc}")
+        return
+    storage.set_chat_tag_mmr(message.chat.id, enabled)
+    if enabled:
+        await sync_member_tags(bot, storage, message.chat.id, int(time.time()))
+    await message.answer("✅ Теги с MMR включены." if enabled else "✅ Теги с MMR выключены (поставленные останутся).")
 
 
 
@@ -440,15 +589,16 @@ async def do_graph(
         await _delete(status)
         await message.answer(FAILED, reply_markup=nav_menu())
         return
-    await _delete(status)
     if result is None:
         await message.answer("💤 За период игр не было.", reply_markup=graph_buttons(period, by_games))
+        await _delete(status)
         return
     png, caption = result
     await message.answer_photo(
         BufferedInputFile(png, filename="mmr.png"), caption=caption, parse_mode="HTML",
         reply_markup=graph_buttons(period, by_games),
     )
+    await _delete(status)  # «⏳ Считаю…» исчезает, когда график уже отправлен
 
 
 async def edit_graph(
@@ -660,7 +810,7 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
 
 # --- кнопки -------------------------------------------------------------
 
-async def _on_settings(message: Message, storage: Storage, args: list[str]) -> None:
+async def _on_settings(message: Message, storage: Storage, args: list[str], bot=None) -> None:
     """Кнопки настроек (`s:<что>:<значение>`): меняем значение и правим сообщение на месте."""
     chat_id = message.chat.id
     chat = storage.get_or_create_chat(chat_id)
@@ -675,10 +825,16 @@ async def _on_settings(message: Message, storage: Storage, args: list[str]) -> N
             storage.set_chat_tz(chat_id, TIMEZONES[int(value)][1])
         elif what == "steam":
             storage.set_chat_notify_steam(chat_id, not chat.notify_steam)
+        elif what == "start":
+            storage.set_chat_notify_start(chat_id, not chat.notify_start)
         elif what == "games":
             storage.set_chat_notify_games(chat_id, not chat.notify_games)
         elif what == "weekly":
             storage.set_chat_notify_weekly(chat_id, not chat.notify_weekly)
+        elif what == "tags":
+            storage.set_chat_tag_mmr(chat_id, not chat.tag_mmr)
+            if not chat.tag_mmr and bot is not None:  # только что включили — ставим теги сразу
+                await sync_member_tags(bot, storage, chat_id, int(time.time()))
         elif what != "noop":
             return
     except ValueError:
@@ -709,7 +865,7 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         return
 
     if kind == "s":
-        await _on_settings(message, storage, args)
+        await _on_settings(message, storage, args, getattr(query, "bot", None))
         return
 
     if kind == "r":
@@ -729,15 +885,20 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await do_graph(message, storage, od, period, stratz, by_games)
         return
 
-    # переход в другой раздел: старое сообщение (меню/выбор игрока/прошлый отчёт) убираем, чтобы не засорять чат;
-    # смена периода (hp/rp) правит сообщение на месте
+    # переход в другой раздел и смена периода правят то же сообщение на месте — чат не засоряется
     if kind in {"m", "pp"}:
-        await _delete(message)
+        message = _InPlace(message)
 
     if kind == "m":
         action = args[0] if args else "menu"
         if action == "menu":
             await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
+        elif action == "c":
+            key = args[1] if len(args) > 1 else ""
+            if key in CATEGORIES:
+                await message.answer(f"{category_title(key)} — выберите действие:", reply_markup=category_menu(key))
+            else:
+                await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
         elif action == "records":
             if await _has_players(message, storage):
                 await do_records(message, storage, od, "week", stratz)
@@ -776,6 +937,16 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             await _prompt_hero(message)
         elif action == "add":
             await _prompt_add(message)
+        elif action == "me":
+            if await _has_players(message, storage):
+                kick = [[InlineKeyboardButton(text="🚫 Отвязать меня", callback_data="pp:meoff:0")]]
+                await message.answer(
+                    "🙋 Кто вы из игроков? Привяжу ваш Telegram к нему — тогда тег участника покажет ваш MMR.",
+                    reply_markup=players_picker(storage.list_players(message.chat.id), "me", extra=kick),
+                )
+        elif action == "tags":
+            chat = storage.get_or_create_chat(message.chat.id)
+            await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
         elif action in {"remove", "setmmr", "heroes", "roles", "player", "steam"}:
             if await _has_players(message, storage):
                 label = {"remove": "Кого удалить", "setmmr": "Выберите игрока, чтобы задать MMR", "heroes": "Выберите игрока для просмотра героев", "roles": "Выберите игрока для просмотра позиций", "player": "Выберите игрока для просмотра карточки", "steam": "Выберите игрока для просмотра Steam-профиля"}[action]
@@ -803,6 +974,17 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 )
         elif pick == "achv":
             await do_achievements(message, storage, account)
+        elif pick in {"me", "meoff"}:
+            if message.chat.type == "private":
+                await message.answer("🙋 Работает в группе.", reply_markup=nav_menu())
+            elif pick == "meoff":
+                await _unlink_me(message, storage, query.bot, query.from_user)
+            else:
+                player = storage.get_player(message.chat.id, account)
+                if player is None:
+                    await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+                else:
+                    await _link_me(message, storage, query.bot, query.from_user, player)
         elif pick == "match":
             player = None if account == "last" else storage.get_player(message.chat.id, account)
             await do_match(message, storage, od, player.display_name if player else None, None, stratz)

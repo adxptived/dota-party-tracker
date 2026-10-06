@@ -1,4 +1,4 @@
-from mmrbot.keyboards import (confirm_remove, list_actions, main_menu, parse_callback, period_buttons,
+from mmrbot.keyboards import (CATEGORIES, category_menu, confirm_remove, list_actions, main_menu, parse_callback, period_buttons,
                               player_actions, players_picker, stats_tabs)
 from aiogram.types import InlineKeyboardButton
 
@@ -13,8 +13,16 @@ def _flat(markup):
     return [b for row in markup.inline_keyboard for b in row]
 
 
-def test_main_menu_has_actions_and_short_callbacks():
+def _all_menu_buttons():
+    """Кнопки главного меню и всех его категорий (подменю)."""
     buttons = _flat(main_menu())
+    for key in CATEGORIES:
+        buttons += _flat(category_menu(key))
+    return buttons
+
+
+def test_main_menu_has_actions_and_short_callbacks():
+    buttons = _all_menu_buttons()
     data = {b.callback_data for b in buttons}
     assert {"m:stats", "m:today", "m:compare", "m:together", "m:heroes", "m:match",
             "m:player", "m:list", "m:help", "m:week", "m:month"} <= data
@@ -45,7 +53,7 @@ def test_parse_callback():
 
 
 def test_main_menu_has_player_management_buttons():
-    data = {b.callback_data for b in _flat(main_menu())}
+    data = {b.callback_data for b in _all_menu_buttons()}
     assert {"m:add", "m:remove", "m:setmmr"} <= data
 
 
@@ -56,7 +64,7 @@ def test_confirm_remove_encodes_account_and_cancel():
 
 
 def test_menu_has_hero_search_and_match():
-    data = {b.callback_data for b in _flat(main_menu())}
+    data = {b.callback_data for b in _all_menu_buttons()}
     assert {"m:hero", "m:match"} <= data
 
 
@@ -84,3 +92,26 @@ def test_picker_extra_rows_before_nav():
     extra = [[InlineKeyboardButton(text="X", callback_data="m:hero")]]
     buttons = _flat(players_picker([_p(1, "Вася")], "match", extra=extra))
     assert [b.callback_data for b in buttons] == ["pp:match:1001", "m:hero", "m:menu", "x:close"]
+
+
+def test_main_menu_is_compact_with_categories():
+    buttons = _flat(main_menu())
+    data = {b.callback_data for b in buttons}
+    assert {f"m:c:{key}" for key in CATEGORIES} <= data
+    assert {"m:settings", "m:help"} <= data and "x:close" not in data
+    assert len(buttons) <= 9  # раньше было ~20 кнопок
+
+
+def test_category_menu_has_back_and_short_callbacks():
+    for key in CATEGORIES:
+        buttons = _flat(category_menu(key))
+        data = {b.callback_data for b in buttons}
+        assert {"m:menu", "x:close"} <= data
+        assert len(buttons) > 3
+        assert all(len(d.encode()) <= 64 for d in data)
+
+
+def test_every_action_is_in_exactly_one_place():
+    data = [b.callback_data for b in _all_menu_buttons() if b.callback_data.startswith("m:")
+            and not b.callback_data.startswith("m:c:") and b.callback_data not in {"m:menu"}]
+    assert len(data) == len(set(data))

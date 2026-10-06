@@ -16,6 +16,7 @@ class Config:
     db_path: str
     opendota_min_interval: float = 1.1  # пауза между запросами к OpenDota, сек
     backup_keep: int = 7  # сколько ежедневных копий БД хранить (0 — бэкап выключен)
+    steam_api_key: Optional[str] = None  # Steam Web API: оповещения «зашёл в Dota 2» (без ключа выключены)
     opendota_burst: int = 5  # сколько запросов к OpenDota можно отправить подряд без паузы
 
 
@@ -45,6 +46,7 @@ def load_config() -> Config:
         opendota_api_key=api_key,
         opendota_min_interval=interval,
         stratz_api_key=os.getenv("STRATZ_API_KEY") or None,
+        steam_api_key=os.getenv("STEAM_API_KEY") or None,
         db_path=os.getenv("DB_PATH", "mmrbot.db"),
         backup_keep=_int_env("BACKUP_KEEP", 7),
         # 5 подряд + по одному в 1.1 с — это меньше 60 запросов в любую минуту.

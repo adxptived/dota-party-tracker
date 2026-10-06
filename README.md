@@ -7,7 +7,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12-blue?logo=python&logoColor=white" alt="Python 3.12">
-  <img src="https://img.shields.io/badge/aiogram-3.13-2CA5E0?logo=telegram&logoColor=white" alt="aiogram">
+  <img src="https://img.shields.io/badge/aiogram-3.26-2CA5E0?logo=telegram&logoColor=white" alt="aiogram">
   <img src="https://img.shields.io/badge/data-OpenDota-E4342B" alt="OpenDota">
   <img src="https://img.shields.io/badge/DB-SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite">
 </p>
@@ -91,6 +91,7 @@ docker compose logs -f
 | `/list` · `/remove имя` · `/setmmr имя MMR` | список, удаление, поправка MMR |
 | `/settings` | шаг MMR, час сводки, часовой пояс, оповещения |
 | `/setstep число` · `/settime час` | шаг MMR и час сводки без меню |
+| `/me ник` · `/tags on` | привязать себя к игроку и включить теги участников с MMR (`5420 MMR`); боту нужно право админа «Управлять тегами», админам тег не ставится |
 | `/menu` · `/help` | меню с кнопками, справка |
 
 `/add` берёт из ссылки только числовой `account_id`.
@@ -98,7 +99,7 @@ docker compose logs -f
 ## Что бот делает сам
 
 - Ежедневная сводка в заданный час.
-- Оповещения о новых играх и достижениях (проверка раз в 4 минуты; без ключа OpenDota, пока пати
+- Оповещения о конце матча (результат пати, длительность, ранг лобби, IMP/GPM/урон/позиция, ±MMR, ⭐ лучший в пати) и достижениях (проверка раз в 4 минуты; без ключа OpenDota, пока пати
   не играет, — раз в 12 минут, чтобы не исчерпать лимит запросов).
 - Недельные итоги по понедельникам.
 - Оповещения о смене ника или аватарки в Steam.

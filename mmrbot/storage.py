@@ -28,6 +28,8 @@ class Chat:
     notify_games: bool = True  # оповещать о новых играх и достижениях
     notify_weekly: bool = True  # недельная сводка
     last_weekly: Optional[str] = None  # ключ ISO-недели последней отправленной сводки
+    notify_start: bool = True  # оповещать, когда игрок зашёл в Dota 2 (Steam Web API)
+    tag_mmr: bool = False  # ставить участникам тег с MMR (нужно право админа «управлять тегами»)
 
 
 @dataclass
@@ -54,6 +56,10 @@ class Player:
     history_ts: Optional[int] = None  # когда последний раз сверяли историю глубоко (список на 200 матчей)
     insights_dirty: bool = False  # устарело: средние/линии больше не запрашиваются (колонка осталась ради старых баз)
     fh_unavailable: bool = False  # OpenDota: история матчей игрока закрыта — цифры могут быть неполными
+    ingame_since: Optional[int] = None  # когда зашёл в Dota 2 (по Steam); None — не в игре
+    ingame_misses: int = 0  # опросов подряд без Dota (гасит дребезг статуса)
+    tg_user_id: Optional[int] = None  # Telegram-аккаунт игрока (командой /me) — для тега участника
+    last_tag: Optional[str] = None  # тег, который бот поставил в последний раз
 
 
 _SCHEMA = """
@@ -66,7 +72,9 @@ CREATE TABLE IF NOT EXISTS chats (
     notify_steam     INTEGER NOT NULL DEFAULT 1,
     notify_games     INTEGER NOT NULL DEFAULT 1,
     notify_weekly    INTEGER NOT NULL DEFAULT 1,
-    last_weekly      TEXT
+    last_weekly      TEXT,
+    notify_start     INTEGER NOT NULL DEFAULT 1,
+    tag_mmr          INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS achievements (
     player_id INTEGER NOT NULL,
@@ -98,6 +106,10 @@ CREATE TABLE IF NOT EXISTS players (
     history_ts            INTEGER,
     insights_dirty        INTEGER NOT NULL DEFAULT 0,
     fh_unavailable        INTEGER NOT NULL DEFAULT 0,
+    ingame_since          INTEGER,
+    ingame_misses         INTEGER NOT NULL DEFAULT 0,
+    tg_user_id            INTEGER,
+    last_tag              TEXT,
     UNIQUE(chat_id, account_id)
 );
 CREATE TABLE IF NOT EXISTS matches (
@@ -171,7 +183,8 @@ class Storage:
         add_missing("chats", {
             "last_digest_date": "TEXT", "notify_steam": "INTEGER NOT NULL DEFAULT 1",
             "notify_games": "INTEGER NOT NULL DEFAULT 1", "notify_weekly": "INTEGER NOT NULL DEFAULT 1",
-            "last_weekly": "TEXT",
+            "last_weekly": "TEXT", "notify_start": "INTEGER NOT NULL DEFAULT 1",
+            "tag_mmr": "INTEGER NOT NULL DEFAULT 0",
         })
         # Старая история — уже «оповещённая»: иначе после обновления бот завалил бы чат старыми играми.
         had_notified = "notified" in {r["name"] for r in conn.execute("PRAGMA table_info(matches)").fetchall()}
@@ -185,6 +198,8 @@ class Storage:
             "profile_ts": "INTEGER", "history_ts": "INTEGER",
             "insights_dirty": "INTEGER NOT NULL DEFAULT 0",
             "fh_unavailable": "INTEGER NOT NULL DEFAULT 0",
+            "ingame_since": "INTEGER", "ingame_misses": "INTEGER NOT NULL DEFAULT 0",
+            "tg_user_id": "INTEGER", "last_tag": "TEXT",
         })
         add_missing("matches", {
             "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
@@ -233,12 +248,55 @@ class Storage:
             notify_games=bool(row["notify_games"]),
             notify_weekly=bool(row["notify_weekly"]),
             last_weekly=row["last_weekly"],
+            notify_start=bool(row["notify_start"]),
+            tag_mmr=bool(row["tag_mmr"]),
         )
 
     def set_chat_notify_games(self, chat_id: int, enabled: bool) -> None:
         self.get_or_create_chat(chat_id)
         with self._conn() as conn:
             conn.execute("UPDATE chats SET notify_games = ? WHERE chat_id = ?", (1 if enabled else 0, chat_id))
+
+    def set_chat_notify_start(self, chat_id: int, enabled: bool) -> None:
+        self.get_or_create_chat(chat_id)
+        with self._conn() as conn:
+            conn.execute("UPDATE chats SET notify_start = ? WHERE chat_id = ?", (1 if enabled else 0, chat_id))
+
+    def set_chat_tag_mmr(self, chat_id: int, enabled: bool) -> None:
+        self.get_or_create_chat(chat_id)
+        with self._conn() as conn:
+            conn.execute("UPDATE chats SET tag_mmr = ? WHERE chat_id = ?", (1 if enabled else 0, chat_id))
+
+    def link_user(self, chat_id: int, player_id: int, user_id: int) -> None:
+        """Привязать Telegram-аккаунт к игроку: в чате аккаунт — один игрок, у игрока — один аккаунт."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE players SET tg_user_id = NULL, last_tag = NULL "
+                "WHERE chat_id = ? AND (tg_user_id = ? OR id = ?)",
+                (chat_id, user_id, player_id),
+            )
+            conn.execute("UPDATE players SET tg_user_id = ? WHERE id = ?", (user_id, player_id))
+
+    def unlink_user(self, chat_id: int, user_id: int) -> Optional[Player]:
+        """Отвязать аккаунт; вернуть игрока, к которому он был привязан (None — привязки не было)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM players WHERE chat_id = ? AND tg_user_id = ?", (chat_id, user_id)
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute("UPDATE players SET tg_user_id = NULL, last_tag = NULL WHERE id = ?", (row["id"],))
+            return self._player_from_row(row)
+
+    def set_player_tag(self, player_id: int, tag: Optional[str]) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE players SET last_tag = ? WHERE id = ?", (tag, player_id))
+
+    def set_player_presence(self, player_id: int, since: Optional[int], misses: int) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE players SET ingame_since = ?, ingame_misses = ? WHERE id = ?", (since, misses, player_id)
+            )
 
     def set_chat_notify_weekly(self, chat_id: int, enabled: bool) -> None:
         self.get_or_create_chat(chat_id)
@@ -306,6 +364,10 @@ class Storage:
             history_ts=row["history_ts"],
             insights_dirty=bool(row["insights_dirty"]),
             fh_unavailable=bool(row["fh_unavailable"]),
+            ingame_since=row["ingame_since"],
+            ingame_misses=row["ingame_misses"] or 0,
+            tg_user_id=row["tg_user_id"],
+            last_tag=row["last_tag"],
         )
 
     def update_player_steam(self, player_id: int, name: Optional[str], avatar: Optional[str]) -> dict:
