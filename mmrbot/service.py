@@ -29,6 +29,7 @@ from mmrbot.formatting import (
     render_together,
     standing_line,
 )
+from mmrbot.formatting import render_digest
 from mmrbot.texts import HIDDEN_HINT, NO_PLAYERS, NOT_FOUND, STRATZ_OFF
 from mmrbot.charts import _games_word as games_word, render_mmr_chart, series_stats
 from mmrbot.heroes import find_hero
@@ -82,29 +83,42 @@ async def render_board(
     today_only: bool = False,
     refresh: bool = True,
     stratz=None,
-    awards_period: str = "week",
 ) -> str:
-    """Рейтинг + «Пульс пати» + отличия за awards_period (week — для /stats, day — для ежедневной сводки)."""
+    """Рейтинг + «Пульс пати» + награды недели (для /stats)."""
     summaries = await gather_summaries(storage, od, chat_id, refresh, stratz)
     text = render_leaderboard(summaries, today_only=today_only)
     if not today_only:
         since = int(time.time()) - 7 * 86_400
         week_rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
         week_records = await asyncio.to_thread(build_records, storage, chat_id, since)
-        day_rows = None
-        if awards_period == "day":
-            day_rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, int(time.time()) - 86_400)
-        text += "\n\n" + render_party_pulse(summaries, week_rows, week_records, day_rows)
-        if len(summaries) >= 2:  # «отличия» — соревнование между игроками: с одним участником смысла нет
-            day = awards_period == "day"
-            awards_since = int(time.time()) - (86_400 if day else 7 * 86_400)
-            awards = await asyncio.to_thread(build_period_awards, storage, chat_id, awards_since, 2 if day else 3)
-            if not day:  # «Лидер недели» в «Пульсе» уже называет того, кто поднялся больше всех
-                awards = [a for a in awards if a["key"] != "climb"]
-            block = render_awards(awards, "за сутки" if day else "за неделю")
+        text += "\n\n" + render_party_pulse(summaries, week_rows, week_records)
+        if len(summaries) >= 2:  # награды — соревнование между игроками: с одним участником смысла нет
+            awards = await asyncio.to_thread(build_period_awards, storage, chat_id, since, 3)
+            awards = [a for a in awards if a["key"] != "climb"]  # «Лидер недели» в «Пульсе» уже его называет
+            block = render_awards(awards, "за неделю")
             if block:
                 text += "\n\n" + block
     return text
+
+
+async def render_digest_board(
+    storage: Storage, od: OpenDota, chat_id: int, period: str = "day", refresh: bool = False, stratz=None
+) -> str:
+    """Сводка пати за 24 часа/неделю/месяц. refresh=True — сперва обновить игроков (рассылка), кнопки — из кэша."""
+    if refresh:
+        await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    since = period_since(period, int(time.time()))
+    rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
+    awards = []
+    if len(rows) >= 2:
+        awards = await asyncio.to_thread(build_period_awards, storage, chat_id, since, 2 if period == "day" else 3)
+    records = await asyncio.to_thread(build_records, storage, chat_id, since)
+    text = render_digest(period, rows, awards, records)
+    if len(text) > TELEGRAM_LIMIT:  # сперва жертвуем рекордами, затем наградами
+        text = render_digest(period, rows, awards, {})
+    if len(text) > TELEGRAM_LIMIT:
+        text = render_digest(period, rows, [], {})
+    return text[:TELEGRAM_LIMIT]
 
 
 async def render_period_board(

@@ -24,7 +24,8 @@ from mmrbot.formatting import (
     render_steam_change,
     render_weekly,
 )
-from mmrbot.service import _chat_lock, render_board, split_message
+from mmrbot.keyboards import digest_buttons
+from mmrbot.service import _chat_lock, render_digest_board
 from mmrbot.storage import Chat, Storage
 from mmrbot.tracker import (
     backfill_opendota,
@@ -77,9 +78,8 @@ async def send_digest(bot: Bot, storage: Storage, od: OpenDota, chat: Chat, due_
     сделанными: иначе каждый час повторялось бы полное обновление игроков впустую.
     """
     try:
-        text = await render_board(storage, od, chat.chat_id, today_only=False, refresh=True, stratz=stratz, awards_period="day")
-        for chunk in split_message("📰 <b>Ежедневная сводка</b>\n\n" + text):
-            await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
+        text = await render_digest_board(storage, od, chat.chat_id, "day", refresh=True, stratz=stratz)
+        await bot.send_message(chat.chat_id, text, parse_mode="HTML", reply_markup=digest_buttons("day"))
         storage.set_last_digest_date(chat.chat_id, due_date)
     except TelegramForbiddenError:
         log.warning("Бот потерял доступ к чату %s — дайджест пропущен на сегодня", chat.chat_id)

@@ -163,7 +163,7 @@ def render_period_leaderboard(rows: list[dict], period: str) -> str:
     """Лидерборд за неделю/месяц: победы–поражения, винрейт, оценка MMR-дельты."""
     if not rows:
         return render_leaderboard([])
-    label = {"week": "за неделю", "month": "за месяц"}.get(period, "за период")
+    label = PERIOD_LABELS.get(period, "за период")
     blocks = []
     for i, r in enumerate(rows, start=1):
         head = f"{_pos(i)} {_b(r['name'])}"
@@ -181,7 +181,7 @@ def render_period_leaderboard(rows: list[dict], period: str) -> str:
 # --- награды ------------------------------------------------------------
 
 def render_awards(awards: list[dict], label: str = "за неделю") -> str:
-    """Отличия участников за период (label — «за сутки»/«за неделю»); пусто, если сравнивать нечего."""
+    """Награды участников за период (label — «за 24 часа»/«за неделю»); пусто, если сравнивать нечего."""
     if not awards:
         return ""
     lines = [f"🏅 <b>Награды {label}</b>"]
@@ -199,24 +199,12 @@ def _form_dots(form: list) -> str:
 
 def render_party_pulse(
     summaries: list[PlayerSummary], week_rows: list[dict], week_records: dict,
-    day_rows: Optional[list[dict]] = None,
 ) -> str:
     """«Пульс пати» под рейтингом: сегодня, неделя, форма игроков, рекорды недели (работает и для одного игрока)."""
     lines = ["📡 <b>Пульс пати</b>"]
 
-    if day_rows is not None:  # ежедневная сводка уходит утром: «сегодня» почти пусто — показываем последние сутки
-        played_day = [r for r in day_rows if r["games"] > 0]
-        d_games = sum(r["games"] for r in played_day)
-        if d_games:
-            d_wins = sum(r["wins"] for r in played_day)
-            d_delta = sum(r["delta"] for r in played_day)
-            lines.append(f"🌅 За сутки: {plural_games(d_games)} · {_fmt_wr(d_games, d_wins)} · {_today_delta(d_delta)}")
-        else:
-            lines.append("🌅 За сутки: игр не было")
     t_games = sum(s.games_today for s in summaries)
-    if day_rows is not None:
-        pass  # строка «За сутки» выше заменяет «Сегодня»
-    elif t_games:
+    if t_games:
         t_wins = sum(s.wins_today for s in summaries)
         t_delta = sum(s.delta_today for s in summaries)
         lines.append(f"📅 Сегодня: {plural_games(t_games)} · {_fmt_wr(t_games, t_wins)} · {_today_delta(t_delta)}")
@@ -247,14 +235,51 @@ def render_party_pulse(
     if picked:
         lines.append("")
         lines.append("🌟 <b>Рекорды недели</b>")
-        for r in picked:
-            match = r["match"]
-            lines.append(
-                f"{r['emoji']} {_esc(r['text'])} — {_b(r['player'])} · {_esc(hero_name(match.get('hero_id')))} · "
-                f'<a href="{dotabuff_match_url(match["match_id"])}">матч</a>'
-            )
+        lines.extend(_record_lines(picked))
         lines.append("<i>Все рекорды за день/месяц/год — /records</i>")
     return "\n".join(lines)
+
+
+def _record_lines(picked: list[dict]) -> list[str]:
+    lines = []
+    for r in picked:
+        match = r["match"]
+        lines.append(
+            f"{r['emoji']} {_esc(r['text'])} — {_b(r['player'])} · {_esc(hero_name(match.get('hero_id')))} · "
+            f'<a href="{dotabuff_match_url(match["match_id"])}">матч</a>'
+        )
+    return lines
+
+
+DIGEST_LABELS = {"day": "за 24 часа", "week": "за неделю", "month": "за месяц"}
+
+
+def render_digest(period: str, rows: list[dict], awards: list[dict], records: dict) -> str:
+    """Сводка пати за 24 часа / неделю / месяц: итог, игроки, награды, рекорды. Без игр — одна строка."""
+    label = DIGEST_LABELS.get(period, PERIOD_LABELS.get(period, "за период"))
+    head = f"📰 <b>Сводка {label}</b>"
+    played = [r for r in rows if r["games"] > 0]
+    if not played:
+        return f"{head}\n\n💤 Игр не было."
+    games = sum(r["games"] for r in played)
+    wins = sum(r["wins"] for r in played)
+    delta = sum(r["delta"] for r in played)
+    parts = [f"{head}\n🎮 {plural_games(games)} · {_fmt_wr(games, wins)} · {_today_delta(delta)}"]
+    blocks = []
+    for i, r in enumerate(played, start=1):
+        blocks.append(
+            f"{_pos(i)} {_b(r['name'])} · {_today_delta(r['delta'])}\n"
+            f"    🎮 {plural_games(r['games'])} · {r['wins']}–{r['losses']} "
+            f"({r['winrate'] * 100:.0f}%) · KDA {r['kda']:.2f}"
+        )
+    parts.append("\n\n".join(blocks))
+    block = render_awards(awards, label)
+    if block:
+        parts.append(block)
+    picked = [r for r in (records or {}).get("records", []) if r["key"] in PULSE_RECORDS]
+    if picked:
+        parts.append("\n".join([f"🌟 <b>Рекорды {label}</b>", *_record_lines(picked)]))
+    return "\n\n".join(parts)
 
 
 # --- совместная игра ----------------------------------------------------
@@ -462,9 +487,9 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
     )
     if s.avg_perf is not None:
         pct = f"{s.avg_perf * 100:.0f}"
-        lines.append(f"<i>ℹ️ Перф {pct} — лучше, чем у {pct}% игроков на том же герое.</i>")
+        lines.append(f"<i>ℹ️ Перф {pct} из 100: вклад в игру против игроков на том же герое, со штрафом за смерти.</i>")
     else:
-        lines.append("<i>ℹ️ Перф — сравнение с игроками на том же герое.</i>")
+        lines.append("<i>ℹ️ Перф — вклад в игру против игроков на том же герое, со штрафом за смерти.</i>")
     return "\n".join(lines)
 
 

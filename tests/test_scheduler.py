@@ -70,7 +70,7 @@ def _run_digest(tmp_path, monkeypatch, exc):
     async def fake_board(*a, **kw):
         return "доска"
 
-    monkeypatch.setattr(sched, "render_board", fake_board)
+    monkeypatch.setattr(sched, "render_digest_board", fake_board)
     storage = Storage(str(tmp_path / "t.db"))
     c = storage.get_or_create_chat(5)
     bot = _FailingBot(exc)
@@ -90,3 +90,30 @@ def test_digest_chat_not_found_marks_day_done(tmp_path, monkeypatch):
 
 def test_digest_other_error_is_retried_next_hour(tmp_path, monkeypatch):
     assert _run_digest(tmp_path, monkeypatch, RuntimeError("boom")) is None
+
+
+class _OkBot:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, chat_id, text, **kw):
+        self.sent.append((chat_id, text, kw))
+
+
+def test_digest_sends_24h_board_with_period_buttons(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_board(storage, od, chat_id, period, refresh=False, stratz=None):
+        calls.append((period, refresh))
+        return "сводка"
+
+    monkeypatch.setattr(sched, "render_digest_board", fake_board)
+    storage = Storage(str(tmp_path / "ok.db"))
+    c = storage.get_or_create_chat(5)
+    bot = _OkBot()
+    asyncio.run(sched.send_digest(bot, storage, None, c, "2026-09-29"))
+    assert calls == [("day", True)]  # ежедневная сводка — за последние 24 часа, с обновлением данных
+    chat_id, text, kw = bot.sent[0]
+    assert chat_id == 5 and text == "сводка" and kw["parse_mode"] == "HTML"
+    assert [b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row] == ["d:day", "d:week", "d:month"]
+    assert storage.get_or_create_chat(5).last_digest_date == "2026-09-29"

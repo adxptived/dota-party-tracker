@@ -586,3 +586,32 @@ def test_graph_buttons_toggle_and_year():
 def test_render_chart_by_games_returns_png():
     png = render_mmr_chart({"Вася": [(NOW, 25), (NOW + 60, 0)], "Петя": [(NOW, -25)]}, "t", "UTC", by_games=True)
     assert png.startswith(b"\x89PNG")
+
+
+# --- сводка за 24 часа / неделю / месяц ----------------------------------
+
+def test_digest_board_covers_24h_week_month(store):
+    import mmrbot.service as service
+    a = store.add_player(100, 1, "Вася", None, 0, 0)
+    store.add_player(100, 2, "Петя", None, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    store.add_matches(a.id, [m(1, now - 3600), m(2, now - 2 * 86_400), m(3, now - 10 * 86_400)])
+    day = asyncio.run(service.render_digest_board(store, None, 100, "day"))
+    week = asyncio.run(service.render_digest_board(store, None, 100, "week"))
+    month = asyncio.run(service.render_digest_board(store, None, 100, "month"))
+    assert "Сводка за 24 часа" in day and "1 игра" in day
+    assert "Сводка за неделю" in week and "2 игры" in week
+    assert "Сводка за месяц" in month and "3 игры" in month
+
+
+def test_digest_buttons_switch_period_in_place(store):
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    store.add_matches(p.id, [m(1, now - 3600), m(2, now - 3 * 86_400)])
+    cb = CB("d:week")
+    asyncio.run(botmod.on_callback(cb, store, FakeOD()))
+    assert not cb.message.sent  # сообщение правим на месте, новое не шлём
+    text, kw = cb.message.edited[-1]
+    assert "Сводка за неделю" in text and "2 игры" in text
+    marked = [b for row in kw["reply_markup"].inline_keyboard for b in row if b.text.startswith("•")]
+    assert marked[0].callback_data == "d:week"

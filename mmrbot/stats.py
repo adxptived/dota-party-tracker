@@ -150,34 +150,82 @@ def solo_party_split(matches: list[dict]) -> dict[str, tuple[int, int]]:
     return {key: (games, wins) for key, (games, wins) in buckets.items()}
 
 
-# Benchmark-метрики, где выше = лучше (deaths исключаем — высокий процент это плохо).
-_POSITIVE_BENCHMARKS = {
-    "gold_per_min",
-    "xp_per_min",
-    "kills_per_min",
-    "assists_per_min",
-    "last_hits_per_min",
-    "hero_damage_per_min",
-    "hero_healing_per_min",
-    "tower_damage_per_min",
-    "stuns_per_min",
+# Основные метрики вклада и их веса: золото и урон по героям важнее фарма.
+_CORE_WEIGHTS = {
+    "gold_per_min": 1.5,
+    "hero_damage_per_min": 1.5,
+    "xp_per_min": 1.0,
+    "kills_per_min": 1.0,
+    "assists_per_min": 1.0,
+    "last_hits_per_min": 0.75,
 }
+# Нишевые метрики (лечение, станы, башни): у большинства героев ~0, поэтому только бонус —
+# учитываем, лишь когда перцентиль выше среднего, и они не наказывают за «ноль».
+_NICHE_WEIGHTS = {
+    "hero_healing_per_min": 0.5,
+    "stuns_per_min": 0.5,
+    "tower_damage_per_min": 0.5,
+    "tower_damage": 0.5,  # OpenDota отдаёт её без «_per_min»
+}
+_MIN_CORE_METRICS = 3  # меньше трёх основных метрик — оценка шумная, не считаем
+IMPACT_SHARE = 0.8  # доля вклада в итоговом перфе; остальное — штраф за смерти
+DEATHS_PER_MIN_WORST = 0.45  # столько смертей в минуту и больше = нулевая «выживаемость»
 
 
-def perf_score(benchmarks: dict) -> Optional[float]:
-    """Role-normalized перформанс: среднее перцентилей «полезных» benchmark-метрик (0..1).
-
-    benchmarks — перцентили игрока против других на ТОМ ЖЕ герое → метрика честна к роли
-    (саппорт сравнивается с саппортами, кор — с корами). Домашний аналог STRATZ IMP.
-    """
-    pcts = [
-        value
-        for metric, value in (benchmarks or {}).items()
-        if metric in _POSITIVE_BENCHMARKS and value is not None
-    ]
-    if not pcts:
+def survival_score(deaths: Optional[int], duration: Optional[int]) -> Optional[float]:
+    """1.0 — без смертей, 0.0 — 0.45 смерти в минуту и чаще. None, если нет данных."""
+    if deaths is None or not duration:
         return None
-    return sum(pcts) / len(pcts)
+    per_min = deaths / (duration / 60)
+    return min(1.0, max(0.0, 1 - per_min / DEATHS_PER_MIN_WORST))
+
+
+def perf_score(
+    benchmarks: dict, deaths: Optional[int] = None, duration: Optional[int] = None
+) -> Optional[float]:
+    """Перф 0..1: вклад в игру против игроков на ТОМ ЖЕ герое (роль учтена) со штрафом за смерти.
+
+    Вклад — взвешенное среднее перцентилей benchmark-метрик; нужно минимум 3 основных.
+    Если известны смерти и длительность, итог = 0.8·вклад + 0.2·выживаемость.
+    """
+    benchmarks = benchmarks or {}
+    total = weight = 0.0
+    core = 0
+    for metric, w in _CORE_WEIGHTS.items():
+        pct = benchmarks.get(metric)
+        if pct is not None:
+            total += w * pct
+            weight += w
+            core += 1
+    if core < _MIN_CORE_METRICS:
+        return None
+    for metric, w in _NICHE_WEIGHTS.items():
+        pct = benchmarks.get(metric)
+        if pct is not None and pct > 0.5:
+            total += w * pct
+            weight += w
+    impact = total / weight
+    survival = survival_score(deaths, duration)
+    if survival is None:
+        return impact
+    return IMPACT_SHARE * impact + (1 - IMPACT_SHARE) * survival
+
+
+def match_perf(row: dict) -> Optional[float]:
+    """Перф матча из строки БД: пересчёт по сохранённым benchmarks и смертям, иначе старое значение."""
+    import json
+
+    bench = row.get("bench_json")
+    if isinstance(bench, str):
+        try:
+            bench = json.loads(bench)
+        except ValueError:
+            bench = None
+    if isinstance(bench, dict):
+        score = perf_score(bench, deaths=row.get("deaths"), duration=row.get("duration"))
+        if score is not None:
+            return score
+    return row.get("perf_score")
 
 
 def aggregate_skill(benchmarks_list: list[dict]) -> dict:

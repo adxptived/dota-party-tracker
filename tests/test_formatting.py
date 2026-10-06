@@ -424,3 +424,36 @@ def test_player_roster_without_mmr_or_games():
 def test_player_roster_empty_gives_hint():
     from mmrbot.formatting import render_player_list
     assert "/add" in render_player_list([])
+
+
+# --- сводка за период (ежедневная — за 24 часа) --------------------------
+
+def _drow(name, games, wins, delta=0, kda=3.0):
+    return {"name": name, "games": games, "wins": wins, "losses": games - wins, "delta": delta,
+            "winrate": wins / games if games else 0.0, "kda": kda}
+
+
+def test_render_digest_day_shows_totals_rows_awards_and_records():
+    from mmrbot.formatting import render_digest
+    rows = [_drow("Вася", 3, 3, 75), _drow("Петя", 2, 0, -50), _drow("Коля", 0, 0)]
+    awards = [{"key": "mvp", "emoji": "⭐", "title": "MVP", "player": "Вася", "detail": "перф 70"}]
+    rec = {"records": [{"key": "gpm", "emoji": "💰", "text": "800 GPM", "player": "Вася",
+                        "match": {"match_id": 7, "hero_id": 1}}]}
+    text = render_digest("day", rows, awards, rec)
+    assert text.startswith("📰 <b>Сводка за 24 часа</b>")
+    assert "5 игр" in text and "3–2" in text  # итого по пати
+    assert text.index("Вася") < text.index("Петя")
+    assert "Награды за 24 часа" in text and "MVP" in text
+    assert "Рекорды за 24 часа" in text and "800 GPM" in text and "dotabuff.com/matches/7" in text
+
+
+def test_render_digest_without_games_is_short():
+    from mmrbot.formatting import render_digest
+    text = render_digest("week", [_drow("Вася", 0, 0)], [], {})
+    assert "Сводка за неделю" in text and "не было" in text and "Вася" not in text
+
+
+def test_render_digest_labels_cover_day_week_month():
+    from mmrbot.formatting import render_digest
+    for period, label in (("day", "за 24 часа"), ("week", "за неделю"), ("month", "за месяц")):
+        assert f"Сводка {label}" in render_digest(period, [_drow("В", 1, 1, 25)], [], {})

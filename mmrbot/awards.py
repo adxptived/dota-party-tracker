@@ -1,15 +1,23 @@
-"""Отличия участников за период (чистые функции, без сети и БД).
+"""Награды участников за период (чистые функции, без сети и БД).
 
-compute_period_awards([(имя, матчи за период)], step) → список {key, emoji, title, player, detail}.
-Считаем только по матчам выбранного периода (сутки/неделя), а не по всей истории: иначе «отличия»
-в ежедневной сводке не отражали бы сам день. Отличие имеет смысл только как сравнение: нужны минимум
-двое игроков с данными по метрике и различающиеся значения (при равенстве награду не выдаём).
+compute_period_awards([(имя, матчи за период)], step) → список {key, emoji, title, player, detail, anti}.
+Считаем только по матчам периода. Награда — сравнение: нужны минимум двое игроков и разные значения
+(при равенстве не выдаём). Плохие награды (anti=True) идут в конце.
 """
 from __future__ import annotations
 
 from typing import Callable, Optional
 
+from mmrbot.heroes import hero_name
 from mmrbot.stats import estimate_mmr_delta, is_win, longest_win_streak
+
+
+_ANTI = {"drop", "feeder", "loss_streak"}
+
+
+def _games(n: int) -> str:
+    word = "игра" if n % 10 == 1 and n % 100 != 11 else "игры" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "игр"
+    return f"{n} {word}"
 
 
 def _mean(values: list) -> Optional[float]:
@@ -73,9 +81,6 @@ def compute_period_awards(
     if awards and awards[-1]["key"] == "drop" and deltas[awards[-1]["player"]] >= 0:
         awards.pop()
 
-    add("games", "🕹️", "Больше всех играл", {n: len(ms) for n, ms in played.items()},
-        lambda n: f"{len(played[n])} игр")
-
     winrates = {n: sum(is_win(m["player_slot"], m["radiant_win"]) for m in ms) / len(ms) for n, ms in regular.items()}
     add("winrate", "👑", "Лучший винрейт", winrates,
         lambda n: f"{winrates[n] * 100:.0f}% за {len(regular[n])} игр")
@@ -89,30 +94,34 @@ def compute_period_awards(
         return result
 
     perf = averages("perf_score")
-    add("perf", "⭐", "Лучший перф", perf, lambda n: f"{perf[n] * 100:.0f}/100")
-    gpm = averages("gpm")
-    add("gpm", "💰", "Наибольший GPM", gpm, lambda n: f"{gpm[n]:.0f} GPM в среднем")
-    damage = averages("hero_damage")
-    add("damage", "💥", "Наибольший урон по героям", damage, lambda n: f"{damage[n] / 1000:.1f}k урона/игра")
-    assists = averages("assists")
-    add("assists", "🤝", "Больше всего ассистов", assists, lambda n: f"{assists[n]:.1f} ассистов/игра")
+    add("mvp", "⭐", "MVP", perf, lambda n: f"перф {perf[n] * 100:.0f}")
 
     best_games: dict[str, tuple[float, dict]] = {}
     for n, ms in played.items():
         scored = [(k, m) for m in ms if (k := _kda(m)) is not None]
         if scored:
             best_games[n] = max(scored, key=lambda x: x[0])
-    add("best_game", "🎯", "Лучшая игра", {n: v[0] for n, v in best_games.items()},
-        lambda n: "{}/{}/{} (KDA {:.1f})".format(
-            best_games[n][1].get("kills") or 0, best_games[n][1].get("deaths") or 0,
-            best_games[n][1].get("assists") or 0, best_games[n][0]))
+
+    def best_detail(n: str) -> str:
+        m = best_games[n][1]
+        return "{} {}/{}/{}".format(
+            hero_name(m.get("hero_id")), m.get("kills") or 0, m.get("deaths") or 0, m.get("assists") or 0)
+
+    add("best_game", "🎯", "Лучшая игра", {n: v[0] for n, v in best_games.items()}, best_detail)
 
     streaks = {n: longest_win_streak(ms) for n, ms in played.items()}
-    add("win_streak", "🔥", "Лучшая серия побед", streaks, lambda n: f"{streaks[n]} подряд", floor=2)
+    add("win_streak", "🔥", "Лучшая серия побед", streaks, lambda n: f"{streaks[n]} подряд", floor=3)
+
+    add("games", "🕹️", "Больше всех играл", {n: len(ms) for n, ms in played.items()},
+        lambda n: _games(len(played[n])))
 
     deaths = averages("deaths")
-    add("deaths", "💀", "Больше всего смертей", deaths, lambda n: f"{deaths[n]:.1f} смертей/игра")
+    add("feeder", "💀", "Фидер", deaths, lambda n: f"{deaths[n]:.1f} смертей за игру", floor=7)
 
     loss = {n: _longest_loss_streak(ms) for n, ms in played.items()}
     add("loss_streak", "🧊", "Серия поражений", loss, lambda n: f"{loss[n]} подряд", floor=3)
+
+    for a in awards:
+        a["anti"] = a["key"] in _ANTI
+    awards.sort(key=lambda a: a["anti"])  # стабильная: плохие награды в конце
     return awards
