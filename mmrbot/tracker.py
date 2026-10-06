@@ -100,6 +100,7 @@ class PlayerSummary:
     hero_pool: int = 0
     wins_losses: dict = field(default_factory=dict)
     steam_name: Optional[str] = None
+    anchor_games: int = 0  # игр, по которым считается ±MMR (с момента задания MMR)
     mmr_drift: bool = False  # оценка MMR разошлась с медалью — стоит обновить /setmmr
     history_closed: bool = False  # история матчей закрыта у OpenDota — цифры могут быть неполными
 
@@ -621,6 +622,7 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         hero_pool=pool,
         wins_losses=wins_losses,
         history_closed=player.fh_unavailable,
+        anchor_games=agg_anchor.games,
         mmr_drift=mmr_rank_mismatch(current_mmr, player.last_rank_tier),
     )
 

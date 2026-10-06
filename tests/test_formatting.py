@@ -478,3 +478,9 @@ def test_skill_block_damage_group_uses_tower_damage_benchmark():
     from mmrbot.formatting import _skill_block
     text = _skill_block({"hero_damage_per_min": 0.5, "tower_damage": 0.9})
     assert "Урон" in text and "70%" in text      # среднее героев и строений, а не только героев
+
+
+def test_leaderboard_explains_mmr_period_when_it_differs():
+    from mmrbot.formatting import render_leaderboard
+    assert "за 3 игры с момента задания MMR" in render_leaderboard([summary(games_total=10, anchor_games=3)])
+    assert "с момента задания MMR" not in render_leaderboard([summary(games_total=4, anchor_games=4)])

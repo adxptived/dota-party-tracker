@@ -129,6 +129,8 @@ def _fmt_wr(games: int, wins: int) -> str:
 def _card_full(index: int, s: PlayerSummary) -> str:
     lines = [f"{_pos(index)} {_b(s.display_name)}"]
     lines.append(f"    {_rank_with_emoji(s)} · {_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}")
+    if s.games_total and s.anchor_games != s.games_total:  # стрелка и записи считаются за разные периоды — скажем
+        lines.append(f"    <i>±MMR — за {plural_games(s.anchor_games)} с момента задания MMR</i>")
     if s.games_total == 0:
         lines.append(f"    {NO_GAMES}")
     else:
