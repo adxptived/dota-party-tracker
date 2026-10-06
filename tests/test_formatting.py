@@ -1,3 +1,4 @@
+from mmrbot.heroes import hero_name
 from mmrbot.formatting import (
     format_delta,
     plural_games,
@@ -158,18 +159,41 @@ def test_render_awards_empty_when_no_awards():
 
 # --- together -----------------------------------------------------------
 
-def test_render_together_with_shared_games():
-    result = {"player_count": 2, "summary": {"games": 5, "wins": 3, "losses": 2},
-              "duo": {"pair": ("Alice", "Bob"), "games": 4, "wins": 3, "winrate": 0.75}}
-    text = render_together(result)
-    assert "5" in text
-    assert "Alice" in text and "Bob" in text
+def _together(**kw):
+    base = {"period": "month", "since_ts": None, "tz": "Europe/Moscow", "player_count": 2,
+            "games": 0, "wins": 0, "losses": 0, "solo_games": 0, "solo_wins": 0, "lineups": [], "recent": []}
+    return {**base, **kw}
 
 
-def test_render_together_no_games():
-    result = {"player_count": 2, "summary": {"games": 0, "wins": 0, "losses": 0}, "duo": None}
-    text = render_together(result)
-    assert "нет" in text.lower() or "совмест" in text.lower()
+def test_render_together_shows_period_lineups_heroes_and_recent():
+    lineup = {"names": ["Alice", "Bob"], "games": 4, "wins": 3, "losses": 1, "winrate": 0.75, "last_ts": 1_700_000_000,
+              "heroes": [{"hero_id": 14, "games": 3}, {"hero_id": 26, "games": 2}]}
+    game = {"match_id": 77, "start_time": 1_700_000_000, "win": True, "players": [
+        {"name": "Alice", "hero_id": 14, "kills": 10, "deaths": 2, "assists": 8},
+        {"name": "Bob", "hero_id": 26, "kills": 3, "deaths": 5, "assists": 20}]}
+    text = render_together(_together(games=4, wins=3, losses=1, solo_games=10, solo_wins=4,
+                                     lineups=[lineup], recent=[game]))
+    assert "Совместные игры за месяц" in text
+    assert "в одной команде" in text  # что считаем совместной игрой
+    assert "4 игры" in text and "3–1 (75%)" in text
+    assert "Поодиночке" in text and "40%" in text
+    assert "Alice + Bob" in text and hero_name(14) in text and "×3" in text
+    assert "15.11" in text  # дата по часовому поясу чата (МСК)
+    assert "10/2/8" in text and "dotabuff.com/matches/77" in text
+
+
+def test_render_together_all_period_names_start_date():
+    text = render_together(_together(period="all", since_ts=1_700_000_000, games=0))
+    assert "с 15.11.2023" in text
+
+
+def test_render_together_no_games_is_short_and_explains():
+    text = render_together(_together(period="week"))
+    assert "Совместные игры за неделю" in text and "не было" in text and "в одной команде" in text
+
+
+def test_render_together_single_player():
+    assert "минимум двое" in render_together(_together(player_count=1))
 
 
 # --- heroes -------------------------------------------------------------

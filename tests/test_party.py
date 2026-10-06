@@ -1,4 +1,4 @@
-from mmrbot.party import best_duo, together_summary
+from mmrbot.party import together_summary
 
 
 def wm(match_id, slot, radiant_win):
@@ -38,35 +38,6 @@ def test_together_summary_empty():
     assert together_summary([]) == {"games": 0, "wins": 0, "losses": 0}
 
 
-def test_best_duo_picks_pair_with_most_shared_games():
-    players = [
-        ("Alice", [win(1), loss(2), win(3)]),
-        ("Bob", [win(1), loss(2)]),
-        ("Carol", [win(1)]),
-    ]
-    duo = best_duo(players)
-    assert set(duo["pair"]) == {"Alice", "Bob"}  # 2 совместных матча
-    assert duo["games"] == 2
-    assert duo["wins"] == 1
-
-
-def test_best_duo_none_when_no_shared():
-    players = [("Alice", [win(1)]), ("Bob", [win(2)])]
-    assert best_duo(players) is None
-
-
-def test_best_duo_does_not_collapse_duplicate_names():
-    # Два аккаунта с одинаковым именем не должны схлопываться (потеря матчей).
-    players = [
-        ("Alex", [win(1), win(2), win(3)]),  # аккаунт A1: 3 общих с Bob
-        ("Bob", [win(1), win(2), win(3)]),
-        ("Alex", [win(9)]),                  # аккаунт A2: общих нет
-    ]
-    duo = best_duo(players)
-    assert duo is not None
-    assert duo["games"] == 3  # матчи A1 не потеряны
-
-
 def test_together_counts_same_side_subgroup_when_split():
     # A,B на Radiant (победа), C на Dire — A и B сыграли вместе на одной стороне.
     players = [
@@ -88,3 +59,70 @@ def test_together_skips_even_split():
         ("D", [wm(60, 129, True)]),
     ]
     assert together_summary(players)["games"] == 0
+
+
+# --- together_report: составы, герои, последние игры -----------------------
+
+from mmrbot.party import together_report
+
+
+def tm(match_id, t, slot=0, radiant_win=True, hero=1, k=5, d=3, a=7):
+    return {"match_id": match_id, "start_time": t, "player_slot": slot, "radiant_win": radiant_win,
+            "hero_id": hero, "kills": k, "deaths": d, "assists": a}
+
+
+def test_report_groups_matches_by_exact_lineup():
+    a = [tm(1, 10), tm(2, 20), tm(3, 30, radiant_win=False), tm(4, 40)]
+    b = [tm(1, 10), tm(2, 20), tm(3, 30, radiant_win=False)]
+    c = [tm(3, 30, radiant_win=False), tm(5, 50)]
+    r = together_report([("A", a), ("B", b), ("C", c)])
+    assert (r["games"], r["wins"], r["losses"]) == (3, 2, 1)
+    lineups = {tuple(x["names"]): x for x in r["lineups"]}
+    assert lineups[("A", "B")]["games"] == 2 and lineups[("A", "B")]["wins"] == 2
+    assert lineups[("A", "B", "C")]["games"] == 1 and lineups[("A", "B", "C")]["losses"] == 1
+    assert r["lineups"][0]["names"] == ["A", "B"]  # сначала самый частый состав
+    assert lineups[("A", "B")]["last_ts"] == 20
+
+
+def test_report_ignores_opponents_and_counts_solo_games():
+    a = [tm(1, 10, slot=0), tm(2, 20)]
+    b = [tm(1, 10, slot=128)]  # тот же матч, но против — это не «вместе»
+    r = together_report([("A", a), ("B", b)])
+    assert r["games"] == 0 and r["lineups"] == []
+    assert (r["solo_games"], r["solo_wins"]) == (3, 2)  # A: 2 победы, B: поражение
+
+
+def test_report_split_party_counts_each_side_separately():
+    rad = [tm(1, 10, slot=0), ]
+    r = together_report([("A", rad), ("B", [tm(1, 10, slot=1)]),
+                         ("C", [tm(1, 10, slot=128)]), ("D", [tm(1, 10, slot=129)])])
+    assert r["games"] == 2 and (r["wins"], r["losses"]) == (1, 1)
+    assert {tuple(x["names"]) for x in r["lineups"]} == {("A", "B"), ("C", "D")}
+
+
+def test_report_since_ts_limits_period():
+    a, b = [tm(1, 10), tm(2, 100)], [tm(1, 10), tm(2, 100)]
+    r = together_report([("A", a), ("B", b)], since_ts=50)
+    assert r["games"] == 1 and r["recent"][0]["match_id"] == 2
+
+
+def test_report_lineup_heroes_and_recent_games():
+    a = [tm(1, 10, hero=14), tm(2, 20, hero=14), tm(3, 30, hero=5, k=12, d=1, a=9)]
+    b = [tm(1, 10, hero=26), tm(2, 20, hero=31), tm(3, 30, hero=26)]
+    r = together_report([("A", a), ("B", b)])
+    heroes = r["lineups"][0]["heroes"]
+    assert heroes[0] == {"hero_id": 14, "games": 2} and heroes[1] == {"hero_id": 26, "games": 2}
+    assert [g["match_id"] for g in r["recent"]] == [3, 2, 1]  # новые сверху
+    first = r["recent"][0]
+    assert first["win"] is True and first["start_time"] == 30
+    assert first["players"][0] == {"name": "A", "hero_id": 5, "kills": 12, "deaths": 1, "assists": 9}
+
+
+def test_report_same_names_do_not_merge():
+    r = together_report([("A", [tm(1, 10)]), ("A", [tm(1, 10)])])
+    assert r["games"] == 1 and r["lineups"][0]["names"] == ["A", "A"]
+
+
+def test_report_empty():
+    r = together_report([])
+    assert r["games"] == 0 and r["lineups"] == [] and r["recent"] == []

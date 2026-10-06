@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import statistics
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -738,14 +739,19 @@ def build_chat_comparison(summaries: list[PlayerSummary]) -> dict:
     return {"size": len(summaries), "players": players, "averages": averages}
 
 
-def build_together(storage: Storage, chat_id: int) -> dict:
-    """Статистика совместной игры пати (пакет B)."""
+def build_together(storage: Storage, chat_id: int, period: str = "month", now: Optional[int] = None) -> dict:
+    """Совместные игры пати за период (day/week/month/all) из кэша БД: составы, герои, последние матчи.
+
+    «all» считаем с общей даты: глубина сохранённой истории у игроков разная, и матчи до начала самой
+    короткой истории нельзя честно проверить на совместность (второго игрока там просто нет в БД).
+    """
+    now = int(time.time()) if now is None else now
+    chat = storage.get_or_create_chat(chat_id)
     players = storage.list_players(chat_id)
-    named_matches = [
-        (p.display_name, storage.get_matches(p.id)) for p in players
-    ]
-    return {
-        "player_count": len(players),
-        "summary": party.together_summary(named_matches),
-        "duo": party.best_duo(named_matches),
-    }
+    named = [(p.display_name, storage.get_matches(p.id)) for p in players]
+    since = stats.period_since(period, now)
+    if since is None:
+        firsts = [matches[0]["start_time"] for _, matches in named if matches]
+        since = max(firsts) if len(firsts) >= 2 else None
+    report = party.together_report(named, since_ts=since)
+    return {**report, "period": period, "since_ts": since, "tz": chat.tz, "player_count": len(players)}

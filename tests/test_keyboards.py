@@ -91,3 +91,11 @@ def test_digest_buttons_mark_current_and_use_d_callbacks():
     buttons = _flat(digest_buttons("week"))
     assert [b.callback_data for b in buttons] == ["d:day", "d:week", "d:month"]
     assert [b.text for b in buttons if b.text.startswith("•")] == ["• Неделя"]
+
+
+def test_together_buttons_mark_current_and_use_t_callbacks():
+    from mmrbot.keyboards import together_buttons
+    buttons = _flat(together_buttons("month"))
+    assert [b.callback_data for b in buttons][:4] == ["t:day", "t:week", "t:month", "t:all"]
+    assert [b.text for b in buttons if b.text.startswith("•")] == ["• Месяц"]
+    assert "m:menu" in [b.callback_data for b in buttons]

@@ -1,7 +1,7 @@
 """Inline-клавиатуры бота (чистые билдеры, без обработчиков).
 
 Схема callback_data (до 64 байт): `m:<действие>` — главное меню; `pp:<вид>:<account_id>` —
-выбор игрока; `d:<период>` — сводка (24 часа/неделя/месяц); `x:close` — удалить сообщение; `r:<период>` — рекорды; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом.
+выбор игрока; `t:<период>` — совместные игры; `d:<период>` — сводка (24 часа/неделя/месяц); `x:close` — удалить сообщение; `r:<период>` — рекорды; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом.
 """
 from __future__ import annotations
 
@@ -62,6 +62,15 @@ def records_buttons(current: str) -> InlineKeyboardMarkup:
     row = [
         InlineKeyboardButton(text=f"• {label}" if key == current else label, callback_data=f"r:{key}")
         for key, label in PERIODS_RECORDS
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
+
+
+def together_buttons(current: str) -> InlineKeyboardMarkup:
+    """Периоды совместных игр (текущий отмечен «•») + навигация; `t:<период>`."""
+    row = [
+        InlineKeyboardButton(text=f"• {label}" if key == current else label, callback_data=f"t:{key}")
+        for key, label in PERIODS
     ]
     return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
 

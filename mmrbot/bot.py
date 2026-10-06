@@ -16,7 +16,7 @@ from mmrbot import commands as cmd
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import digest_buttons, STEPS, TIMEZONES, confirm_remove, graph_buttons, list_actions, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import digest_buttons, together_buttons, STEPS, TIMEZONES, confirm_remove, graph_buttons, list_actions, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.service import (
     render_digest_board,
@@ -327,11 +327,22 @@ async def do_period_stats(message: Message, storage: Storage, od: OpenDota, peri
     )
 
 
-async def do_together(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
-    if not await _has_players(message, storage):
+async def do_together(message: Message, storage: Storage, od: OpenDota, stratz=None,
+                      period: str = "month", edit: bool = False) -> None:
+    """Совместные игры за период; edit=True — правим сообщение с нажатой кнопкой периода (без запроса в сеть)."""
+    if not edit and not await _has_players(message, storage):
+        return
+    markup = together_buttons(period)
+    if edit:
+        text = await render_together_board(storage, od, message.chat.id, stratz, period, refresh=False)
+        try:
+            await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        except TelegramBadRequest as exc:
+            if "not modified" not in str(exc):
+                raise
         return
     status = await _progress(message, WAIT)
-    await _reply_board(message, render_together_board(storage, od, message.chat.id, stratz), status)
+    await _reply_board(message, render_together_board(storage, od, message.chat.id, stratz, period), status, markup)
 
 
 async def do_compare(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
@@ -695,7 +706,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "d"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "d", "t"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -709,6 +720,12 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
 
     if kind == "s":
         await _on_settings(message, storage, args)
+        return
+
+    if kind == "t":
+        period = args[0] if args else "month"
+        if period in {"day", "week", "month", "all"}:
+            await do_together(message, storage, od, stratz, period, edit=True)
         return
 
     if kind == "d":
