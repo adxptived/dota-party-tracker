@@ -637,6 +637,18 @@ class Storage:
             ).fetchall()
         return [r["match_id"] for r in rows]
 
+    def get_match_hints(self, player_id: int, match_ids: list[int]) -> dict[int, tuple[bool, Optional[int]]]:
+        """{match_id: (за силы света?, hero_id)} — по ним Stratz находит игрока со скрытым профилем."""
+        if not match_ids:
+            return {}
+        marks = ",".join("?" * len(match_ids))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT match_id, player_slot, hero_id FROM matches WHERE player_id = ? AND match_id IN ({marks})",
+                [player_id, *match_ids],
+            ).fetchall()
+        return {r["match_id"]: (r["player_slot"] < 128, r["hero_id"]) for r in rows}
+
     def get_match_slot(self, player_id: int, match_id: int) -> Optional[int]:
         with self._conn() as conn:
             row = conn.execute(

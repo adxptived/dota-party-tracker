@@ -371,7 +371,7 @@ class FakeStratz:
         self.fail = fail
         self.calls = 0
 
-    def get_matches(self, account_id, match_ids):
+    def get_matches(self, account_id, match_ids, hints=None):
         self.calls += 1
         if self.fail:
             raise RuntimeError("stratz down")

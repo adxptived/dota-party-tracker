@@ -130,7 +130,9 @@ def _normalize(raw: dict) -> dict:
 
 
 class StratzClient(Protocol):
-    def get_matches(self, account_id: int, match_ids: list[int]) -> dict[int, dict]: ...
+    def get_matches(
+        self, account_id: int, match_ids: list[int], hints: Optional[dict] = None
+    ) -> dict[int, dict]: ...
 
 
 HISTORY_LIMIT_FIRST = None  # первая загрузка — вся ранкед-история игрока
@@ -150,7 +152,7 @@ def _enrich_from_stratz(
     if not pending:
         return
     try:
-        data = stratz.get_matches(player.account_id, pending)
+        data = stratz.get_matches(player.account_id, pending, hints=storage.get_match_hints(player.id, pending))
     except Exception:
         log.warning("Stratz недоступен для игрока %s, пропускаю", player.account_id, exc_info=True)
         return

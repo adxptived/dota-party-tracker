@@ -61,7 +61,7 @@ class FakeStratz:
     def __init__(self):
         self.full_requests = []
 
-    def get_matches(self, account_id, match_ids):
+    def get_matches(self, account_id, match_ids, hints=None):
         by_id = {g[0]: g for g in GAMES}
         return {
             mid: {"position": by_id[mid][8], "role": "CORE", "lane": "SAFE_LANE", "imp": by_id[mid][9],
