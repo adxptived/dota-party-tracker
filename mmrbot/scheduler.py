@@ -189,7 +189,8 @@ def setup_scheduler(
         except Exception:
             log.exception("Бэкап БД не удался")
 
-    # Новые игры: каждые 4 минуты (OpenDota-кулдаун внутри не даёт дёргать API чаще раза в 2 минуты на игрока).
+    # Новые игры: каждые 4 минуты (OpenDota-кулдаун внутри не даёт дёргать API чаще раза в 2 минуты на игрока;
+    # без ключа и пока пати не играет — не чаще раза в 10 минут, см. tracker.GAME_IDLE_COOLDOWN).
     scheduler.add_job(game_watch, "interval", minutes=4, misfire_grace_time=120, max_instances=1,
                       next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90))
     scheduler.add_job(weekly_summary, "cron", minute=5, misfire_grace_time=300)

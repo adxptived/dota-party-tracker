@@ -145,6 +145,27 @@ def _card_today(index: int, s: PlayerSummary) -> str:
     return "\n".join(lines)
 
 
+def _age(seconds: int) -> str:
+    minutes = max(1, seconds // 60)
+    return f"{minutes} мин" if minutes < 90 else f"{minutes // 60} ч"
+
+
+def stale_note(players: list, now: int, cooldown: int) -> str:
+    """Предупреждение под отчётом, если кого-то не удалось обновить и показаны сохранённые данные.
+
+    После обновления чата «свежий» игрок сверен не давнее кулдауна; всё, что заметно старше, —
+    сбой запроса (OpenDota недоступен или исчерпан лимит). Пустая строка — все данные актуальны.
+    """
+    limit = cooldown + 120  # запас на длительность самого обновления
+    stale = [p for p in players if p.updated_ts is None or now - p.updated_ts > limit]
+    if not stale:
+        return ""
+    who = "" if len(stale) == len(players) else " (" + ", ".join(_esc(p.display_name) for p in stale) + ")"
+    known = [p.updated_ts for p in stale if p.updated_ts is not None]
+    when = f"обновлено {_age(now - min(known))} назад" if known else "ещё не загружены"
+    return f"⚠️ <i>OpenDota не ответил — показаны сохранённые данные{who}: {when}.</i>"
+
+
 def render_leaderboard(summaries: list[PlayerSummary], today_only: bool = False) -> str:
     if not summaries:
         return NO_PLAYERS

@@ -586,3 +586,87 @@ def test_graph_buttons_toggle_and_year():
 def test_render_chart_by_games_returns_png():
     png = render_mmr_chart({"Вася": [(NOW, 25), (NOW + 60, 0)], "Петя": [(NOW, -25)]}, "t", "UTC", by_games=True)
     assert png.startswith(b"\x89PNG")
+
+
+# --- достоверность: свежесть данных в отчётах ----------------------------------
+
+class DownOD(FakeOD):
+    def get_matches(self, account_id, limit=200):
+        raise RuntimeError("OpenDota HTTP 503")
+
+
+def test_board_warns_when_refresh_failed_and_cache_is_shown(store):
+    import mmrbot.service as service
+    p = store.add_player(100, 1, "Вася", 5000, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    store.add_matches(p.id, [m(1, now - 7200)])
+    store.touch_player(p.id, now - 3600)                       # последний удачный опрос — час назад
+    text = asyncio.run(service.render_board(store, DownOD(), 100))
+    assert "показаны сохранённые данные" in text and "60 мин назад" in text
+    assert "Вася" in text                                       # сам отчёт из кэша всё равно показан
+
+
+def test_board_has_no_warning_when_data_is_fresh(store):
+    import mmrbot.service as service
+    p = store.add_player(100, 1, "Вася", 5000, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    store.add_matches(p.id, [m(1, now - 7200)])
+    for render in (service.render_board, service.render_together_board, service.render_compare_board):
+        assert "сохранённые данные" not in asyncio.run(render(store, FakeOD(), 100))
+
+
+def test_stale_note_names_only_failed_players():
+    from mmrbot.formatting import stale_note
+    from mmrbot.storage import Player
+    fresh = Player(1, 100, 1, "Свежий", None, 0, 0, None, None, updated_ts=NOW - 30)
+    old = Player(2, 100, 2, "Ста<рый", None, 0, 0, None, None, updated_ts=NOW - 7200)
+    never = Player(3, 100, 3, "Новый", None, 0, 0, None, None, updated_ts=None)
+    assert stale_note([fresh], NOW, 180) == ""
+    note = stale_note([fresh, old], NOW, 180)
+    assert "Ста&lt;рый" in note and "Свежий" not in note and "2 ч назад" in note
+    assert "ещё не загружены" in stale_note([never], NOW, 180)
+
+
+def test_graph_cache_is_dropped_when_new_game_arrives(store, monkeypatch):
+    import mmrbot.service as service
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    store.add_matches(p.id, [m(1, now - 3600)])
+    calls = []
+    monkeypatch.setattr(service, "render_mmr_chart", lambda *a, **k: calls.append(1) or b"\x89PNG")
+    service._graph_cache.clear()
+    _, first = asyncio.run(service.render_graph_board(store, FakeOD(), 100, "week", refresh=False))
+    store.add_matches(p.id, [m(2, now - 600)])                 # пришла новая игра
+    _, second = asyncio.run(service.render_graph_board(store, FakeOD(), 100, "week", refresh=False))
+    assert len(calls) == 2 and "+25" in first and "+50" in second   # старая картинка не отдана
+
+
+def test_command_does_not_wait_for_per_match_requests(store):
+    import threading
+    import time as _time
+
+    import mmrbot.service as service
+    p = store.add_player(100, 1, "Вася", 5000, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    store.add_matches(p.id, [m(i, now - 3600 * i) for i in range(1, 4)])
+    release = threading.Event()
+    took = {}
+
+    class SlowDetails(FakeOD):
+        def get_match_player_stats(self, match_id, account_id):
+            release.wait(5)                                    # «медленный» OpenDota: висит, пока не отпустим
+            return {"gpm": 500, "benchmarks": {"gold_per_min": 0.5}}
+
+    async def go():
+        t0 = _time.monotonic()
+        text = await service.render_board(store, SlowDetails(), 100)
+        took["reply"] = _time.monotonic() - t0
+        release.set()
+        for task in list(service._finish_tasks):               # фон доделывает обогащение после ответа
+            await task
+        return text
+
+    assert "Вася" in asyncio.run(go())
+    assert took["reply"] < 2                                   # ответ собран, не дожидаясь запросов на матч
+    assert all(row["enriched"] for row in store.get_matches(p.id))
+    assert not service._finish_running
