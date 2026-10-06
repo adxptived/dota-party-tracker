@@ -615,3 +615,19 @@ def test_digest_buttons_switch_period_in_place(store):
     assert "Сводка за неделю" in text and "2 игры" in text
     marked = [b for row in kw["reply_markup"].inline_keyboard for b in row if b.text.startswith("•")]
     assert marked[0].callback_data == "d:week"
+
+
+def test_together_period_buttons_edit_in_place(store):
+    a = store.add_player(100, 1, "Вася", None, 0, 0)
+    b = store.add_player(100, 2, "Петя", None, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    rows = [m(1, now - 3600, hero=14), m(2, now - 10 * 86_400, hero=14)]
+    store.add_matches(a.id, rows)
+    store.add_matches(b.id, rows)
+    cb = CB("t:week")
+    asyncio.run(botmod.on_callback(cb, store, FakeOD()))
+    assert not cb.message.sent
+    text, kw = cb.message.edited[-1]
+    assert "Совместные игры за неделю" in text and "1 игра" in text and "Вася + Петя" in text
+    marked = [x for row in kw["reply_markup"].inline_keyboard for x in row if x.text.startswith("•")]
+    assert marked[0].callback_data == "t:week"

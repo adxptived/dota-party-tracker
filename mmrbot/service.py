@@ -183,11 +183,15 @@ async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stra
     return render_heroes(summaries)
 
 
-async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
-    # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
-    await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
-    result = await asyncio.to_thread(build_together, storage, chat_id)
-    return render_together(result)
+async def render_together_board(
+    storage: Storage, od: OpenDota, chat_id: int, stratz=None, period: str = "month", refresh: bool = True
+) -> str:
+    """Совместные игры за период. refresh=False — смена периода кнопкой: данные только что обновлены."""
+    if refresh:
+        await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    result = await asyncio.to_thread(build_together, storage, chat_id, period)
+    text = render_together(result)
+    return text if len(text) <= TELEGRAM_LIMIT else render_together({**result, "recent": []})[:TELEGRAM_LIMIT]
 
 
 async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None) -> Optional[str]:

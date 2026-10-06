@@ -270,14 +270,39 @@ def test_summary_includes_solo_party_and_totals(store):
 
 
 def test_build_together_counts_shared(store):
-    now = 100_000
     a = store.add_player(100, 1, "Alice", 5000, 1000, 1000)
     b = store.add_player(100, 2, "Bob", 4000, 1000, 1000)
     store.add_matches(a.id, [_m(1, 2000, radiant_win=True), _m(2, 3000, radiant_win=False)])
     store.add_matches(b.id, [_m(1, 2000, radiant_win=True), _m(9, 3000, radiant_win=True)])
-    result = build_together(store, 100)
-    assert result["summary"]["games"] == 1  # общий матч 1
-    assert result["summary"]["wins"] == 1
+    result = build_together(store, 100, "all", now=100_000)
+    assert (result["games"], result["wins"]) == (1, 1)  # общий матч 1
+    assert result["lineups"][0]["names"] == ["Alice", "Bob"]
+    assert result["period"] == "all" and result["player_count"] == 2
+
+
+def test_build_together_period_window(store):
+    now = 10_000_000
+    a = store.add_player(100, 1, "Alice", 5000, 1000, 1000)
+    b = store.add_player(100, 2, "Bob", 4000, 1000, 1000)
+    rows = [_m(1, now - 3600), _m(2, now - 3 * 86_400), _m(3, now - 20 * 86_400), _m(4, now - 90 * 86_400)]
+    store.add_matches(a.id, rows)
+    store.add_matches(b.id, rows)
+    assert build_together(store, 100, "day", now=now)["games"] == 1
+    assert build_together(store, 100, "week", now=now)["games"] == 2
+    assert build_together(store, 100, "month", now=now)["games"] == 3
+    assert build_together(store, 100, "all", now=now)["games"] == 4
+
+
+def test_build_together_all_uses_common_history_window(store):
+    # У Bob история короче: матчи Alice до её начала нельзя честно сравнить — считаем с общей даты.
+    a = store.add_player(100, 1, "Alice", 5000, 1000, 1000)
+    b = store.add_player(100, 2, "Bob", 4000, 1000, 1000)
+    store.add_player(100, 3, "Empty", None, 1000, 1000)  # без матчей — окно не сужает
+    store.add_matches(a.id, [_m(1, 1000), _m(2, 2000), _m(3, 5000)])
+    store.add_matches(b.id, [_m(9, 4000), _m(3, 5000)])
+    result = build_together(store, 100, "all", now=100_000)
+    assert result["since_ts"] == 4000
+    assert result["games"] == 1 and result["solo_games"] == 1  # матчи 1 и 2 вне общего окна
 
 
 def test_leaderboard_reread_by_account_id_not_name(store):

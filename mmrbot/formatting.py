@@ -284,27 +284,69 @@ def render_digest(period: str, rows: list[dict], awards: list[dict], records: di
 
 # --- совместная игра ----------------------------------------------------
 
+TOGETHER_RULE = "<i>Считаются ранкед-матчи, где 2+ участника чата в одной команде.</i>"
+TOGETHER_LINEUPS = 5  # сколько составов показываем
+
+
+def _local_dt(ts: int, tz_name: str):
+    from datetime import datetime, timezone
+
+    import pytz
+    try:
+        tz = pytz.timezone(tz_name)
+    except Exception:
+        tz = pytz.timezone("Europe/Moscow")
+    return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz)
+
+
 def render_together(result: dict) -> str:
-    summary = result.get("summary", {})
-    games = summary.get("games", 0)
-    if games == 0:
-        return (
-            "🤝 <b>Совместные игры</b>\n\n"
-            "😴 Совместные ранкед-игры не обнаружены (возможно, данные ещё загружаются).\n"
-            "После первой совместной игры будут доступны общий винрейт и лучшая пара."
-        )
-    lines = [
-        "🤝 <b>Совместные игры</b>",
-        "",
-        f"🎮 Сыграно вместе: {_b(plural_games(games))} · {_fmt_wr(games, summary.get('wins', 0))}",
-    ]
-    duo = result.get("duo")
-    if duo:
-        n1, n2 = duo["pair"]
+    """Совместные игры: период, итог против игр поодиночке, составы с героями, последние матчи."""
+    period, tz = result.get("period", "all"), result.get("tz") or "Europe/Moscow"
+    label = PERIOD_LABELS.get(period, "за период")
+    if period == "all" and result.get("since_ts"):
+        label = f"с {_local_dt(result['since_ts'], tz):%d.%m.%Y}"
+    head = f"🤝 <b>Совместные игры {label}</b>"
+    if result.get("player_count", 0) < 2:
+        return f"{head}\n\nНужно минимум двое игроков в чате — добавьте через /add."
+    games = result.get("games", 0)
+    if not games:
+        return f"{head}\n{TOGETHER_RULE}\n\n💤 Вместе игр не было."
+
+    lines = [head, TOGETHER_RULE, "", f"🎮 Вместе: {_b(plural_games(games))} · {_fmt_wr(games, result['wins'])}"]
+    solo = result.get("solo_games", 0)
+    if solo:
+        lines.append(f"👤 Поодиночке: {plural_games(solo)} · {_fmt_wr(solo, result['solo_wins'])}")
+
+    lineups = result.get("lineups", [])
+    lines += ["", "<b>Кто с кем</b>"]
+    for lineup in lineups[:TOGETHER_LINEUPS]:
+        names = " + ".join(_esc(n) for n in lineup["names"])
         lines.append(
-            f"💞 Лучшая пара: <b>{_esc(n1)} + {_esc(n2)}</b> — "
-            f"{plural_games(duo['games'])}, {_fmt_wr(duo['games'], duo['wins'])}"
+            f"{_wr_dot(lineup['winrate'])} <b>{names}</b> — {plural_games(lineup['games'])} · "
+            f"{_fmt_wr(lineup['games'], lineup['wins'])}"
         )
+        heroes = [
+            f"{_esc(name)} — {_esc(hero_name(h['hero_id']))} ×{h['games']}"
+            for name, h in zip(lineup["names"], lineup.get("heroes") or []) if h
+        ]
+        if heroes:
+            lines.append("    🦸 " + ", ".join(heroes))
+        lines.append(f"    🕒 последняя игра {_local_dt(lineup['last_ts'], tz):%d.%m.%Y}")
+    if len(lineups) > TOGETHER_LINEUPS:
+        lines.append(f"<i>…и ещё составов: {len(lineups) - TOGETHER_LINEUPS}</i>")
+
+    recent = result.get("recent", [])
+    if recent:
+        lines += ["", "<b>Последние игры</b>"]
+        for game in recent:
+            who = ", ".join(
+                f"{_esc(p['name'])} ({_esc(hero_name(p['hero_id']))} {p['kills']}/{p['deaths']}/{p['assists']})"
+                for p in game["players"]
+            )
+            lines.append(
+                f"{'🟢' if game['win'] else '🔴'} {_local_dt(game['start_time'], tz):%d.%m %H:%M} · {who} · "
+                f'<a href="{dotabuff_match_url(game["match_id"])}">матч</a>'
+            )
     return "\n".join(lines)
 
 
