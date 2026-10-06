@@ -713,8 +713,8 @@ class Storage:
         return [dict(r) for r in rows]
 
     def get_match_sides(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
-        """Лёгкая выборка для совместных игр: только id матча, сторона и исход (без тяжёлых полей)."""
-        query = "SELECT match_id, start_time, player_slot, radiant_win FROM matches WHERE player_id = ?"
+        """Лёгкая выборка для совместных игр: id матча, сторона, исход и размер пати (без тяжёлых полей)."""
+        query = "SELECT match_id, start_time, player_slot, radiant_win, party_size FROM matches WHERE player_id = ?"
         params: list = [player_id]
         if since_ts is not None:
             query += " AND start_time >= ?"
