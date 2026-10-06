@@ -408,7 +408,7 @@ def test_get_match_sides_is_light_and_ordered(store):
     store.add_matches(p.id, [match(2, 300, slot=130, radiant_win=False), match(1, 100)])
     rows = store.get_match_sides(p.id)
     assert [r["match_id"] for r in rows] == [1, 2]
-    assert set(rows[0]) == {"match_id", "start_time", "player_slot", "radiant_win"}
+    assert set(rows[0]) == {"match_id", "start_time", "player_slot", "radiant_win", "party_size"}
     assert [r["match_id"] for r in store.get_match_sides(p.id, since_ts=200)] == [2]
 
 

@@ -273,8 +273,8 @@ def test_build_together_counts_shared(store):
     now = 100_000
     a = store.add_player(100, 1, "Alice", 5000, 1000, 1000)
     b = store.add_player(100, 2, "Bob", 4000, 1000, 1000)
-    store.add_matches(a.id, [_m(1, 2000, radiant_win=True), _m(2, 3000, radiant_win=False)])
-    store.add_matches(b.id, [_m(1, 2000, radiant_win=True), _m(9, 3000, radiant_win=True)])
+    store.add_matches(a.id, [_m(1, 2000, radiant_win=True, party_size=2), _m(2, 3000, radiant_win=False)])
+    store.add_matches(b.id, [_m(1, 2000, radiant_win=True, party_size=2), _m(9, 3000, radiant_win=True)])
     result = build_together(store, 100)
     assert result["summary"]["games"] == 1  # общий матч 1
     assert result["summary"]["wins"] == 1
