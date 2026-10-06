@@ -331,7 +331,7 @@ def render_heroes(summaries: list[PlayerSummary]) -> str:
 
 SKILL_GROUPS = [
     ("Фарм", ["gold_per_min", "last_hits_per_min", "xp_per_min"]),
-    ("Урон", ["hero_damage_per_min", "tower_damage_per_min"]),
+    ("Урон", ["hero_damage_per_min", "tower_damage"]),
     ("Участие в боях", ["kills_per_min", "assists_per_min"]),
     ("Поддержка", ["hero_healing_per_min"]),
 ]

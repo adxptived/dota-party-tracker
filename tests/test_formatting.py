@@ -472,3 +472,9 @@ def test_card_shows_unknown_party_and_mmr_drift_hint():
     text = render_player_card(summary(party_unknown=(3, 1), mmr_drift=True))
     assert "размер пати неизвестен" in text and "3 игры" in text
     assert "/setmmr" in text
+
+
+def test_skill_block_damage_group_uses_tower_damage_benchmark():
+    from mmrbot.formatting import _skill_block
+    text = _skill_block({"hero_damage_per_min": 0.5, "tower_damage": 0.9})
+    assert "Урон" in text and "70%" in text      # среднее героев и строений, а не только героев
