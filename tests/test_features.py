@@ -342,7 +342,7 @@ def test_cmd_achievements_lists_players(store):
     assert "5 побед подряд" in msg.sent[0][0]
     msg = Msg()
     asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args="Никто"), store))
-    assert "не найден" in msg.sent[0][0]
+    assert "Не нашёл" in msg.sent[0][0]
 
 
 class FakeOD:

@@ -192,7 +192,7 @@ def test_heroes_hero_view(env, args):
 
 def test_heroes_unknown_name(env):
     msg = call(botmod.cmd_heroes, "heroes", "абракадабра", env)
-    assert "не найден" in msg.texts
+    assert "Не нашёл" in msg.texts
 
 
 @pytest.mark.parametrize("args", [None, "последний", "@shinoame", "shinoame последний"])
@@ -212,7 +212,7 @@ def test_match_by_id_any_match_without_stratz_cache(env):
 
 def test_match_unknown_id(env):
     msg = call(botmod.cmd_match, "match", "9999999999", env)
-    assert "в Stratz не найден" in msg.texts
+    assert "не найден в Stratz" in msg.texts
 
 
 def test_match_by_id_for_stranger_works_when_chat_has_no_players(tmp_path):
@@ -230,7 +230,7 @@ def test_match_latest_falls_back_to_cache_without_stratz(env):
 
 def test_match_without_stratz_and_id_asks_for_key(env):
     msg = call(botmod.cmd_match, "match", "9100000005", env, stratz=False)
-    assert "STRATZ_API_KEY" in msg.texts
+    assert "Stratz" in msg.texts
 
 
 @pytest.mark.parametrize("args", [None, "shinoame", "@shinoame"])
@@ -261,14 +261,14 @@ def test_add_by_dotabuff_link_and_steam_vanity(tmp_path, monkeypatch):
     msg = FakeMessage()
     run(botmod.cmd_add(msg, cmdobj("add", "https://ru.dotabuff.com/players/1105542592 shinoame 5000"),
                        storage, FakeOD(), FakeStratz()))
-    assert "Игрок shinoame (id" in msg.texts
+    assert "shinoame добавлен" in msg.texts
     assert storage.get_player(100, "shinoame").account_id == ACC
 
     monkeypatch.setattr(botmod, "resolve_account_id", lambda text: 4242)
     msg = FakeMessage()
     run(botmod.cmd_add(msg, cmdobj("add", "https://steamcommunity.com/id/some_name Вася"),
                        storage, FakeOD(), FakeStratz()))
-    assert "Игрок Вася (id 4242) добавлен" in msg.texts
+    assert "Вася добавлен" in msg.texts
 
 
 def test_setmmr_setstep_settime_remove(env):

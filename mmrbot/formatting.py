@@ -11,10 +11,11 @@ from typing import Optional
 
 from mmrbot.heroes import hero_name
 from mmrbot.ranks import rank_label
+from mmrbot.texts import NO_GAMES, NO_PLAYERS
 from mmrbot.tracker import PlayerSummary
 
 POSITIONS = {1: "🥇", 2: "🥈", 3: "🥉"}
-LANE_NAMES = {1: "Safe", 2: "Mid", 3: "Off", 4: "Лес"}
+LANE_NAMES = {1: "Лёгкая линия", 2: "Мид", 3: "Оффлейн", 4: "Лес"}
 
 
 def _esc(text) -> str:
@@ -101,7 +102,7 @@ def _heroes_line(top_heroes: list[dict]) -> str:
     if not top_heroes:
         return "нет данных"
     return ", ".join(
-        f"{_esc(hero_name(h['hero_id']))} ({h['games']}и, {h['winrate'] * 100:.0f}%)" for h in top_heroes
+        f"{_esc(hero_name(h['hero_id']))} ({plural_games(h['games'])}, {h['winrate'] * 100:.0f}%)" for h in top_heroes
     )
 
 
@@ -117,7 +118,7 @@ def _card_full(index: int, s: PlayerSummary) -> str:
     lines = [f"{_pos(index)} {_b(s.display_name)}"]
     lines.append(f"    {_rank_with_emoji(s)} · {_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}")
     if s.games_total == 0:
-        lines.append("    💤 игры отсутствуют")
+        lines.append(f"    {NO_GAMES}")
     else:
         perf = f" · перф {s.avg_perf * 100:.0f}" if s.avg_perf is not None else ""
         lines.append(
@@ -146,18 +147,14 @@ def _card_today(index: int, s: PlayerSummary) -> str:
 
 def render_leaderboard(summaries: list[PlayerSummary], today_only: bool = False) -> str:
     if not summaries:
-        return (
-            "В данном чате нет отслеживаемых игроков.\n"
-            "Для добавления аккаунта используйте: /add «ссылка Dotabuff/OpenDota или ID» Имя [стартовый_MMR]\n"
-            "Пример: /add dotabuff.com/players/123456 Вася 5400"
-        )
+        return NO_PLAYERS
 
     if today_only:
-        header = "📅 <b>Статистика за сегодня</b> · ранкед"
+        header = "📅 <b>Статистика за сегодня</b>"
         blocks = [_card_today(i, s) for i, s in enumerate(summaries, start=1)]
         return header + "\n\n" + "\n\n".join(blocks)
 
-    header = "🏆 <b>Рейтинг участников</b>\n<i>ранкед, за всё время</i>"
+    header = "🏆 <b>Рейтинг</b>\n<i>за всё время</i>"
     blocks = [_card_full(i, s) for i, s in enumerate(summaries, start=1)]
     return header + "\n\n" + "\n\n".join(blocks)
 
@@ -178,7 +175,7 @@ def render_period_leaderboard(rows: list[dict], period: str) -> str:
             f"    🎮 {plural_games(r['games'])} · {r['wins']}–{r['losses']} "
             f"({r['winrate'] * 100:.0f}%) · KDA {r['kda']:.2f}"
         )
-    return f"📅 <b>Статистика {label}</b> · ранкед\n\n" + "\n\n".join(blocks)
+    return f"📅 <b>Статистика {label}</b>\n\n" + "\n\n".join(blocks)
 
 
 # --- награды ------------------------------------------------------------
@@ -187,10 +184,9 @@ def render_awards(awards: list[dict], label: str = "за неделю") -> str:
     """Отличия участников за период (label — «за сутки»/«за неделю»); пусто, если сравнивать нечего."""
     if not awards:
         return ""
-    lines = [f"🏅 <b>Отличия участников {label}</b>"]
+    lines = [f"🏅 <b>Награды {label}</b>"]
     for award in awards:
         lines.append(f"{award['emoji']} {_esc(award['title'])} — {_b(award['player'])} ({_esc(award['detail'])})")
-    lines.append("\n<i>🌟 Рекорды отдельных игр за день, неделю, месяц, год: /records</i>")
     return "\n".join(lines)
 
 
@@ -291,8 +287,8 @@ def render_together(result: dict) -> str:
 
 def render_heroes(summaries: list[PlayerSummary]) -> str:
     if not summaries:
-        return "Список игроков пуст. Для добавления используйте: /add «ссылка или ID» Имя [MMR]"
-    lines = ["🦸 <b>Наиболее часто используемые герои</b>"]
+        return NO_PLAYERS
+    lines = ["🦸 <b>Любимые герои</b>"]
     for s in summaries:
         lines.append(f"• {_b(s.display_name)}: {_heroes_line(s.top_heroes)}")
     return "\n".join(lines)
@@ -335,7 +331,7 @@ def _k(value) -> str:
 
 
 def _form_icons(form: list) -> str:
-    return " ".join("В" if won else "П" for won in form)
+    return _form_dots(form)
 
 
 def _wr_ratio(pair: tuple) -> Optional[float]:
@@ -355,7 +351,7 @@ def standing_line(comparison: dict, name: str) -> Optional[str]:
         return None
     ranks = player["ranks"]
     parts = [_b(f"сила #{player['power_rank']}")]
-    for key, label in (("perf", "перф"), ("winrate", "WR"), ("kda", "KDA")):
+    for key, label in (("perf", "перф"), ("winrate", "винрейт"), ("kda", "KDA")):
         if key in ranks:
             parts.append(f"{label} #{ranks[key]}")
     line = f"📍 Позиция в чате (из {comparison['size']}): " + " · ".join(parts)
@@ -378,7 +374,7 @@ def render_compare_table(comparison: dict, summaries: list[PlayerSummary]) -> st
         if s.avg_perf is not None:
             parts.append(f"перф {s.avg_perf * 100:.0f} (#{ranks['perf']})")
         if s.games_total:
-            parts.append(f"WR {s.winrate * 100:.0f}% (#{ranks['winrate']})")
+            parts.append(f"винрейт {s.winrate * 100:.0f}% (#{ranks['winrate']})")
             parts.append(f"KDA {s.kda_ratio:.1f} (#{ranks['kda']})")
         if s.avg_gpm_window is not None:
             parts.append(f"GPM {s.avg_gpm_window:.0f} (#{ranks['gpm']})")
@@ -393,7 +389,7 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
     if s.steam_name:
         header += f"\n🎮 Steam: {_b(s.steam_name)}"
     if s.games_total == 0:
-        return header + "\n💤 Ранкед-игры отсутствуют"
+        return header + f"\n{NO_GAMES}"
 
     lines = [header, f"<i>🔎 Период анализа: последние {plural_games(s.games_total)}</i>", ""]
 
@@ -452,8 +448,8 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
         )
     if s.longest_win_streak >= 2:
         lines.append(f"🔥 Наибольшая серия побед: {s.longest_win_streak}")
-    pool = f"в пуле {s.hero_pool} · " if s.hero_pool else ""
-    lines.append(f"🦸 Герои: {pool}{_heroes_line(s.top_heroes)}")
+    pool = f" (всего {s.hero_pool})" if s.hero_pool else ""
+    lines.append(f"🦸 Герои{pool}: {_heroes_line(s.top_heroes)}")
 
     if standing:
         lines.append("")
@@ -464,7 +460,11 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
         f'🔗 <a href="{dotabuff_player_url(s.account_id)}">Dotabuff</a> · '
         f'<a href="https://www.opendota.com/players/{s.account_id}">OpenDota</a>'
     )
-    lines.append("<i>ℹ️ Перф — перцентиль относительно игроков на том же герое.</i>")
+    if s.avg_perf is not None:
+        pct = f"{s.avg_perf * 100:.0f}"
+        lines.append(f"<i>ℹ️ Перф {pct} — лучше, чем у {pct}% игроков на том же герое.</i>")
+    else:
+        lines.append("<i>ℹ️ Перф — сравнение с игроками на том же герое.</i>")
     return "\n".join(lines)
 
 
@@ -473,7 +473,7 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
 def render_player_list(summaries: list[PlayerSummary]) -> str:
     """Список игроков: ранг, текущий MMR (оценка) со стартом и дельтой, игры, серия, id аккаунта."""
     if not summaries:
-        return "Список игроков пуст. Для добавления используйте: /add «ссылка или ID» Имя [MMR]"
+        return NO_PLAYERS
     blocks = []
     for i, s in enumerate(summaries, start=1):
         if s.current_mmr is not None:
@@ -486,7 +486,7 @@ def render_player_list(summaries: list[PlayerSummary]) -> str:
                 f"({s.winrate * 100:.0f}%){_streak_str(s)}"
             )
         else:
-            games = "💤 игр пока нет"
+            games = NO_GAMES
         blocks.append(
             f"{_pos(i)} {_b(s.display_name)} · {_rank_with_emoji(s)}\n"
             f"    {mmr}\n    {games}\n    🆔 id {s.account_id}"
@@ -585,7 +585,7 @@ def render_achievements(rows: list) -> str:
     from datetime import datetime, timezone
     from mmrbot.achievements import CATALOG
     if not rows:
-        return "Список игроков пуст. Для добавления используйте: /add «ссылка или ID» Имя [MMR]"
+        return NO_PLAYERS
     blocks = []
     for name, earned in rows:
         items = [(c, v) for c, v in earned.items() if c in CATALOG]
@@ -611,7 +611,7 @@ def render_weekly(report: dict) -> str:
         return "📅 <b>Итоги недели</b>\n\n💤 За неделю ранкед-игр не было."
     games = sum(r["games"] for r in rows)
     wins = sum(r["wins"] for r in rows)
-    lines = ["📅 <b>Итоги недели</b> · ранкед", "", f"🎮 Всего: {plural_games(games)} · {_fmt_wr(games, wins)}"]
+    lines = ["📅 <b>Итоги недели</b>", "", f"🎮 Всего: {plural_games(games)} · {_fmt_wr(games, wins)}"]
     best = max(rows, key=lambda r: r["delta"])
     worst = min(rows, key=lambda r: r["delta"])
     if best["delta"] > 0:
@@ -701,7 +701,7 @@ PERIOD_LABELS = {"day": "за сутки", "week": "за неделю", "month":
 POSITION_NAMES = {1: "Pos 1 · Керри", 2: "Pos 2 · Мид", 3: "Pos 3 · Оффлейн",
                   4: "Pos 4 · Роумер", 5: "Pos 5 · Фулл-саппорт"}
 POSITION_EMOJI = {1: "🗡️", 2: "🎯", 3: "🛡️", 4: "🧭", 5: "💚"}
-LANE_LABELS = {"SAFE_LANE": "Safe", "MID_LANE": "Mid", "OFF_LANE": "Off", "JUNGLE": "Лес"}
+LANE_LABELS = {"SAFE_LANE": "Лёгкая линия", "MID_LANE": "Мид", "OFF_LANE": "Оффлейн", "JUNGLE": "Лес"}
 
 
 def _imp(value) -> str:
@@ -718,7 +718,7 @@ def _wr_dot(winrate: float) -> str:
 
 
 def _stat_line(s: dict) -> str:
-    parts = [f"{s['games']}и", f"{s['winrate'] * 100:.0f}%", f"KDA {s['kda']:.1f}"]
+    parts = [plural_games(s["games"]), f"{s['winrate'] * 100:.0f}%", f"KDA {s['kda']:.1f}"]
     if s.get("avg_imp") is not None:
         parts.append(f"IMP {_imp(s['avg_imp'])}")
     if s.get("avg_gpm") is not None:
@@ -737,7 +737,7 @@ def _stat_detail(s: dict) -> str:
 
 
 def _stat_block(head: str, s: dict) -> str:
-    return f"{head} · {s['games']}и\n{_stat_detail(s)}"
+    return f"{head} · {plural_games(s['games'])}\n{_stat_detail(s)}"
 
 
 def render_player_heroes(name: str, period: str, rows: list[dict], limit: int = 10) -> str:
@@ -758,7 +758,7 @@ def render_player_heroes(name: str, period: str, rows: list[dict], limit: int = 
 def render_roles(name: str, rows: list[dict], period: str = "all") -> str:
     title = f"🧭 <b>Позиции: {_esc(name)}</b> · <i>{PERIOD_LABELS.get(period, '')}</i>"
     if not rows:
-        return title + "\n😴 Данные о позициях отсутствуют (требуются STRATZ_API_KEY и сыгранные матчи)."
+        return title + "\n😴 Позиций пока нет. Нужны Stratz и сыгранные матчи."
     blocks = []
     for s in rows:
         emoji = POSITION_EMOJI.get(s["position"], "▫️")
@@ -791,9 +791,9 @@ def render_match_card(view: dict) -> str:
     if row.get("xpm") is not None:
         farm.append(f"XPM {row['xpm']:.0f}")
     if row.get("last_hits") is not None:
-        farm.append(f"LH {row['last_hits']}/{row.get('denies') or 0}")
+        farm.append(f"добивания {row['last_hits']}/{row.get('denies') or 0}")
     if row.get("net_worth") is not None:
-        farm.append(f"NW {_k(row['net_worth'])}")
+        farm.append(f"нетворт {_k(row['net_worth'])}")
     if farm:
         lines.append("💰 Экономика: " + " · ".join(farm))
     dmg = []

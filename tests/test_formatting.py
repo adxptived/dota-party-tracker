@@ -86,7 +86,7 @@ def test_plural_games():
 
 def test_zero_games_collapsed_no_noise():
     text = render_leaderboard([summary(games_total=0, wins_total=0, losses_total=0, winrate=0.0, kda_ratio=0.0)])
-    assert "игры отсутствуют" in text
+    assert "Игр пока нет" in text
     assert "KDA 0.00" not in text
     assert "0–0" not in text
 
@@ -149,7 +149,7 @@ def test_leaderboard_shows_perf_in_line():
 def test_render_awards_lists_leaders_with_period_label():
     awards = [{"key": "winrate", "emoji": "👑", "title": "Наивысший винрейт", "player": "A", "detail": "80%"}]
     text = render_awards(awards, "за сутки")
-    assert "Отличия участников за сутки" in text and "A" in text and "80%" in text
+    assert "Награды за сутки" in text and "A" in text and "80%" in text
 
 
 def test_render_awards_empty_when_no_awards():
@@ -213,7 +213,7 @@ def test_render_player_card_windowed_records():
         longest_win_streak=3,
     )
     text = render_player_card(s)
-    assert "В" in text                        # форма
+    assert "🟢🔴🟢" in text                    # форма
     assert "10/1/10" in text                    # лучшая игра
     assert "3" in text                          # макс серия
 
@@ -369,7 +369,7 @@ def test_render_period_leaderboard():
     assert "Аня" in text and "4–1" in text and "80%" in text
     assert "📈" in text and "📉" in text
     assert "игр не было" in text  # Ваня
-    assert render_period_leaderboard([], "week").startswith("В данном чате нет")
+    assert render_period_leaderboard([], "week").startswith("Пока пусто")
 
 
 def test_find_hero_alias_ls_is_lifestealer():
@@ -394,7 +394,7 @@ def test_player_heroes_block_layout_with_emoji():
     rows = [{"hero_id": 1, "games": 987, "winrate": 0.53, "kda": 4.4, "avg_imp": -1, "avg_gpm": 624}]
     text = render_player_heroes("Shinoame", "all", rows)
     assert text.startswith("🦸 <b>Герои: Shinoame</b>")
-    assert "🥇" in text and "987и" in text
+    assert "🥇" in text and "987 игр" in text
     assert "🟡 53%" in text and "⚔️ KDA 4.4" in text and "📊 IMP -1" in text and "💰 GPM 624" in text
 
 
@@ -418,7 +418,7 @@ def test_player_roster_shows_current_mmr_and_extra_info():
 def test_player_roster_without_mmr_or_games():
     from mmrbot.formatting import render_player_list
     text = render_player_list([summary(current_mmr=None, anchor_mmr=None, games_total=0, mmr_delta=0)])
-    assert "MMR не указан" in text and "игр пока нет" in text
+    assert "MMR не указан" in text and "Игр пока нет" in text
 
 
 def test_player_roster_empty_gives_hint():

@@ -63,9 +63,9 @@ def test_board_and_weekly_use_period_awards(tmp_path):
         pass
 
     text = asyncio.run(service.render_board(st, OD(), 1, refresh=False, awards_period="day"))
-    assert "Отличия участников за сутки" in text and "Вася" in text
+    assert "Награды за сутки" in text and "Вася" in text
     weekly = render_weekly(build_weekly_report(st, 1, now))
-    assert "Лучшие показатели недели" in weekly and "Наивысший винрейт" in weekly
+    assert "Лучшие показатели недели" in weekly and "Лучший винрейт" in weekly
 
 
 def test_digest_pulse_shows_last_24h_instead_of_today():

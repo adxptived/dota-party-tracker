@@ -33,6 +33,7 @@ from mmrbot.service import (
     split_message,
 )
 from mmrbot.storage import Storage
+from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
 from mmrbot.ranks import rank_label
 from mmrbot.tracker import build_leaderboard, check_achievements, list_achievements, refresh_player
 
@@ -40,25 +41,27 @@ router = Router()
 
 # Меню команд (всплывает по «/», особенно полезно в группах).
 BOT_COMMANDS = [
-    BotCommand(command="stats", description="🏆 Лидерборд + награды (/stats сегодня|неделя|месяц)"),
-    BotCommand(command="compare", description="⚡ Кто сильнее в чате (сравнение)"),
-    BotCommand(command="together", description="🤝 Совместные игры пати"),
-    BotCommand(command="menu", description="Главное меню"),
-    BotCommand(command="heroes", description="Герои и позиции игрока: /heroes [ник|герой] [период]"),
-    BotCommand(command="match", description="Разбор матча: /match [id] [ник|@тег]"),
-    BotCommand(command="player", description="Карточка игрока: /player Имя"),
-    BotCommand(command="records", description="🌟 Рекорды пати: /records день|неделя|месяц|год|всё"),
-    BotCommand(command="graph", description="📈 График MMR: /graph неделя|месяц|всё"),
-    BotCommand(command="achievements", description="🏅 Достижения и антирекорды"),
-    BotCommand(command="steam", description="Steam-профиль: аватар и ник — /steam Имя"),
-    BotCommand(command="add", description="Добавить игрока: /add ссылка Имя MMR"),
-    BotCommand(command="list", description="Список игроков"),
-    BotCommand(command="settings", description="⚙️ Настройки чата (шаг MMR, сводка, часовой пояс)"),
-    BotCommand(command="setmmr", description="Установить MMR: /setmmr Имя 5400"),
-    BotCommand(command="setstep", description="Шаг оценки MMR за игру"),
-    BotCommand(command="settime", description="Время ежедневной сводки (МСК)"),
-    BotCommand(command="remove", description="Удалить игрока: /remove Имя"),
-    BotCommand(command="help", description="Справка"),
+    BotCommand(command="stats", description="🏆 Рейтинг и награды"),
+    BotCommand(command="today", description="📅 Сегодня"),
+    BotCommand(command="compare", description="⚡ Кто сильнее"),
+    BotCommand(command="together", description="🤝 Игры вместе"),
+    BotCommand(command="menu", description="📋 Меню"),
+    BotCommand(command="heroes", description="🦸 Герои и позиции"),
+    BotCommand(command="roles", description="🧭 Позиции игрока"),
+    BotCommand(command="match", description="🎮 Разбор матча"),
+    BotCommand(command="player", description="🪪 Карточка игрока"),
+    BotCommand(command="records", description="🌟 Рекорды пати"),
+    BotCommand(command="graph", description="📈 График MMR"),
+    BotCommand(command="achievements", description="🏅 Достижения"),
+    BotCommand(command="steam", description="🎭 Steam-профиль"),
+    BotCommand(command="add", description="➕ Добавить игрока"),
+    BotCommand(command="list", description="👥 Список игроков"),
+    BotCommand(command="settings", description="⚙️ Настройки"),
+    BotCommand(command="setmmr", description="✏️ Задать MMR"),
+    BotCommand(command="setstep", description="⚙️ Шаг MMR за игру"),
+    BotCommand(command="settime", description="⏰ Час сводки"),
+    BotCommand(command="remove", description="🗑️ Удалить игрока"),
+    BotCommand(command="help", description="📖 Справка"),
 ]
 
 
@@ -66,44 +69,21 @@ async def set_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(BOT_COMMANDS)
 
 HELP_TEXT = (
-    '📖 Справка · бот статистики Dota 2\n\n'
-    'Бот ведёт историю ранкед-игр участников пати: количество игр, оценку изменения MMR, ранг, винрейт, KDA, героев и позиции.\n\n'
-    '📡 Источники данных\n'
-    '• OpenDota — основа: матчи, ранг, GPM, перф. Работает всегда.\n'
-    '• Stratz — дополнение (нужен STRATZ_API_KEY на стороне бота): позиция (Pos 1–5), роль, линия и IMP. Без ключа бот работает, но раздел «Позиции» пуст, а IMP показывается как «—».\n'
-    '• Данные доступны только при включённой в Dota опции «Открытые данные матчей».\n\n'
-    '🧮 Что означают показатели\n'
-    '• ≈ MMR — оценка: стартовое значение ± шаг за каждую ранкед-игру (точный MMR Dota 2 не отдаёт). Корректируется командой /setmmr.\n'
-    '• 📊 IMP (Impact, Stratz) — вклад в исход матча относительно других игроков на том же герое и позиции. 0 — средний уровень, плюс — лучше среднего, минус — хуже. Саппорты обычно ниже керри, поэтому сравнивайте IMP в пределах одной позиции.\n'
-    '• Перф — перцентиль игры относительно игроков на том же герое (OpenDota), 0–100.\n'
-    '• KDA — (убийства + помощь) / смерти. GPM — золото в минуту.\n'
-    '• 🟢🟡🔴 — винрейт: от 55% / 48–54% / ниже 48%.\n\n'
-    '👥 Игроки и настройки\n'
-    '/add <ссылка или ID> [Имя] [MMR] — добавить аккаунт (или кнопка ➕ в /menu)\n'
-    '   пример: /add dotabuff.com/players/123456 Вася 5400\n'
-    '/list — список участников\n'
-    '/remove <Имя> — удалить игрока\n'
-    '/setmmr <Имя> <MMR> — установить или скорректировать MMR\n'
-    '/setstep <шаг> — шаг оценки MMR за игру (по умолчанию 25)\n'
-    '/settime <час> — время ежедневной сводки (МСК)\n\n'
-    '🏆 Статистика\n'
-    '/stats — рейтинг участников и отличия\n'
-    '/stats сегодня — игры с 00:00 по времени чата\n'
-    '/stats неделя · /stats месяц — итоги за период\n'
-    '/compare — сравнение участников по показателям\n'
-    '/together — статистика совместных игр\n'
-    '/player <Имя> — карточка игрока (GPM, соло/группа, время суток)\n\n'
-    '🦸 Герои, позиции, матчи\n'
-    '/heroes — самые частые герои участников\n'
-    '/heroes <ник|@тег> [день|неделя|месяц|всё] — герои и позиции игрока за период (позиции и IMP — Stratz)\n'
-    '/heroes <герой> [период] — результаты участников на выбранном герое\n'
-    '/match [id] [ник|@тег] — разбор матча (по умолчанию — последний)\n\n'
-    '/steam <Имя> — аватарка и ник из Steam (бот сам сообщит, когда ник или аватарка сменятся)\n\n'
-    '/records [день|неделя|месяц|год|всё] — рекорды пати: макс. GPM, убийства, урон и др. с героем и матчем\n'
-    '/graph [день|неделя|месяц|всё] — график динамики MMR по игрокам\n'
-    '/achievements [Имя] — достижения и антирекорды (бот сам сообщит о новых)\n\n'
-    '⚙️ /settings — шаг MMR, время сводки, часовой пояс, оповещения Steam\n'
-    '📋 /menu — главное меню с кнопками'
+    '📖 Трекер ранкед-игр Dota 2 для пати\n\n'
+    'Начать: /add ссылка_или_ID [имя] [MMR]\n'
+    'Пример: /add dotabuff.com/players/123456 Вася 5400\n\n'
+    'Смотреть:\n'
+    '/stats — рейтинг и награды (сегодня, неделя, месяц)\n'
+    '/player имя — карточка игрока\n'
+    '/heroes [имя или герой] — герои\n'
+    '/match [id] — разбор матча\n'
+    '/together — игры вместе\n'
+    '/compare — кто сильнее\n'
+    '/records · /graph · /achievements\n\n'
+    'Управлять: /list · /remove · /setmmr · /settings\n'
+    '/menu — всё кнопками, там же «Термины»\n\n'
+    '≈MMR — оценка: старт ± шаг за игру, точный MMR Dota не отдаёт.\n'
+    'Нужна опция «Выставлять публичные данные матчей».'
 )
 
 
@@ -118,7 +98,7 @@ async def _delete(message) -> None:
 
 
 async def _progress(message: Message, text: str):
-    """Временное «⏳ Формирование…» — удаляется, когда отчёт готов."""
+    """Временное «⏳ Считаю…» — удаляется, когда отчёт готов."""
     return await message.answer(text)
 
 
@@ -138,11 +118,11 @@ async def _reply_board(message: Message, coro, status=None, markup=None) -> None
     except Exception:
         logging.getLogger(__name__).exception("Ошибка сборки статистики для чата %s", message.chat.id)
         await _delete(status)
-        await message.answer("⚠️ Не удалось получить данные OpenDota. Повторите запрос позднее.", reply_markup=nav_menu())
+        await message.answer(FAILED, reply_markup=nav_menu())
         return
     await _delete(status)
     if text is None:
-        await message.answer("🔍 Игрок не найден. Список игроков: /list", reply_markup=nav_menu())
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
     await _send_chunks(message, text, markup or nav_menu())
 
@@ -158,11 +138,11 @@ async def cmd_menu(message: Message) -> None:
     await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
 
 
-ADD_PROMPT = "➕ Добавить игрока: ответьте на это сообщение ссылкой или ID, при желании — именем и стартовым MMR."
+ADD_PROMPT = "➕ Ответьте ссылкой или ID. Имя и MMR — по желанию."
 ADD_EXAMPLE = "Пример: dotabuff.com/players/123456 Вася 5400"
-SETMMR_PROMPT = "✏️ Задать MMR игрока {name} (id {account}): ответьте на это сообщение числом."
-HERO_PROMPT = "🔎 Статистика героя: ответьте на это сообщение названием героя (например, Axe)."
-MATCHID_PROMPT = "🔢 Разбор матча: ответьте на это сообщение ID матча (число из 8+ цифр)."
+SETMMR_PROMPT = "✏️ Задать MMR игрока {name} (id {account}): ответьте числом."
+HERO_PROMPT = "🔎 Ответьте названием героя, например Axe."
+MATCHID_PROMPT = "🔢 Ответьте ID матча (8+ цифр)."
 _SETMMR_RE = re.compile(r"^✏️ Задать MMR игрока .+ \(id (\d+)\)")
 
 
@@ -213,7 +193,7 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
         identifier, name, mmr = cmd.parse_add_args(args)
         account_id = await asyncio.to_thread(resolve_account_id, identifier)
     except ValueError as exc:
-        await message.answer(f"⚠️ Ошибка: {exc}")
+        await message.answer(f"⚠️ {exc}")
         return
 
     storage.get_or_create_chat(message.chat.id)
@@ -229,7 +209,7 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
     try:
         player = storage.add_player(message.chat.id, account_id, name, mmr, now, now)
     except ValueError as exc:
-        await message.answer(f"⚠️ Ошибка: {exc}")
+        await message.answer(f"⚠️ {exc}")
         return
 
     try:
@@ -243,11 +223,8 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
     except Exception:
         logging.getLogger(__name__).warning("Не удалось инициализировать оповещения игрока", exc_info=True)
 
-    mmr_note = f", стартовый MMR ≈ {mmr}" if mmr is not None else " (MMR не указан; задать можно командой /setmmr)"
-    await message.answer(
-        f"Игрок {name} (id {account_id}) добавлен{mmr_note}.\n"
-        f"Учёт ранкед-игр ведётся с текущего момента. Рейтинг участников: /stats"
-    )
+    mmr_note = f", ≈{mmr} MMR" if mmr is not None else f". Задайте MMR: /setmmr {name} 5400"
+    await message.answer(f"✅ {name} добавлен{mmr_note}")
 
 
 async def _roster_text(storage: Storage, chat_id: int) -> str:
@@ -269,7 +246,7 @@ async def cmd_remove(message: Message, command: CommandObject, storage: Storage)
             await _ask_player(message, storage, "remove", "Кого удалить?")
         return
     ok = storage.remove_player(message.chat.id, name)
-    await message.answer("🗑️ Игрок удалён." if ok else "🔍 Игрок не найден. Список игроков: /list")
+    await message.answer("🗑️ Игрок удалён." if ok else NOT_FOUND_TEXT)
 
 
 @router.message(Command("setmmr"))
@@ -281,16 +258,14 @@ async def cmd_setmmr(message: Message, command: CommandObject, storage: Storage)
     try:
         name, mmr = cmd.parse_name_and_mmr(command.args or "")
     except ValueError as exc:
-        await message.answer(f"⚠️ Ошибка: {exc}")
+        await message.answer(f"⚠️ {exc}")
         return
     player = storage.get_player(message.chat.id, name)
     if player is None:
-        await message.answer("🔍 Игрок не найден. Список игроков: /list")
+        await message.answer(NOT_FOUND_TEXT)
         return
     storage.set_player_anchor(player.id, mmr, int(time.time()))
-    await message.answer(
-        f"MMR игрока {player.display_name} установлен на ≈ {mmr}. Дальнейшая оценка ведётся от этого значения."
-    )
+    await message.answer(f"✅ {player.display_name}: ≈{mmr} MMR")
 
 
 @router.message(Command("setstep"))
@@ -298,10 +273,10 @@ async def cmd_setstep(message: Message, command: CommandObject, storage: Storage
     try:
         step = cmd.parse_step(command.args or "")
     except ValueError as exc:
-        await message.answer(f"⚠️ Ошибка: {exc}")
+        await message.answer(f"⚠️ {exc}")
         return
     storage.set_chat_step(message.chat.id, step)
-    await message.answer(f"⚙️ Шаг оценки MMR установлен: ±{step} за ранкед-игру.")
+    await message.answer(f"✅ Шаг: ±{step} MMR за игру")
 
 
 @router.message(Command("settime"))
@@ -309,15 +284,13 @@ async def cmd_settime(message: Message, command: CommandObject, storage: Storage
     try:
         hour = cmd.parse_hour(command.args or "")
     except ValueError as exc:
-        await message.answer(f"⚠️ Ошибка: {exc}")
+        await message.answer(f"⚠️ {exc}")
         return
     storage.set_chat_digest_hour(message.chat.id, hour)
     tz = storage.get_or_create_chat(message.chat.id).tz
-    await message.answer(f"⏰ Ежедневная сводка будет отправляться в {hour:02d}:00 ({tz_label(tz)}).")
+    await message.answer(f"✅ Сводка в {hour:02d}:00 ({tz_label(tz)})")
 
 
-NO_PLAYERS = "В данном чате нет игроков. Для добавления используйте: /add <ссылка или ID> Имя [MMR]"
-NOT_FOUND_TEXT = "🔍 Игрок не найден. Список игроков: /list"
 
 
 async def _has_players(message: Message, storage: Storage) -> bool:
@@ -336,7 +309,7 @@ async def _ask_player(message: Message, storage: Storage, kind: str, prompt: str
 async def do_stats(message: Message, storage: Storage, od: OpenDota, stratz=None, today_only: bool = False) -> None:
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, "⏳ Формирование статистики за сегодня…" if today_only else "⏳ Формирование статистики…")
+    status = await _progress(message, WAIT)
     await _reply_board(
         message, render_board(storage, od, message.chat.id, today_only=today_only, refresh=True, stratz=stratz), status,
         stats_tabs("today" if today_only else "stats"),
@@ -346,7 +319,7 @@ async def do_stats(message: Message, storage: Storage, od: OpenDota, stratz=None
 async def do_period_stats(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None) -> None:
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, "⏳ Формирование статистики за период…")
+    status = await _progress(message, WAIT)
     await _reply_board(
         message, render_period_board(storage, od, message.chat.id, period, stratz), status, stats_tabs(period)
     )
@@ -355,21 +328,21 @@ async def do_period_stats(message: Message, storage: Storage, od: OpenDota, peri
 async def do_together(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, "⏳ Формирование статистики совместных игр…")
+    status = await _progress(message, WAIT)
     await _reply_board(message, render_together_board(storage, od, message.chat.id, stratz), status)
 
 
 async def do_compare(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, "⏳ Формирование сравнения…")
+    status = await _progress(message, WAIT)
     await _reply_board(message, render_compare_board(storage, od, message.chat.id, stratz), status)
 
 
 async def do_heroes_board(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, "⏳ Формирование статистики по героям…")
+    status = await _progress(message, WAIT)
     await _reply_board(message, render_heroes_board(storage, od, message.chat.id, stratz), status)
 
 
@@ -380,13 +353,13 @@ async def _reply_with_period(message: Message, make_coro, prefix: str, storage: 
     if player is None:
         await message.answer(NOT_FOUND_TEXT)
         return
-    status = None if edit else await _progress(message, "⏳ Формирование отчёта…")
+    status = None if edit else await _progress(message, WAIT)
     try:
         text = await make_coro()
     except Exception:
         logging.getLogger(__name__).exception("Ошибка сборки борда для чата %s", message.chat.id)
         await _delete(status)
-        await message.answer("⚠️ Не удалось получить данные. Повторите запрос позднее.", reply_markup=nav_menu())
+        await message.answer(FAILED, reply_markup=nav_menu())
         return
     await _delete(status)
     markup = period_buttons(prefix, player.account_id, period)
@@ -416,12 +389,12 @@ async def do_roles(message: Message, storage: Storage, od: OpenDota, name: str, 
 
 
 async def do_match(message: Message, storage: Storage, od: OpenDota, name, match_id, stratz=None) -> None:
-    status = await _progress(message, "🔎 Поиск матча…")
+    status = await _progress(message, WAIT)
     await _reply_board(message, render_match_board(storage, od, message.chat.id, name, match_id, stratz), status)
 
 
 async def do_player_card(message: Message, storage: Storage, od: OpenDota, name: str, stratz=None) -> None:
-    status = await _progress(message, f"⏳ Формирование карточки игрока {name}…")
+    status = await _progress(message, WAIT)
     player = storage.get_player(message.chat.id, name)
     markup = player_actions(player.account_id) if player else None
     await _reply_board(message, render_player_board(storage, od, message.chat.id, name, stratz), status, markup)
@@ -430,14 +403,14 @@ async def do_player_card(message: Message, storage: Storage, od: OpenDota, name:
 async def do_records(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None,
                      edit: bool = False) -> None:
     """Рекорды пати за период; edit=True — правим сообщение с нажатой кнопкой периода."""
-    status = None if edit else await _progress(message, "⏳ Собираю рекорды…")
+    status = None if edit else await _progress(message, WAIT)
     try:
         text = await render_records_board(storage, od, message.chat.id, period, stratz)
     except Exception:
         logging.getLogger(__name__).exception("Ошибка сборки рекордов для чата %s", message.chat.id)
         await _delete(status)
         if not edit:
-            await message.answer("⚠️ Не удалось получить данные. Повторите запрос позднее.", reply_markup=nav_menu())
+            await message.answer(FAILED, reply_markup=nav_menu())
         return
     await _delete(status)
     markup = records_buttons(period)
@@ -457,17 +430,17 @@ async def do_graph(
     """График ±MMR по игрокам за период (картинка + кнопки периодов)."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, "⏳ Рисую график…")
+    status = await _progress(message, WAIT)
     try:
         result = await render_graph_board(storage, od, message.chat.id, period, stratz, by_games=by_games)
     except Exception:
         logging.getLogger(__name__).exception("Ошибка построения графика для чата %s", message.chat.id)
         await _delete(status)
-        await message.answer("⚠️ Не удалось построить график. Повторите запрос позднее.", reply_markup=nav_menu())
+        await message.answer(FAILED, reply_markup=nav_menu())
         return
     await _delete(status)
     if result is None:
-        await message.answer("💤 За выбранный период ранкед-игр не было.", reply_markup=graph_buttons(period, by_games))
+        await message.answer("💤 За период игр не было.", reply_markup=graph_buttons(period, by_games))
         return
     png, caption = result
     await message.answer_photo(
@@ -488,7 +461,7 @@ async def edit_graph(
     try:
         if result is None:
             await message.edit_caption(
-                caption="💤 За выбранный период ранкед-игр не было.", reply_markup=graph_buttons(period, by_games)
+                caption="💤 За период игр не было.", reply_markup=graph_buttons(period, by_games)
             )
             return
         png, caption = result
@@ -517,13 +490,13 @@ async def do_steam(message: Message, storage: Storage, od: OpenDota, name: str) 
     if player is None:
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
-    status = await _progress(message, f"⏳ Загружаю Steam-профиль {player.display_name}…")
+    status = await _progress(message, WAIT)
     try:
         profile = await asyncio.to_thread(od.get_profile, player.account_id)
     except Exception:
         logging.getLogger(__name__).exception("Ошибка загрузки Steam-профиля %s", player.account_id)
         await _delete(status)
-        await message.answer("⚠️ Не удалось получить профиль. Повторите запрос позднее.", reply_markup=nav_menu())
+        await message.answer(FAILED, reply_markup=nav_menu())
         return
     await _delete(status)
     caption = render_steam_profile(
@@ -575,10 +548,10 @@ async def cmd_heroes(message: Message, command: CommandObject, storage: Storage,
     elif storage.get_player(message.chat.id, name) is not None:
         await do_player_heroes(message, storage, od, name, period, stratz)  # герои + позиции игрока
     elif find_hero(name) is not None:
-        status = await _progress(message, "⏳ Формирование статистики по герою…")
+        status = await _progress(message, WAIT)
         await _reply_board(message, render_hero_board(storage, od, message.chat.id, name, period, stratz), status)
     else:
-        await message.answer(f"🔍 Игрок или герой «{name}» не найден. Список игроков: /list; пример запроса по герою: /heroes Axe")
+        await message.answer(f"🔍 Не нашёл ни игрока, ни героя «{name}». Список: /list. Героя пишите по-английски: /heroes Axe")
 
 
 @router.message(Command("match"))
@@ -656,13 +629,13 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
         return
     if prompt.startswith(HERO_PROMPT):
         query = (message.text or "").strip()
-        status = await _progress(message, "⏳ Формирование статистики по герою…")
+        status = await _progress(message, WAIT)
         await _reply_board(message, render_hero_board(storage, od, message.chat.id, query, "all", stratz), status)
         return
     if prompt.startswith(MATCHID_PROMPT):
         match_id, name = cmd.parse_match_args(message.text or "")
         if match_id is None:
-            await message.answer("⚠️ Нужен ID матча — число из 8 и более цифр.")
+            await message.answer("⚠️ ID матча — число из 8+ цифр.")
             return
         await do_match(message, storage, od, name, match_id, stratz)
         return
@@ -676,13 +649,10 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
     try:
         mmr = cmd.parse_mmr_value(message.text or "")
     except ValueError as exc:
-        await message.answer(f"⚠️ Ошибка: {exc}")
+        await message.answer(f"⚠️ {exc}")
         return
     storage.set_player_anchor(player.id, mmr, int(time.time()))
-    await message.answer(
-        f"MMR игрока {player.display_name} установлен на ≈ {mmr}. Дальнейшая оценка ведётся от этого значения.",
-        reply_markup=nav_menu(),
-    )
+    await message.answer(f"✅ {player.display_name}: ≈{mmr} MMR", reply_markup=nav_menu())
 
 
 # --- кнопки -------------------------------------------------------------
@@ -779,6 +749,8 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
         elif action == "help":
             await message.answer(HELP_TEXT, reply_markup=nav_menu())
+        elif action == "terms":
+            await message.answer(TERMS, reply_markup=nav_menu())
         elif action == "list":
             await message.answer(
                 await _roster_text(storage, message.chat.id), parse_mode="HTML", reply_markup=list_actions()

@@ -30,7 +30,7 @@ def load_config() -> Config:
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError(
-            "BOT_TOKEN не задан. Скопируй .env.example в .env и вставь токен от @BotFather."
+            "BOT_TOKEN не задан. Скопируйте .env.example в .env и впишите токен от @BotFather."
         )
     api_key = os.getenv("OPENDOTA_API_KEY") or None
     # С ключом лимиты OpenDota выше — можно опрашивать чаще (быстрее графики и /stats).
