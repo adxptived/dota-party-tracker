@@ -175,7 +175,7 @@ def test_refresh_enriches_matches_and_perf(store):
         match_stats={
             "gpm": 500, "xpm": 600, "last_hits": 180, "denies": 10, "hero_damage": 25000,
             "tower_damage": 3000, "hero_healing": 0, "net_worth": 18000, "level": 25,
-            "benchmarks": {"gold_per_min": 0.6, "hero_damage_per_min": 0.8},
+            "benchmarks": {"gold_per_min": 0.6, "hero_damage_per_min": 0.8, "xp_per_min": 0.4},
         },
     )
     refresh_player(store, client, p, now=3000)
@@ -186,7 +186,7 @@ def test_refresh_enriches_matches_and_perf(store):
     p2 = store.get_player(100, "Вася")
     chat = store.get_or_create_chat(100)
     s = build_player_summary(store, chat, p2, now=100_000)
-    assert s.avg_perf == pytest.approx((0.6 + 0.8) / 2)
+    assert s.avg_perf == pytest.approx((1.5 * 0.6 + 1.5 * 0.8 + 0.4) / 4)  # без длительности штрафа за смерти нет
     assert s.enriched_games == 2
     assert s.avg_gpm_window == pytest.approx(500)
     # профиль скилла (перцентили) и роль

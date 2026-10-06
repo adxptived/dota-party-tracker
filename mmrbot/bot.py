@@ -8,6 +8,7 @@ import time
 import re
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InputMediaPhoto, Message
 
@@ -15,9 +16,10 @@ from mmrbot import commands as cmd
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import STEPS, TIMEZONES, confirm_remove, graph_buttons, list_actions, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import digest_buttons, STEPS, TIMEZONES, confirm_remove, graph_buttons, list_actions, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.service import (
+    render_digest_board,
     render_board,
     render_compare_board,
     render_hero_board,
@@ -693,7 +695,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "d"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -707,6 +709,17 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
 
     if kind == "s":
         await _on_settings(message, storage, args)
+        return
+
+    if kind == "d":
+        period = args[0] if args else "day"
+        if period in {"day", "week", "month"}:
+            text = await render_digest_board(storage, od, message.chat.id, period)
+            try:
+                await message.edit_text(text, parse_mode="HTML", reply_markup=digest_buttons(period))
+            except TelegramBadRequest as exc:
+                if "not modified" not in str(exc):
+                    raise
         return
 
     if kind == "r":

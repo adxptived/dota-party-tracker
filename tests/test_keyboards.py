@@ -84,3 +84,10 @@ def test_picker_extra_rows_before_nav():
     extra = [[InlineKeyboardButton(text="X", callback_data="m:hero")]]
     buttons = _flat(players_picker([_p(1, "Вася")], "match", extra=extra))
     assert [b.callback_data for b in buttons] == ["pp:match:1001", "m:hero", "m:menu", "x:close"]
+
+
+def test_digest_buttons_mark_current_and_use_d_callbacks():
+    from mmrbot.keyboards import digest_buttons
+    buttons = _flat(digest_buttons("week"))
+    assert [b.callback_data for b in buttons] == ["d:day", "d:week", "d:month"]
+    assert [b.text for b in buttons if b.text.startswith("•")] == ["• Неделя"]

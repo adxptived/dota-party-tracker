@@ -1,9 +1,10 @@
 from mmrbot.awards import compute_period_awards
+from mmrbot.heroes import hero_name
 
 
-def g(t, win=True, k=5, d=3, a=7, gpm=None, dmg=None, perf=None):
+def g(t, win=True, k=5, d=3, a=7, perf=None, hero=1):
     return {"start_time": t, "player_slot": 0, "radiant_win": win, "kills": k, "deaths": d, "assists": a,
-            "gpm": gpm, "hero_damage": dmg, "perf_score": perf}
+            "hero_id": hero, "perf_score": perf}
 
 
 def by_key(awards):
@@ -15,29 +16,82 @@ def test_no_awards_for_single_player():
 
 
 def test_period_awards_pick_leaders_from_period_matches():
-    a = [g(1, True, gpm=700), g(2, True, gpm=650), g(3, True, gpm=600)]
-    b = [g(1, False, gpm=400), g(2, False, gpm=420), g(3, False, gpm=380)]
+    a = [g(1, True), g(2, True), g(3, True)]
+    b = [g(1, False), g(2, False), g(3, False)]
     r = by_key(compute_period_awards([("A", a), ("B", b)]))
-    assert r["winrate"]["player"] == "A" and r["gpm"]["player"] == "A"
-    assert r["climb"]["player"] == "A" and r["drop"]["player"] == "B"
+    assert r["winrate"]["player"] == "A" and r["climb"]["player"] == "A"
+    assert r["drop"]["player"] == "B"
     assert r["win_streak"]["player"] == "A" and r["loss_streak"]["player"] == "B"
 
 
 def test_no_award_on_tie_or_equal_values():
     same = [g(1), g(2, False), g(3)]
     r = by_key(compute_period_awards([("A", same), ("B", list(same))]))
-    assert "winrate" not in r and "climb" not in r  # поровну — отличия нет
+    assert "winrate" not in r and "climb" not in r  # поровну — награды нет
 
 
 def test_average_metrics_need_min_games():
-    r = by_key(compute_period_awards([("A", [g(1, gpm=900)]), ("B", [g(1, False, gpm=300)])], min_games=3))
-    assert "gpm" not in r and "winrate" not in r  # одной игры мало для средних
+    r = by_key(compute_period_awards(
+        [("A", [g(1, perf=0.9)]), ("B", [g(1, False, perf=0.3)])], min_games=3))
+    assert "winrate" not in r and "mvp" not in r  # одной игры мало для средних
     assert r["climb"]["player"] == "A"  # а итог MMR за период считается и по одной игре
 
 
 def test_climb_not_awarded_when_everyone_lost():
     r = by_key(compute_period_awards([("A", [g(1, False)]), ("B", [g(1, False), g(2, False)])]))
     assert "climb" not in r and r["drop"]["player"] == "B"
+
+
+def test_win_streak_needs_three_games():
+    two = [g(1), g(2), g(3, False)]
+    r = by_key(compute_period_awards([("A", two), ("B", [g(1, False), g(2, False), g(3, False)])]))
+    assert "win_streak" not in r  # серия из двух побед — ещё не награда
+
+
+def test_mvp_is_best_average_perf():
+    a = [g(i, perf=0.7) for i in (1, 2, 3)]
+    b = [g(i, perf=0.4) for i in (1, 2, 3)]
+    r = by_key(compute_period_awards([("A", a), ("B", b)]))
+    assert r["mvp"]["player"] == "A" and "70" in r["mvp"]["detail"]
+
+
+def test_mvp_skipped_without_perf_data():
+    r = by_key(compute_period_awards([("A", [g(i) for i in (1, 2, 3)]), ("B", [g(i, False) for i in (1, 2, 3)])]))
+    assert "mvp" not in r
+
+
+def test_best_game_names_hero_and_score():
+    a = [g(1, k=12, d=1, a=9, hero=1), g(2), g(3)]
+    b = [g(1, k=4, d=6, a=8), g(2), g(3)]
+    r = by_key(compute_period_awards([("A", a), ("B", b)]))
+    assert r["best_game"]["player"] == "A"
+    assert hero_name(1) in r["best_game"]["detail"] and "12/1/9" in r["best_game"]["detail"]
+
+
+def test_feeder_only_when_deaths_are_really_high():
+    feeder = [g(i, d=12) for i in (1, 2, 3)]
+    calm = [g(i, d=5) for i in (1, 2, 3)]
+    r = by_key(compute_period_awards([("A", feeder), ("B", calm)]))
+    assert r["feeder"]["player"] == "A" and "12.0" in r["feeder"]["detail"]
+    mild = [g(i, d=6) for i in (1, 2, 3)]
+    r = by_key(compute_period_awards([("A", mild), ("B", [g(i, d=3) for i in (1, 2, 3)])]))
+    assert "feeder" not in r  # 6 смертей за игру — не повод для «фидера»
+
+
+def test_secondary_stat_awards_are_gone():
+    a = [g(i, True, perf=0.7) for i in (1, 2, 3)]
+    b = [g(i, False, perf=0.4) for i in (1, 2, 3)]
+    r = by_key(compute_period_awards([("A", a), ("B", b)]))
+    assert not {"gpm", "damage", "assists", "perf", "deaths"} & set(r)
+
+
+def test_negative_awards_come_last_and_are_flagged():
+    a = [g(i, True, perf=0.7, d=2) for i in (1, 2, 3)]
+    b = [g(i, False, perf=0.4, d=12) for i in (1, 2, 3)]
+    awards = compute_period_awards([("A", a), ("B", b)])
+    flags = [bool(x.get("anti")) for x in awards]
+    assert True in flags and flags == sorted(flags)
+    assert {x["key"] for x in awards if x.get("anti")} == {"drop", "feeder", "loss_streak"}
 
 
 def test_board_and_weekly_use_period_awards(tmp_path):
@@ -62,15 +116,13 @@ def test_board_and_weekly_use_period_awards(tmp_path):
     class OD:  # сеть не нужна: refresh=False
         pass
 
-    text = asyncio.run(service.render_board(st, OD(), 1, refresh=False, awards_period="day"))
-    assert "Награды за сутки" in text and "Вася" in text
+    text = asyncio.run(service.render_board(st, OD(), 1, refresh=False))
+    assert "Награды за неделю" in text and "Вася" in text
     weekly = render_weekly(build_weekly_report(st, 1, now))
     assert "Лучшие показатели недели" in weekly and "Лучший винрейт" in weekly
 
 
-def test_digest_pulse_shows_last_24h_instead_of_today():
+def test_pulse_shows_today_when_no_games():
     from mmrbot.formatting import render_party_pulse
     rows = [{"name": "Вася", "games": 3, "wins": 2, "losses": 1, "delta": 25, "winrate": 2 / 3, "kda": 3.0}]
-    text = render_party_pulse([], rows, {"records": []}, day_rows=rows)
-    assert "За сутки: 3" in text and "Сегодня" not in text
     assert "Сегодня: игр пока не было" in render_party_pulse([], rows, {"records": []})

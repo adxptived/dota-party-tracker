@@ -251,12 +251,15 @@ def test_longest_win_streak_none():
     assert longest_win_streak([]) == 0
 
 
-# --- perf_score (role-normalized) ---------------------------------------
+# --- perf_score: вклад против игроков на том же герое + штраф за смерти --------
 
-def test_perf_score_averages_positive_benchmarks():
-    # deaths_per_min исключаем (высокий = плохо), остальное усредняем
-    bench = {"gold_per_min": 0.5, "xp_per_min": 0.7, "hero_healing_per_min": 0.9, "deaths_per_min": 0.95}
-    assert perf_score(bench) == pytest.approx((0.5 + 0.7 + 0.9) / 3)
+CORE = {"gold_per_min": 0.6, "xp_per_min": 0.6, "hero_damage_per_min": 0.6}
+
+
+def test_perf_score_weights_gold_and_damage_more_than_farm():
+    gold_dmg = {"gold_per_min": 0.8, "hero_damage_per_min": 0.8, "last_hits_per_min": 0.2, "xp_per_min": 0.5}
+    farm = {"gold_per_min": 0.2, "hero_damage_per_min": 0.2, "last_hits_per_min": 0.8, "xp_per_min": 0.5}
+    assert perf_score(gold_dmg) > perf_score(farm)
 
 
 def test_perf_score_support_beats_core_when_role_appropriate():
@@ -266,9 +269,45 @@ def test_perf_score_support_beats_core_when_role_appropriate():
     assert perf_score(support) > perf_score(core)
 
 
-def test_perf_score_empty_is_none():
-    assert perf_score({}) is None
+def test_perf_score_niche_metrics_only_add():
+    # лечение/станы/башни у большинства героев ~0: нули не наказывают, высокие значения — плюс
+    assert perf_score({**CORE, "hero_healing_per_min": 0.0, "stuns_per_min": 0.1}) == pytest.approx(0.6)
+    assert perf_score({**CORE, "hero_healing_per_min": 0.9}) > 0.6
+
+
+def test_perf_score_accepts_opendota_tower_damage_key():
+    assert perf_score({**CORE, "tower_damage": 0.9}) > 0.6  # OpenDota отдаёт tower_damage без «_per_min»
+
+
+def test_perf_score_penalizes_deaths():
+    clean = perf_score(CORE, deaths=0, duration=2100)
+    feeder = perf_score(CORE, deaths=14, duration=2100)  # 0.4 смерти в минуту
+    assert clean == pytest.approx(0.8 * 0.6 + 0.2 * 1.0)
+    assert feeder == pytest.approx(0.8 * 0.6 + 0.2 * (1 - 0.4 / 0.45))
+    assert clean > perf_score(CORE) > feeder  # без данных о смертях считаем только вклад
+
+
+def test_survival_score_bounds():
+    from mmrbot.stats import survival_score
+    assert survival_score(0, 2400) == 1.0
+    assert survival_score(40, 2400) == 0.0
+    assert survival_score(None, 2400) is None and survival_score(3, 0) is None
+
+
+def test_perf_score_needs_three_core_metrics():
+    assert perf_score({"gold_per_min": 0.9, "xp_per_min": 0.9, "hero_healing_per_min": 0.9}) is None
     assert perf_score({"deaths_per_min": 0.9}) is None  # только негативная метрика
+    assert perf_score({}) is None
+
+
+def test_match_perf_recomputes_from_saved_benchmarks_and_deaths():
+    import json
+    from mmrbot.stats import match_perf
+    row = {"bench_json": json.dumps(CORE), "deaths": 0, "duration": 2100, "perf_score": 0.1}
+    assert match_perf(row) == pytest.approx(0.68)  # старое сохранённое значение игнорируем
+    assert match_perf({"bench_json": None, "perf_score": 0.42}) == 0.42  # нет benchmarks — берём что сохранено
+    assert match_perf({"bench_json": "битый json", "perf_score": 0.3}) == 0.3
+    assert match_perf({"bench_json": "{}", "perf_score": None}) is None
 
 
 # --- aggregate_skill / infer_role_style ---------------------------------

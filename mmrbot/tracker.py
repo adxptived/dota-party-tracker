@@ -310,7 +310,10 @@ def build_period_awards(storage: Storage, chat_id: int, since_ts: int, min_games
     if len(players) < 2:
         return []
     chat = storage.get_or_create_chat(chat_id)
-    named = [(p.display_name, storage.get_matches(p.id, since_ts=since_ts)) for p in players]
+    named = [
+        (p.display_name, [dict(m, perf_score=stats.match_perf(m)) for m in storage.get_matches(p.id, since_ts=since_ts)])
+        for p in players
+    ]
     return compute_period_awards(named, chat.mmr_step, min_games)
 
 
@@ -450,8 +453,8 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
     best_hour, worst_hour = _best_worst_hour(stats.winrate_by_hour(all_matches, chat.tz))
     lanes = _parse_lanes(player.last_lanes)
 
-    enriched = [m for m in all_matches if m.get("perf_score") is not None]
-    avg_perf = sum(m["perf_score"] for m in enriched) / len(enriched) if enriched else None
+    perfs = [v for v in (stats.match_perf(m) for m in all_matches) if v is not None]
+    avg_perf = sum(perfs) / len(perfs) if perfs else None
 
     def _mean_field(field: str) -> Optional[float]:
         values = [m[field] for m in all_matches if m.get(field) is not None]
@@ -518,7 +521,7 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         gpm_median=player.last_gpm_median,
         gpm_best=player.last_gpm_best,
         avg_perf=avg_perf,
-        enriched_games=len(enriched),
+        enriched_games=len(perfs),
         avg_gpm_window=_mean_field("gpm"),
         avg_hero_damage_window=_mean_field("hero_damage"),
         avg_net_worth_window=_mean_field("net_worth"),
