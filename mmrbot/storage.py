@@ -50,6 +50,9 @@ class Player:
     last_gpm_best: Optional[float] = None
     steam_name: Optional[str] = None  # последний известный ник в Steam (для оповещений о смене)
     steam_avatar: Optional[str] = None
+    profile_ts: Optional[int] = None  # когда последний раз получили профиль (ранг) из OpenDota
+    history_ts: Optional[int] = None  # когда последний раз сверяли историю глубоко (список на 200 матчей)
+    insights_dirty: bool = False  # пришли новые игры, а средние/линии ещё не пересчитаны (догонит фон)
 
 
 _SCHEMA = """
@@ -90,6 +93,9 @@ CREATE TABLE IF NOT EXISTS players (
     last_gpm_best         REAL,
     steam_name            TEXT,
     steam_avatar          TEXT,
+    profile_ts            INTEGER,
+    history_ts            INTEGER,
+    insights_dirty        INTEGER NOT NULL DEFAULT 0,
     UNIQUE(chat_id, account_id)
 );
 CREATE TABLE IF NOT EXISTS matches (
@@ -173,6 +179,8 @@ class Storage:
             "last_gpm": "REAL", "last_xpm": "REAL", "last_last_hits": "REAL",
             "last_lanes": "TEXT", "last_gpm_median": "REAL", "last_gpm_best": "REAL",
             "steam_name": "TEXT", "steam_avatar": "TEXT",
+            "profile_ts": "INTEGER", "history_ts": "INTEGER",
+            "insights_dirty": "INTEGER NOT NULL DEFAULT 0",
         })
         add_missing("matches", {
             "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
@@ -288,6 +296,9 @@ class Storage:
             last_gpm_best=row["last_gpm_best"],
             steam_name=row["steam_name"],
             steam_avatar=row["steam_avatar"],
+            profile_ts=row["profile_ts"],
+            history_ts=row["history_ts"],
+            insights_dirty=bool(row["insights_dirty"]),
         )
 
     def update_player_steam(self, player_id: int, name: Optional[str], avatar: Optional[str]) -> dict:
@@ -393,6 +404,30 @@ class Storage:
                 (rank_tier, leaderboard_rank, updated_ts, player_id),
             )
 
+    def set_player_rank(
+        self, player_id: int, rank_tier: Optional[int], leaderboard_rank: Optional[int], profile_ts: int
+    ) -> None:
+        """Сохранить ранг из профиля, не трогая updated_ts (тот отмечает успешную сверку матчей)."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE players SET last_rank_tier = ?, last_leaderboard_rank = ?, profile_ts = ? WHERE id = ?",
+                (rank_tier, leaderboard_rank, profile_ts, player_id),
+            )
+
+    def touch_player(self, player_id: int, updated_ts: int, deep: bool = False) -> None:
+        """Отметить успешную сверку матчей (deep — сверяли глубоко, списком на 200 матчей)."""
+        with self._conn() as conn:
+            if deep:
+                conn.execute(
+                    "UPDATE players SET updated_ts = ?, history_ts = ? WHERE id = ?", (updated_ts, updated_ts, player_id)
+                )
+            else:
+                conn.execute("UPDATE players SET updated_ts = ? WHERE id = ?", (updated_ts, player_id))
+
+    def set_insights_dirty(self, player_id: int, dirty: bool) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE players SET insights_dirty = ? WHERE id = ?", (1 if dirty else 0, player_id))
+
     def update_player_totals(
         self, player_id: int, gpm: Optional[float], xpm: Optional[float], last_hits: Optional[float]
     ) -> None:
@@ -413,34 +448,88 @@ class Storage:
 
     # --- matches --------------------------------------------------------
 
+    # Поля, которые OpenDota может отдать позже (матч ещё не разобран) — дозаполняем при повторной выдаче.
+    _FILL_FIELDS = (
+        "hero_id", "duration", "party_size", "average_rank",
+        "gpm", "xpm", "last_hits", "hero_damage", "tower_damage", "hero_healing",
+    )
+
     def add_matches(self, player_id: int, matches: list[dict]) -> int:
-        """Вставить матчи (INSERT OR IGNORE по (player_id, match_id)). Вернуть число новых."""
-        inserted = 0
+        """Вставить матчи; вернуть число новых.
+
+        Уже сохранённый матч не перезаписывается, но его пустые поля (размер пати, средний ранг,
+        длительность, GPM и т.п.) дозаполняются: в первой выдаче OpenDota они часто ещё null.
+        """
+        if not matches:
+            return 0
+        columns = ("player_id", "match_id", "start_time", "player_slot", "radiant_win", "lobby_type",
+                   "kills", "deaths", "assists") + self._FILL_FIELDS
+        fill = ", ".join(f"{f} = COALESCE({f}, excluded.{f})" for f in self._FILL_FIELDS)
+        rows = [
+            (
+                player_id,
+                m["match_id"],
+                m["start_time"],
+                m["player_slot"],
+                1 if m["radiant_win"] else 0,
+                m.get("lobby_type"),
+                m.get("kills", 0) or 0,
+                m.get("deaths", 0) or 0,
+                m.get("assists", 0) or 0,
+            ) + tuple(m.get(f) for f in self._FILL_FIELDS)
+            for m in matches
+        ]
+        count = "SELECT COUNT(*) FROM matches WHERE player_id = ?"
         with self._conn() as conn:
-            for m in matches:
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO matches "
-                    "(player_id, match_id, start_time, player_slot, radiant_win, lobby_type, "
-                    " kills, deaths, assists, hero_id, duration, party_size, average_rank) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        player_id,
-                        m["match_id"],
-                        m["start_time"],
-                        m["player_slot"],
-                        1 if m["radiant_win"] else 0,
-                        m.get("lobby_type"),
-                        m.get("kills", 0) or 0,
-                        m.get("deaths", 0) or 0,
-                        m.get("assists", 0) or 0,
-                        m.get("hero_id"),
-                        m.get("duration"),
-                        m.get("party_size"),
-                        m.get("average_rank"),
-                    ),
-                )
-                inserted += cur.rowcount
-        return inserted
+            before = conn.execute(count, (player_id,)).fetchone()[0]
+            conn.executemany(
+                f"INSERT INTO matches ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))}) "
+                f"ON CONFLICT(player_id, match_id) DO UPDATE SET {fill}",
+                rows,
+            )
+            return conn.execute(count, (player_id,)).fetchone()[0] - before
+
+    def has_matches(self, player_id: int) -> bool:
+        with self._conn() as conn:
+            return conn.execute("SELECT 1 FROM matches WHERE player_id = ? LIMIT 1", (player_id,)).fetchone() is not None
+
+    def latest_match_time(self, player_id: int) -> Optional[int]:
+        """start_time самого свежего сохранённого матча игрока (None — матчей нет)."""
+        with self._conn() as conn:
+            return conn.execute("SELECT MAX(start_time) FROM matches WHERE player_id = ?", (player_id,)).fetchone()[0]
+
+    def last_activity(self, chat_id: int) -> Optional[int]:
+        """Время окончания самого свежего матча среди игроков чата (None — матчей нет)."""
+        with self._conn() as conn:
+            return conn.execute(
+                "SELECT MAX(m.start_time + COALESCE(m.duration, 0)) FROM matches m "
+                "JOIN players p ON p.id = m.player_id WHERE p.chat_id = ?",
+                (chat_id,),
+            ).fetchone()[0]
+
+    def data_version(self, chat_id: int) -> tuple:
+        """Отпечаток данных чата (число матчей, самый свежий): меняется, когда приходят новые игры."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), MAX(m.start_time) FROM matches m "
+                "JOIN players p ON p.id = m.player_id WHERE p.chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        return (row[0], row[1])
+
+    def get_latest_match(self, player_ids: list[int], match_id: Optional[int] = None) -> Optional[dict]:
+        """Самый свежий матч среди игроков (или конкретный match_id) одним запросом, без выгрузки истории."""
+        if not player_ids:
+            return None
+        query = f"SELECT * FROM matches WHERE player_id IN ({', '.join('?' * len(player_ids))})"
+        params: list = list(player_ids)
+        if match_id is not None:
+            query += " AND match_id = ?"
+            params.append(match_id)
+        query += " ORDER BY start_time DESC, player_id LIMIT 1"
+        with self._conn() as conn:
+            row = conn.execute(query, params).fetchone()
+        return dict(row) if row else None
 
     _DETAIL_FIELDS = (
         "gpm", "xpm", "last_hits", "denies", "hero_damage",
@@ -448,10 +537,14 @@ class Storage:
     )
 
     def update_match_details(self, player_id: int, match_id: int, details: dict, perf_score) -> None:
-        """Записать обогащённые пер-матч поля + perf_score + benchmarks(JSON), пометить enriched=1."""
-        assignments = ", ".join(f"{field} = ?" for field in self._DETAIL_FIELDS)
+        """Записать обогащённые пер-матч поля + perf_score + benchmarks(JSON), пометить enriched=1.
+
+        Пустое значение в ответе не затирает уже известное (например, GPM из списка матчей).
+        """
+        fields = self._DETAIL_FIELDS + ("party_size",)
+        assignments = ", ".join(f"{field} = COALESCE(?, {field})" for field in fields)
         bench_json = json.dumps(details.get("benchmarks") or {})
-        params = [details.get(field) for field in self._DETAIL_FIELDS]
+        params = [details.get(field) for field in fields]
         params += [perf_score, bench_json, player_id, match_id]
         with self._conn() as conn:
             conn.execute(
@@ -546,6 +639,18 @@ class Storage:
     def get_outcomes(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
         """Лёгкая выборка исходов (время/слот/победа) — для графиков, без тяжёлых полей вроде bench_json."""
         query = "SELECT start_time, player_slot, radiant_win FROM matches WHERE player_id = ?"
+        params: list = [player_id]
+        if since_ts is not None:
+            query += " AND start_time >= ?"
+            params.append(since_ts)
+        query += " ORDER BY start_time"
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_match_sides(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
+        """Лёгкая выборка для совместных игр: только id матча, сторона и исход (без тяжёлых полей)."""
+        query = "SELECT match_id, start_time, player_slot, radiant_win FROM matches WHERE player_id = ?"
         params: list = [player_id]
         if since_ts is not None:
             query += " AND start_time >= ?"

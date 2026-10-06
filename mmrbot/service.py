@@ -27,6 +27,7 @@ from mmrbot.formatting import (
     render_records,
     render_roles,
     render_together,
+    stale_note,
     standing_line,
 )
 from mmrbot.texts import HIDDEN_HINT, NO_PLAYERS, NOT_FOUND, STRATZ_OFF
@@ -36,6 +37,8 @@ from mmrbot.opendota import OpenDota
 from mmrbot.stats import period_since
 from mmrbot.storage import Storage
 from mmrbot.tracker import (
+    REFRESH_COOLDOWN,
+    finish_refresh,
     build_chat_comparison,
     build_hero_view,
     build_leaderboard,
@@ -67,12 +70,60 @@ def _chat_lock(chat_id: int) -> asyncio.Lock:
     return per_loop.setdefault(chat_id, asyncio.Lock())
 
 
+# Фоновая «вторая половина» обновления после ответа на команду: не больше одной задачи на чат.
+_finish_running: set[tuple] = set()
+_finish_tasks: set = set()
+
+
+def _kick_finish(storage: Storage, od: OpenDota, chat_id: int) -> None:
+    """Догнать всё, чего команда не ждала (детали матчей, средние/линии), уже после ответа."""
+    if od is None or storage is None:
+        return
+    key = (storage.db_path, chat_id)
+    if key in _finish_running:
+        return
+    _finish_running.add(key)
+
+    async def run() -> None:
+        try:
+            await asyncio.to_thread(finish_refresh, storage, od, chat_id)
+        except Exception:
+            log.debug("Фоновое дообновление чата %s не удалось", chat_id, exc_info=True)
+        finally:
+            _finish_running.discard(key)
+
+    task = asyncio.get_running_loop().create_task(run())
+    _finish_tasks.add(task)  # держим ссылку, пока задача не завершится
+    task.add_done_callback(_finish_tasks.discard)
+
+
 async def gather_summaries(
-    storage: Storage, od: OpenDota, chat_id: int, refresh: bool = True, stratz=None
+    storage: Storage, od: OpenDota, chat_id: int, refresh: bool = True, stratz=None, complete: bool = False
 ):
+    """Обновить игроков и собрать сводки.
+
+    complete=False (команды): ждём матчи, ранг и позиции Stratz — один-два запроса OpenDota на игрока;
+    детали матчей и средние/линии догоняются фоном сразу после ответа. True (ежедневная сводка): ждём всё.
+    """
     async with _chat_lock(chat_id):
         now = int(time.time())  # момент берём уже под локом — кулдаун считается от актуального времени
-        return await asyncio.to_thread(build_leaderboard, storage, od, chat_id, now, refresh, stratz)
+        result = await asyncio.to_thread(build_leaderboard, storage, od, chat_id, now, refresh, stratz, not complete)
+    if refresh and not complete:
+        _kick_finish(storage, od, chat_id)
+    return result
+
+
+async def refresh_only(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> None:
+    """Только обновить матчи игроков (под локом чата) — без сборки сводок, когда они не нужны."""
+    async with _chat_lock(chat_id):
+        await asyncio.to_thread(refresh_chat, storage, od, chat_id, int(time.time()), stratz, None, True)
+    _kick_finish(storage, od, chat_id)
+
+
+def _with_stale(storage: Storage, chat_id: int, text: str) -> str:
+    """Дописать предупреждение, если кого-то не удалось обновить и показаны сохранённые данные."""
+    note = stale_note(storage.list_players(chat_id), int(time.time()), REFRESH_COOLDOWN)
+    return f"{text}\n\n{note}" if note else text
 
 
 async def render_board(
@@ -85,7 +136,7 @@ async def render_board(
     awards_period: str = "week",
 ) -> str:
     """Рейтинг + «Пульс пати» + отличия за awards_period (week — для /stats, day — для ежедневной сводки)."""
-    summaries = await gather_summaries(storage, od, chat_id, refresh, stratz)
+    summaries = await gather_summaries(storage, od, chat_id, refresh, stratz, complete=awards_period == "day")
     text = render_leaderboard(summaries, today_only=today_only)
     if not today_only:
         since = int(time.time()) - 7 * 86_400
@@ -104,16 +155,16 @@ async def render_board(
             block = render_awards(awards, "за сутки" if day else "за неделю")
             if block:
                 text += "\n\n" + block
-    return text
+    return _with_stale(storage, chat_id, text) if refresh else text
 
 
 async def render_period_board(
     storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None
 ) -> str:
-    await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    await refresh_only(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
-    return render_period_leaderboard(rows, period)
+    return _with_stale(storage, chat_id, render_period_leaderboard(rows, period))
 
 
 GRAPH_CACHE_TTL = 60  # сек: повторный график того же периода (переключение кнопок туда-обратно) — мгновенно
@@ -128,21 +179,23 @@ async def render_graph_board(
 
     refresh=False — без запроса в OpenDota (смена периода под уже показанным графиком: данные только что обновлены).
     """
+    if refresh:  # для графика нужны только свежие матчи — сводки игроков не собираем (кулдаун внутри)
+        await refresh_only(storage, od, chat_id, stratz)
     chat = storage.get_or_create_chat(chat_id)
-    cache_key = (storage.db_path, chat_id, period, chat.mmr_step, chat.tz, by_games)  # смена шага/пояса не отдаёт старую картинку
+    # В ключе — отпечаток данных: пришла новая игра — старая картинка не отдаётся (как и при смене шага/пояса).
+    version = await asyncio.to_thread(storage.data_version, chat_id)
+    cache_key = (storage.db_path, chat_id, period, chat.mmr_step, chat.tz, by_games, version)
     cached = _graph_cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < GRAPH_CACHE_TTL:
         return cached[1]
-    if refresh:  # для графика нужны только свежие матчи — сводки игроков не собираем
-        async with _chat_lock(chat_id):
-            await asyncio.to_thread(refresh_chat, storage, od, chat_id, int(time.time()), stratz)
+    for key in [k for k, v in _graph_cache.items() if time.monotonic() - v[0] >= GRAPH_CACHE_TTL]:
+        _graph_cache.pop(key, None)  # просроченные картинки не копим в памяти
     now = int(time.time())
     since = period_since(period, now)
     series = await asyncio.to_thread(build_mmr_series, storage, chat_id, since)
     if not series:
         _graph_cache[cache_key] = (time.monotonic(), None)
         return None
-    chat = storage.get_or_create_chat(chat_id)  # шаг мог смениться за время обновления
     label = {"day": "за сутки", "week": "за неделю", "month": "за месяц", "year": "за год",
              "all": "за всё время"}[period]
     png = await asyncio.to_thread(render_mmr_chart, series, f"Динамика MMR {label}", chat.tz, since, now, by_games)
@@ -152,28 +205,30 @@ async def render_graph_board(
         games, wins, total = series_stats(pts)
         lines.append(f"{medals[i] if i < 3 else '▫️'} <b>{html.escape(name)}</b> {total:+d} · {games_word(games)} · {round(wins * 100 / games)}%")
     caption = f"📈 <b>Динамика MMR {label}</b> · <i>оценка: ±{chat.mmr_step} за игру</i>\n" + "\n".join(lines)
+    if refresh:
+        caption = _with_stale(storage, chat_id, caption)
     result = (png, caption)
     _graph_cache[cache_key] = (time.monotonic(), result)
     return result
 
 
 async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None) -> str:
-    await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    await refresh_only(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     data = await asyncio.to_thread(build_records, storage, chat_id, since)
-    return render_records(data, period)
+    return _with_stale(storage, chat_id, render_records(data, period))
 
 
 async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
-    return render_heroes(summaries)
+    return _with_stale(storage, chat_id, render_heroes(summaries))
 
 
 async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
     # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
-    await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    await refresh_only(storage, od, chat_id, stratz)
     result = await asyncio.to_thread(build_together, storage, chat_id)
-    return render_together(result)
+    return _with_stale(storage, chat_id, render_together(result))
 
 
 async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None) -> Optional[str]:
@@ -183,7 +238,7 @@ async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name
     for summary in summaries:
         if summary.display_name.lower() == name_lower or str(summary.account_id) == name.strip():
             standing = standing_line(comparison, summary.display_name)
-            return render_player_card(summary, standing=standing)
+            return _with_stale(storage, chat_id, render_player_card(summary, standing=standing))
     return None
 
 
@@ -192,7 +247,7 @@ async def render_compare_board(storage: Storage, od: OpenDota, chat_id: int, str
     if not summaries:
         return NO_PLAYERS
     comparison = build_chat_comparison(summaries)
-    return render_compare_table(comparison, summaries)
+    return _with_stale(storage, chat_id, render_compare_table(comparison, summaries))
 
 
 def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
@@ -234,20 +289,20 @@ def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
 def _empty_players(storage: Storage, chat_id: int, name: Optional[str]) -> list[str]:
     """Имена игроков (одного или всех в чате), у которых в БД нет ни одного матча."""
     players = [storage.get_player(chat_id, name)] if name else storage.list_players(chat_id)
-    return [p.display_name for p in players if p is not None and not storage.get_matches(p.id)]
+    return [p.display_name for p in players if p is not None and not storage.has_matches(p.id)]
 
 
 async def render_player_heroes_board(
     storage: Storage, od: OpenDota, chat_id: int, name: str, period: str, stratz=None
 ) -> str:
-    await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    await refresh_only(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     result = await asyncio.to_thread(build_player_heroes, storage, chat_id, name, since)
     if result is None:
         return NOT_FOUND
     player, rows = result
     text = render_player_heroes(player.display_name, period, rows)
-    if not rows and not storage.get_matches(player.id):
+    if not rows and not storage.has_matches(player.id):
         text += "\n" + HIDDEN_HINT
     roles = await asyncio.to_thread(build_player_roles, storage, chat_id, name, since)
     if roles is not None and roles[1]:
@@ -258,7 +313,7 @@ async def render_player_heroes_board(
 async def render_roles_board(
     storage: Storage, od: OpenDota, chat_id: int, name: str, period: str = "all", stratz=None
 ) -> str:
-    await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    await refresh_only(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     result = await asyncio.to_thread(build_player_roles, storage, chat_id, name, since)
     if result is None:
@@ -279,7 +334,7 @@ async def render_match_board(
     focus = None
     cached = None
     if match_id is None:
-        await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+        await refresh_only(storage, od, chat_id, stratz)
         view = await asyncio.to_thread(build_match_view, storage, chat_id, name, None)
         if view is None:
             empty = _empty_players(storage, chat_id, name)
@@ -317,7 +372,7 @@ async def render_hero_board(
     hero_id = find_hero(query)
     if hero_id is None:
         return f"Герой «{query}» не найден. Пишите по-английски, например: /heroes Axe"
-    await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    await refresh_only(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     entries = await asyncio.to_thread(build_hero_view, storage, chat_id, hero_id, since)
     return render_hero_detail(hero_id, period, entries)

@@ -636,3 +636,231 @@ def test_get_outcomes_returns_light_rows_in_time_order(store):
     rows = store.get_outcomes(p.id)
     assert [r["start_time"] for r in rows] == [100, 200]
     assert set(rows[0]) == {"start_time", "player_slot", "radiant_win"}
+
+
+# --- достоверность и скорость сбора матчей -------------------------------------
+
+class RecentOpenDota(FakeOpenDota):
+    """Клиент с лёгким списком последних матчей (как настоящий OpenDota.get_recent_matches)."""
+
+    def __init__(self, *a, recent=None, **kw):
+        super().__init__(*a, **kw)
+        self.recent = recent or []
+        self.recent_calls = 0
+        self.limits = []
+
+    def get_recent_matches(self, account_id):
+        self.recent_calls += 1
+        return list(self.recent)
+
+    def get_matches(self, account_id, limit=200):
+        self.limits.append(limit)
+        return super().get_matches(account_id, limit)
+
+
+def _synced_player(store, client, now=3000):
+    """Игрок после первой (полной) загрузки истории."""
+    player = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    refresh_player(store, client, player, now=now)
+    return store.get_player(100, "Вася")
+
+
+def test_refresh_uses_light_recent_list_with_match_details(store):
+    client = RecentOpenDota(matches=[od_match(1, 1500)])
+    player = _synced_player(store, client)
+    client.recent = [
+        {**od_match(2, 2500), "gold_per_min": 612, "hero_damage": 30500, "hero_healing": 0, "party_size": 2},
+        {**od_match(9, 2400, lobby_type=0)},   # не ранкед — мимо
+        od_match(1, 1500),                      # перекрытие с сохранённым — пропусков нет
+    ]
+    assert refresh_player(store, client, player, now=3200) == 1
+    assert client.limits == [None]              # тяжёлый список после первой загрузки не трогали
+    row = store.get_matches(player.id)[-1]
+    assert (row["match_id"], row["gpm"], row["hero_damage"], row["hero_healing"], row["party_size"]) == (
+        2, 612, 30500, 0, 2)                    # статистика матча — без запроса на матч
+
+
+def test_refresh_goes_deep_when_recent_list_does_not_reach_stored_history(store):
+    client = RecentOpenDota(matches=[od_match(1, 1500)])
+    player = _synced_player(store, client)
+    client.matches = [od_match(1, 1500), od_match(2, 2000), od_match(3, 2500)]
+    client.recent = [od_match(3, 2500)]         # между 1500 и 2500 могло быть что угодно
+    assert refresh_player(store, client, player, now=3200) == 2
+    assert client.limits == [None, 200]
+    assert {m["match_id"] for m in store.get_matches(player.id)} == {1, 2, 3}
+
+
+def test_refresh_goes_deep_periodically_for_self_check(store):
+    import mmrbot.tracker as tr
+    client = RecentOpenDota(matches=[od_match(1, 1500)], recent=[od_match(1, 1500)])
+    player = _synced_player(store, client)
+    refresh_player(store, client, player, now=3200)
+    assert client.limits == [None]
+    late = 3000 + tr.DEEP_SYNC_SEC
+    refresh_player(store, client, store.get_player(100, "Вася"), now=late)
+    assert client.limits == [None, 200]         # раз в DEEP_SYNC_SEC сверяемся по большому списку
+    assert store.get_player(100, "Вася").history_ts == late
+
+
+def test_refresh_loads_full_history_when_gap_exceeds_page(store):
+    import mmrbot.tracker as tr
+    client = FakeOpenDota(matches=[od_match(1, 100)])
+    player = _synced_player(store, client)
+    limits = []
+
+    class Gap(FakeOpenDota):
+        def get_matches(self, account_id, limit=200):
+            limits.append(limit)
+            count = 250 if limit is None else limit
+            return [od_match(1000 + i, 5000 + i) for i in range(count)]
+
+    assert refresh_player(store, Gap(), player, now=9000) == 250
+    assert limits == [tr.HISTORY_LIMIT_REFRESH, None]   # все 200 новые → разрыв → вся история
+
+
+def test_matches_are_saved_even_if_profile_fails(store):
+    player = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+
+    class NoProfile(FakeOpenDota):
+        def get_profile(self, account_id):
+            raise RuntimeError("OpenDota HTTP 503")
+
+    assert refresh_player(store, NoProfile(matches=[od_match(1, 1500)]), player, now=3000) == 1
+    assert store.get_player(100, "Вася").updated_ts == 3000
+
+
+def test_failed_match_fetch_does_not_mark_player_updated(store):
+    player = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+
+    class NoMatches(FakeOpenDota):
+        def get_matches(self, account_id, limit=200):
+            raise RuntimeError("OpenDota HTTP 503")
+
+    with pytest.raises(RuntimeError):
+        refresh_player(store, NoMatches(), player, now=3000)
+    assert store.get_player(100, "Вася").updated_ts is None   # кулдаун не выдаст старое за свежее
+
+
+def test_profile_is_not_refetched_without_new_matches(store):
+    import mmrbot.tracker as tr
+    client = FakeOpenDota(profile={"rank_tier": 63, "leaderboard_rank": None, "personaname": "Вася"},
+                          matches=[od_match(1, 1500)])
+    player = _synced_player(store, client)
+    assert client.profile_calls == 1
+    refresh_player(store, client, player, now=3300)
+    assert client.profile_calls == 1                         # игр не было — ранг не менялся
+    client.matches.append(od_match(2, 3400))
+    refresh_player(store, client, store.get_player(100, "Вася"), now=3600)
+    assert client.profile_calls == 2                         # новая игра — ранг мог измениться
+    refresh_player(store, client, store.get_player(100, "Вася"), now=3600 + tr.PROFILE_TTL)
+    assert client.profile_calls == 3                         # и изредка — для подстраховки
+
+
+def test_empty_profile_does_not_erase_known_rank(store):
+    client = FakeOpenDota(profile={"rank_tier": 63, "leaderboard_rank": None, "personaname": "Вася"})
+    player = _synced_player(store, client)
+    client.profile = {"rank_tier": None, "leaderboard_rank": None, "personaname": None}  # сбой/скрытый профиль
+    client.matches = [od_match(1, 3100)]
+    refresh_player(store, client, player, now=3300)
+    assert store.get_player(100, "Вася").last_rank_tier == 63
+
+
+def test_steam_watch_also_updates_rank(store):
+    from mmrbot.tracker import detect_steam_changes
+    store.get_or_create_chat(100)
+    store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    client = FakeOpenDota(profile={"rank_tier": 71, "leaderboard_rank": None, "personaname": "V"})
+    detect_steam_changes(store, client, now=5000)
+    got = store.get_player(100, "Вася")
+    assert (got.last_rank_tier, got.profile_ts) == (71, 5000)
+    assert got.updated_ts is None                            # матчи при этом не сверялись
+
+
+def test_mmr_counts_game_that_was_in_progress_at_anchor(store):
+    # MMR задан в 2000: игра 1 уже закончилась (в MMR учтена), игра 2 ещё шла — её результат прибавляем.
+    player = store.add_player(100, 42, "Вася", 5000, anchor_ts=2000, created_ts=2000)
+    store.add_matches(player.id, [
+        _m(1, 100, duration=1800),                       # кончилась в 1900 — до якоря
+        _m(2, 1500, duration=1800),                      # кончилась в 3300 — после якоря
+        _m(3, 4000, duration=1800, radiant_win=False),
+    ])
+    s = build_player_summary(store, store.get_or_create_chat(100), store.get_player(100, "Вася"), now=10_000)
+    assert s.mmr_delta == 0 and s.current_mmr == 5000   # +25 за игру 2, −25 за игру 3
+
+
+def test_fast_refresh_fetches_only_matches_and_background_finishes_the_rest(store):
+    from mmrbot.tracker import finish_refresh, refresh_chat
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    _seed_matches(store, player, 5)
+    client = InsightsOpenDota(matches=[od_match(99, 500)],
+                              match_stats={"gpm": 500, "benchmarks": {"gold_per_min": 0.5}})
+    calls = []
+    orig = client.get_match_player_stats
+    client.get_match_player_stats = lambda m, a: (calls.append(m), orig(m, a))[1]
+    stratz = FakeStratz({99: {"position": 2, "role": "CORE", "lane": "MID", "imp": 7, "party_size": 1}})
+
+    refresh_chat(store, client, 100, 1_000_000, stratz, fast=True)
+    # Команда пользователя: у OpenDota только матчи (+ профиль, раз есть новая игра) — два запроса.
+    assert (client.match_calls, client.profile_calls) == (1, 1)
+    assert (client.refresh_calls, client.extra_calls, calls) == (0, 0, [])
+    assert store.get_player(100, "Вася").insights_dirty is True
+    new = next(m for m in store.get_matches(player.id) if m["match_id"] == 99)
+    assert new["position"] == 2 and stratz.calls == 1     # новая игра и её позиция (Stratz, пачкой) — сразу
+
+    assert finish_refresh(store, client, 100, per_player=3) == 3   # остальное догоняет фон
+    assert (client.refresh_calls, client.extra_calls, len(calls)) == (1, 3, 3)
+    got = store.get_player(100, "Вася")
+    assert got.insights_dirty is False and got.last_gpm == 400.0
+
+    client.extra_calls = 0
+    finish_refresh(store, client, 100, per_player=0)
+    assert client.extra_calls == 0                        # всё актуально — лишних запросов нет
+
+
+def test_backfill_picks_up_insights_left_dirty(store):
+    from mmrbot.tracker import backfill_opendota
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    store.set_insights_dirty(player.id, True)             # фон после команды не успел/упал
+    client = InsightsOpenDota()
+    backfill_opendota(store, client, per_player=0)
+    assert client.extra_calls == 3 and store.get_player(100, "Вася").insights_dirty is False
+
+
+def test_idle_party_is_polled_less_often_without_api_key(store):
+    import mmrbot.tracker as tr
+    from mmrbot.tracker import detect_new_games
+    now = 1_000_000
+    store.get_or_create_chat(100)
+    p = store.add_player(100, 42, "Вася", 5000, 0, 0)
+    store.add_matches(p.id, [_m(1, now - 10 * 3600)])     # последняя игра давно — пати не в сессии
+    store.touch_player(p.id, now - 300)
+    store.mark_notified(p.id)
+
+    keyless = FakeOpenDota()
+    keyless.api_key = None
+    detect_new_games(store, keyless, store.get_or_create_chat(100), now)
+    assert keyless.match_calls == 0                       # 5 минут < GAME_IDLE_COOLDOWN
+    detect_new_games(store, keyless, store.get_or_create_chat(100), now - 300 + tr.GAME_IDLE_COOLDOWN)
+    assert keyless.match_calls == 1
+
+    store.touch_player(p.id, now - 300)
+    keyed = FakeOpenDota()
+    keyed.api_key = "KEY"
+    detect_new_games(store, keyed, store.get_or_create_chat(100), now)
+    assert keyed.match_calls == 1                         # с ключом лимит не жмёт — опрос частый
+
+
+def test_active_party_is_polled_often_even_without_api_key(store):
+    from mmrbot.tracker import detect_new_games
+    now = 1_000_000
+    store.get_or_create_chat(100)
+    p = store.add_player(100, 42, "Вася", 5000, 0, 0)
+    store.add_matches(p.id, [_m(1, now - 3600)])          # играли час назад — сессия идёт
+    store.touch_player(p.id, now - 300)
+    store.mark_notified(p.id)
+    client = FakeOpenDota()
+    client.api_key = None
+    detect_new_games(store, client, store.get_or_create_chat(100), now)
+    assert client.match_calls == 1
