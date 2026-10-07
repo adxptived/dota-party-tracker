@@ -79,10 +79,25 @@ def test_check_achievements_first_run_is_silent_then_reports_new(store):
     p = store.add_player(100, 1, "Вася", None, 0, 0)
     store.add_matches(p.id, [m(i, i * 100) for i in range(1, 5)])
     assert check_achievements(store, p, NOW) == []  # засев без оповещений
-    store.add_matches(p.id, [m(5, 500)])
+    store.add_matches(p.id, [m(5, NOW - 3000)])  # только что сыграл
     new = check_achievements(store, p, NOW)
     assert [code for code, _ in new] == ["win_streak_5"]
     assert check_achievements(store, p, NOW) == []  # второй раз — уже известно
+
+
+def test_late_arriving_history_does_not_flood_chat_with_old_achievements(store):
+    """История доехала уже после засева (при /add OpenDota не ответил или профиль был закрыт):
+    всё заработанное давно запоминается молча, объявляется только сегодняшнее."""
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    assert check_achievements(store, p, NOW) == []  # засев на пустой истории
+    old = [m(i, NOW - 400 * 86_400 + i * 3600, k=25 if i == 3 else 5) for i in range(1, 61)]  # год назад: серии, 50 игр, 20 убийств
+    fresh = m(100, NOW - 3000, dur=3700)  # сегодня — марафон
+    store.add_matches(p.id, old + [fresh])
+    new = check_achievements(store, p, NOW)
+    assert [code for code, _ in new] == ["marathon"]
+    known = store.get_achievements(p.id)
+    assert {"games_50", "win_streak_10", "kills_20"} <= set(known)  # старое учтено и в списке достижений видно
+    assert check_achievements(store, p, NOW) == []
 
 
 def test_list_achievements_does_not_write(store):
