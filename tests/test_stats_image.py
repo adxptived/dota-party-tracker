@@ -51,3 +51,30 @@ def test_more_than_limits_are_truncated_not_crashing():
     records = [{"label": f"R{i}", "value": "1", "player": "x", "hero_id": 1} for i in range(12)]
     awards = [{"title": f"A{i}", "player": "x", "detail": "d"} for i in range(12)]
     assert _open(render_stats_image("Рейтинг", None, None, [_row()], tiles, records, awards)).width == WIDTH
+
+
+def _header_extrema(png: bytes, x0: int, x1: int):
+    img = _open(png).convert("RGB")
+    return img.crop((x0, 106, x1, 124)).getextrema()  # строка подписей столбцов (без подзаголовка шапки)
+
+
+def test_form_and_hero_headers_only_when_rows_have_them():
+    from mmrbot.stats_image import FORM_X, HERO_X
+    bare = _row(form=[], hero_id=None)
+    with_both = _row()
+    for column, (x0, x1) in {"form": (FORM_X, FORM_X + 90), "hero": (HERO_X - 10, HERO_X + 90)}.items():
+        empty = _header_extrema(render_stats_image("Рейтинг", None, None, [bare]), x0, x1)
+        filled = _header_extrema(render_stats_image("Рейтинг", None, None, [with_both]), x0, x1)
+        assert all(lo == hi for lo, hi in empty), column  # только фон — подписи нет
+        assert any(lo != hi for lo, hi in filled), column
+
+
+def test_big_label_is_drawn_and_single_record_tile_is_wide():
+    default = _open(render_stats_image("Рейтинг", None, None, [_row()])).convert("RGB")
+    custom = _open(render_stats_image("Рейтинг", None, None, [_row()], big_label="±MMR")).convert("RGB")
+    assert default.tobytes() != custom.tobytes()
+    one = [{"label": "Герой недели", "value": "Phantom Lancer", "player": "9 игр", "hero_id": 12}]
+    wide = _open(render_stats_image("Итоги", None, None, [_row()], records=one)).convert("RGB")
+    # на всю ширину: правая часть плитки закрашена цветом панели, а не фоном
+    y = wide.height - 80
+    assert wide.getpixel((WIDTH - 60, y)) != wide.getpixel((WIDTH - 5, y))

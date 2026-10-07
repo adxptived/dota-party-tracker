@@ -760,3 +760,78 @@ def test_long_match_still_notified_when_it_ended_inside_window(tmp_path):
     ])
     got = store.get_unnotified_matches(player.id, now - 3 * 3600)
     assert [m["match_id"] for m in got] == [1]
+
+
+# --- недельная сводка и дайджест картинкой ---------------------------------------------
+
+def _weekly_report_data(store):
+    a, b = _chat_with_two(store)
+    day = 86_400
+    store.add_matches(a.id, [m(1, NOW - day, True, hero=1), m(2, NOW - 2 * day, True, hero=1),
+                             m(3, NOW - 3 * day, False, hero=2)])
+    store.add_matches(b.id, [m(1, NOW - day, True, hero=1), m(4, NOW - 4 * day, False, hero=3)])
+    return build_weekly_report(store, 100, NOW)
+
+
+def test_weekly_card_data_has_tiles_hero_and_caption(store):
+    from mmrbot import card_data as cd
+    report = _weekly_report_data(store)
+    tiles = cd.weekly_tiles(report)
+    assert 3 <= len(tiles) <= 4 and tiles[0]["label"] == "Всего за неделю" and tiles[0]["value"] == "5 игр"
+    assert any(t["label"] == "Лучшая серия побед" and t["value"] == "2 подряд" for t in tiles)
+    (hero,) = cd.weekly_records(report)
+    assert hero["hero_id"] == 1 and hero["value"] == "Anti-Mage" and "3 игры" in hero["player"]
+    caption = cd.weekly_caption(report)
+    assert "Итоги недели" in caption and "5 игр" in caption
+    assert cd.weekly_tiles({"rows": [], "streak": None}) == [] and "не было" in cd.weekly_caption({"rows": []})
+
+
+def test_weekly_board_has_png_and_text_fallback(store, monkeypatch):
+    from mmrbot import service
+    _weekly_report_data(store)
+    board = asyncio.run(service.weekly_board(store, 100, NOW))
+    assert board.png[:8] == b"\x89PNG\r\n\x1a\n" and "Итоги недели" in board.caption and "Итоги недели" in board.text
+    assert asyncio.run(service.weekly_board(store, 100, NOW, image=False)).png is None
+
+    def broken(*a, **k):
+        raise RuntimeError("рендер упал")
+
+    monkeypatch.setattr(service, "render_stats_image", broken)
+    fallback = asyncio.run(service.weekly_board(store, 100, NOW))
+    assert fallback.png is None and "Итоги недели" in fallback.text
+
+
+def test_weekly_board_for_quiet_week_is_text_only(store):
+    from mmrbot import service
+    store.add_player(100, 1, "Вася", None, 0, 0)
+    board = asyncio.run(service.weekly_board(store, 100, NOW))
+    assert board.png is None and "не было" in board.text
+
+
+class _PhotoBot:
+    def __init__(self):
+        self.photos, self.messages = [], []
+
+    async def send_photo(self, chat_id, photo, caption=None, **kw):
+        self.photos.append((chat_id, caption))
+
+    async def send_message(self, chat_id, text, **kw):
+        self.messages.append((chat_id, text))
+
+
+def test_send_board_sends_weekly_card_as_photo(store):
+    from mmrbot import scheduler as sched, service
+    _weekly_report_data(store)
+    board = asyncio.run(service.weekly_board(store, 100, NOW))
+    bot = _PhotoBot()
+    asyncio.run(sched.send_board(bot, 100, board))
+    assert bot.photos and "Итоги недели" in bot.photos[0][1] and not bot.messages
+
+
+def test_send_board_splits_long_text_without_picture():
+    from mmrbot import scheduler as sched
+    from mmrbot.boards import ImageBoard
+    bot = _PhotoBot()
+    asyncio.run(sched.send_board(bot, 1, ImageBoard("строка\n" * 1500)))
+    assert len(bot.messages) >= 2 and not bot.photos
+    assert all(len(text) <= 4096 for _, text in bot.messages)

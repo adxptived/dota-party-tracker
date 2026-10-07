@@ -240,6 +240,9 @@ class _Bot:
     async def send_message(self, chat_id, text, **kwargs):
         self.sent.append(text)
 
+    async def send_photo(self, chat_id, photo, caption=None, **kwargs):
+        self.sent.append(caption)  # отчёт картинкой: пометка о сбое — в подписи
+
 
 def _scheduler_jobs(store, od, stratz=None, bot=None):
     scheduler = sched.setup_scheduler(bot or _Bot(), store, od, stratz=stratz)

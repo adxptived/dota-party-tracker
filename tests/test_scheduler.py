@@ -5,6 +5,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.methods import SendMessage
 
 from mmrbot import scheduler as sched
+from mmrbot.boards import ImageBoard
 from mmrbot.scheduler import due_local_date
 from mmrbot.storage import Chat, Storage
 
@@ -68,9 +69,13 @@ class _FailingBot:
 
 def _run_digest(tmp_path, monkeypatch, exc):
     async def fake_board(*a, **kw):
-        return "доска"
+        return ImageBoard("доска")
 
-    monkeypatch.setattr(sched, "render_board", fake_board)
+    async def refreshed(*a, **kw):
+        return None
+
+    monkeypatch.setattr(sched, "stats_board", fake_board)
+    monkeypatch.setattr(sched, "refresh_only", refreshed)
     import time
     storage = Storage(str(tmp_path / "t.db"))
     c = storage.get_or_create_chat(5)
@@ -287,3 +292,61 @@ def test_achievement_alert_stays_text(tmp_path, monkeypatch):
     event = {"kind": "achievement", "chat_id": 5, "name": "Вася", "items": [("first_blood", None)], "pending": []}
     _run_game_watch(tmp_path, monkeypatch, bot, event)
     assert not bot.photos and len(bot.texts) == 1
+
+
+# --- недельная сводка и дайджест уходят картинкой ----------------------------------------------
+
+class _PhotoBot:
+    def __init__(self):
+        self.photos, self.messages = [], []
+
+    async def send_photo(self, chat_id, photo, caption=None, **kw):
+        assert photo.data[:8] == b"\x89PNG\r\n\x1a\n"
+        self.photos.append((chat_id, caption))
+
+    async def send_message(self, chat_id, text, **kw):
+        self.messages.append((chat_id, text))
+
+
+def _played_chat(tmp_path):
+    import time
+    storage = Storage(str(tmp_path / "w.db"))
+    chat = storage.get_or_create_chat(5)
+    player = storage.add_player(5, 1, "Вася", 5000, 0, 0)
+    now = int(time.time())
+    storage.add_matches(player.id, [{"match_id": i, "start_time": now - 3600 * i, "player_slot": 0, "radiant_win": i != 2,
+                                     "lobby_type": 7, "hero_id": 1, "kills": 5, "deaths": 2, "assists": 7}
+                                    for i in range(1, 5)])
+    return storage, chat
+
+
+def test_weekly_summary_job_sends_card_photo(tmp_path, monkeypatch):
+    storage, chat = _played_chat(tmp_path)
+    monkeypatch.setattr(sched, "due_weekly_key", lambda c, now: "2026-W41")
+    bot = _PhotoBot()
+    jobs = {j.func.__name__: j.func for j in sched.setup_scheduler(bot, storage, None).get_jobs()}
+    asyncio.run(jobs["weekly_summary"]())
+    assert bot.photos and "Итоги недели" in bot.photos[0][1] and not bot.messages
+    assert storage.get_or_create_chat(5).last_weekly == "2026-W41"
+
+
+def test_digest_sends_card_photo_and_idle_day_skips_rendering(tmp_path, monkeypatch):
+    storage, chat = _played_chat(tmp_path)
+
+    async def refreshed(*a, **kw):
+        return None
+
+    monkeypatch.setattr(sched, "refresh_only", refreshed)
+    bot = _PhotoBot()
+    asyncio.run(sched.send_digest(bot, storage, _Provider(down=True), chat, "2026-10-07"))
+    assert bot.photos and "Ежедневная сводка" in bot.photos[0][1]
+
+    async def forbidden(*a, **kw):
+        raise AssertionError("в тихий день картинку не рисуем")
+
+    idle_storage = Storage(str(tmp_path / "idle.db"))
+    idle_chat = idle_storage.get_or_create_chat(6)
+    idle_storage.add_player(6, 2, "Петя", None, 0, 0)
+    monkeypatch.setattr(sched, "stats_board", forbidden)
+    asyncio.run(sched.send_digest(_PhotoBot(), idle_storage, _Provider(down=True), idle_chat, "2026-10-07"))
+    assert idle_storage.get_or_create_chat(6).last_digest_date == "2026-10-07"

@@ -12,6 +12,7 @@ from aiogram.methods import SendMessage
 import mmrbot.access as access
 import mmrbot.bot as botmod
 import mmrbot.scheduler as sched
+from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, ChatGateMiddleware, is_chat_admin
 from mmrbot.config import _chat_ids
 from mmrbot.ids import parse_account_id
@@ -272,9 +273,13 @@ class SendBot:
 
 def _digest(store, monkeypatch, played_ago=None):
     async def board(*a, **kw):
-        return "доска"
+        return ImageBoard("доска")
 
-    monkeypatch.setattr(sched, "render_board", board)
+    async def refreshed(*a, **kw):
+        return None
+
+    monkeypatch.setattr(sched, "stats_board", board)
+    monkeypatch.setattr(sched, "refresh_only", refreshed)
     chat = store.get_or_create_chat(5)
     player = store.add_player(5, 1, "Вася", None, 0, 0)
     if played_ago is not None:

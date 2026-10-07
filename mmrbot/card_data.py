@@ -113,14 +113,15 @@ def award_items(awards: list[dict]) -> list[dict]:
 
 
 def leader_caption(summaries: list, week_rows: list[dict], mode: str) -> str:
-    """Подпись под рейтингом: «🏆 Рейтинг · Лидер: Вася ≈5420 (+75 за неделю)»; для «Сегодня» — лидер дня."""
-    if mode == "today":
+    """Подпись под рейтингом: «🏆 Рейтинг · Лидер: Вася ≈5420 (+75 за неделю)»; для «Сегодня» и сводки дня — лидер дня."""
+    if mode in ("today", "digest"):
         played = [s for s in summaries if s.games_today]
-        head = "📅 <b>Статистика за сегодня</b>"
+        head = "📅 <b>Статистика за сегодня</b>" if mode == "today" else "📰 <b>Ежедневная сводка</b>"
         if not played:
             return head + " · игр пока не было"
         best = max(played, key=lambda s: (s.delta_today, s.wins_today))
-        return f"{head} · Лидер: <b>{_esc(best.display_name)}</b> {signed(best.delta_today)} ({best.wins_today}–{best.losses_today})"
+        word = "Лидер" if mode == "today" else "Лидер дня"
+        return f"{head} · {word}: <b>{_esc(best.display_name)}</b> {signed(best.delta_today)} ({best.wins_today}–{best.losses_today})"
     head = "🏆 <b>Рейтинг</b>"
     if not summaries:
         return head
@@ -315,3 +316,60 @@ def records_caption(data: dict, period: str) -> str:
         return head + " · данных нет"
     best = next((r for r in records if r["key"] == "kills"), records[0])
     return head + f"\n{len(records)} рекордов · {best['title'].lower()}: <b>{_esc(best['player'])}</b> — {_esc(best['text'])}"
+
+
+# --- недельная сводка ----------------------------------------------------------------------------------
+
+WEEKLY_DUPLICATES = {"climb", "drop", "games", "win_streak"}  # эти итоги уже есть в плитках шапки
+
+
+def weekly_tiles(report: dict) -> list[dict]:
+    """Плитки сводки недели: всего игр, кто поднялся, кто играл больше всех, серия (или игры вместе)."""
+    rows = [r for r in report["rows"] if r["games"] > 0]
+    if not rows:
+        return []
+    games = sum(r["games"] for r in rows)
+    wins = sum(r["wins"] for r in rows)
+    delta = sum(r["delta"] for r in rows)
+    tiles = [{"label": "Всего за неделю", "value": plural_games(games), "sub": f"{_wr(games, wins)} · {signed(delta)}",
+              "color": delta_color(delta)}]
+    best = max(rows, key=lambda r: r["delta"])
+    if best["delta"] > 0:
+        tiles.append({"label": "Больше всех поднялся", "value": clean(best["name"]),
+                      "sub": f"{signed(best['delta'])} ({best['wins']}–{best['losses']})", "color": GOLD})
+    busiest = max(rows, key=lambda r: r["games"])
+    tiles.append({"label": "Больше всех играл", "value": clean(busiest["name"]), "sub": plural_games(busiest["games"]),
+                  "color": None})
+    if report.get("streak"):
+        name, length = report["streak"]
+        tiles.append({"label": "Лучшая серия побед", "value": f"{length} подряд", "sub": clean(name), "color": GOLD})
+    elif (report.get("shared") or {}).get("games"):
+        shared = report["shared"]
+        tiles.append({"label": "Вместе", "value": plural_games(shared["games"]),
+                      "sub": f"{shared['wins']}–{shared['losses']}", "color": None})
+    return tiles[:4]
+
+
+def weekly_records(report: dict) -> list[dict]:
+    """«Герой недели» плиткой с иконкой героя."""
+    hero = report.get("hero")
+    if not hero:
+        return []
+    return [{"label": "Герой недели", "value": hero_name(hero["hero_id"]),
+             "player": f"{plural_games(hero['games'])} · {round(hero['wins'] * 100 / hero['games'])}%",
+             "hero_id": hero["hero_id"]}]
+
+
+def weekly_awards(report: dict) -> list[dict]:
+    return award_items([a for a in report.get("awards") or [] if a["key"] not in WEEKLY_DUPLICATES])
+
+
+def weekly_caption(report: dict) -> str:
+    rows = [r for r in report["rows"] if r["games"] > 0]
+    head = "📅 <b>Итоги недели</b>"
+    if not rows:
+        return head + " · ранкед-игр не было"
+    games = sum(r["games"] for r in rows)
+    best = max(rows, key=lambda r: r["delta"])
+    lead = f" · Лидер: <b>{_esc(best['name'])}</b> {signed(best['delta'])}" if best["delta"] > 0 and len(rows) >= 2 else ""
+    return f"{head} · {plural_games(games)}{lead}"

@@ -116,6 +116,11 @@ def build() -> dict[str, bytes]:
         "Рейтинг", "оценка MMR: старт ± шаг за игру", ("СЕЗОН", "#3987e5"), sample_stats_rows(), tiles, records, awards,
         "данные обновлены 12:30", icons, avatars)
     out["stats_today.png"] = render_stats_image("Сегодня", None, None, sample_stats_rows()[:2], tiles[:2], icons=icons)
+    weekly_rows = [dict(r, big="+75", sub="12 игр · KDA 3.10", sub_color="#8b98a9", big_color="#3ddc84", form=[]) for r in sample_stats_rows()[:3]]
+    out["weekly.png"] = render_stats_image(
+        "Итоги недели", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", "#3987e5"), weekly_rows, tiles,
+        [{"label": "Герой недели", "value": "Phantom Lancer", "player": "9 игр · 67%", "hero_id": 12}],
+        awards[1:], None, icons, avatars, "±MMR")
     out["stats_empty.png"] = render_stats_image("Рейтинг", None, None, [])
     out["player.png"] = render_player_image(sample_player(), icons, avatars)
     card = sample_player()

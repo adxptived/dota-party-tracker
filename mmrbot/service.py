@@ -17,7 +17,7 @@ from mmrbot import avatars, hero_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
 from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
 from mmrbot.card_data import (
-    award_items, hero_caption, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
+    award_items, hero_caption, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
     summary_rows,
 )
@@ -32,6 +32,7 @@ from mmrbot.formatting import (
     render_game_alert,
     render_hero_detail,
     render_heroes,
+    render_weekly,
     render_leaderboard,
     render_match_caption,
     render_match_card,
@@ -63,6 +64,7 @@ from mmrbot.tracker import (
     finish_refresh,
     build_chat_comparison,
     build_hero_view,
+    build_weekly_report,
     build_leaderboard,
     refresh_chat,
     build_match_view,
@@ -267,13 +269,13 @@ def _stale_line(storage: Storage, chat_id: int, od) -> str:
     return text.strip()
 
 
-def _stats_png(title, subtitle, badge, rows, tiles, records, awards, note) -> bytes:
+def _stats_png(title, subtitle, badge, rows, tiles, records, awards, note, big_label="MMR") -> bytes:
     """В потоке: иконки героев и аватары (кэш/CDN) + рендер таблицы рейтинга."""
     icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
     hero_ids = [r.get("hero_id") for r in rows] + [r.get("hero_id") for r in records]
     icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
     found = avatar_loader.get_many(r.get("avatar") for r in rows) if avatar_loader is not None else {}
-    return render_stats_image(title, subtitle, badge, rows, tiles, records, awards, note, icons, found)
+    return render_stats_image(title, subtitle, badge, rows, tiles, records, awards, note, icons, found, big_label)
 
 
 STATS_MODES = {"stats": ("Рейтинг", "игры — с начала отслеживания, ±MMR — оценка от стартового MMR", ("ВСЁ ВРЕМЯ", ACCENT)),
@@ -282,22 +284,27 @@ STATS_MODES = {"stats": ("Рейтинг", "игры — с начала отс�
                "month": ("Месяц", "оценка ±MMR за 30 дней", ("МЕСЯЦ", ACCENT))}
 
 
+DIGEST_MODE = ("Ежедневная сводка", "итоги дня · оценка MMR: старт ± шаг за игру", ("СВОДКА ДНЯ", ACCENT))
+
+
 async def stats_board(
     storage: Storage, od: OpenDota, chat_id: int, mode: str = "stats", stratz=None, image: bool = True,
 ) -> ImageBoard:
-    """Рейтинг пати (mode: stats | today | week | month): текст всегда, картинка с короткой подписью — если нарисовалась.
+    """Рейтинг пати (mode: stats | today | week | month; digest — ежедневная сводка): текст всегда, картинка с короткой подписью — если нарисовалась.
 
     Тот же отчёт, что и текстовые render_board / render_period_board: данные собираются один раз.
     """
-    title, subtitle, badge = STATS_MODES[mode]
-    if mode in ("stats", "today"):
-        parts = await _stats_parts(storage, od, chat_id, mode == "today", True, stratz, "week")
+    title, subtitle, badge = DIGEST_MODE if mode == "digest" else STATS_MODES[mode]
+    if mode in ("stats", "today", "digest"):
+        parts = await _stats_parts(storage, od, chat_id, mode == "today", True, stratz, "day" if mode == "digest" else "week")
         summaries = parts["summaries"]
-        board = ImageBoard(_with_stale(storage, chat_id, parts["text"], od))
+        text = ("📰 <b>Ежедневная сводка</b>\n\n" if mode == "digest" else "") + parts["text"]
+        board = ImageBoard(_with_stale(storage, chat_id, text, od))
         rows = summary_rows(summaries, today=mode == "today")
-        tiles = party_tiles(summaries, parts["week_rows"]) if mode == "stats" else []
-        records = record_items(parts["week_records"]) if mode == "stats" else []
-        awards = award_items(parts["awards"]) if mode == "stats" else []
+        full = mode != "today"
+        tiles = party_tiles(summaries, parts["week_rows"]) if full else []
+        records = record_items(parts["week_records"]) if full else []
+        awards = award_items(parts["awards"]) if full else []
         caption = leader_caption(summaries, parts["week_rows"], mode)
     else:
         await refresh_for("period", storage, od, chat_id, stratz)
@@ -313,7 +320,8 @@ async def stats_board(
         note = _stale_line(storage, chat_id, od)
         plain_note = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
         board.png = await asyncio.to_thread(
-            build_png, "рейтинг", lambda: _stats_png(title, subtitle, badge, rows, tiles, records, awards, plain_note))
+            build_png, "рейтинг", lambda: _stats_png(title, subtitle, badge, rows, tiles, records, awards, plain_note,
+                               "MMR" if mode in ("stats", "today", "digest") else "±MMR"))
         if board.png is not None:
             board.caption = fit_caption(caption + (f"\n{note}" if note else ""))
     return board
@@ -374,6 +382,28 @@ async def render_graph_board(
     result = (png, caption)
     _graph_cache[cache_key] = (time.monotonic(), result)
     return result
+
+
+def _weekly_png(rows, tiles, records, awards, note) -> bytes:
+    """В потоке: иконка героя недели и аватары (кэш/CDN) + рендер итогов недели той же таблицей, что и рейтинг."""
+    return _stats_png("Итоги недели", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", ACCENT), rows, tiles, records, awards, note, "±MMR")
+
+
+async def weekly_board(storage: Storage, chat_id: int, now: int, image: bool = True) -> ImageBoard:
+    """Итоги недели (из кэша БД, сети нет): текст всегда, картинка с короткой подписью — если нарисовалась."""
+    report = await _build(build_weekly_report, storage, chat_id, now)
+    board = ImageBoard(render_weekly(report))
+    played = [r for r in report["rows"] if r["games"] > 0]
+    if image and played:
+        info = {p.display_name: {"avatar": p.steam_avatar, "rank_tier": p.last_rank_tier,
+                                 "rank_text": rank_label(p.last_rank_tier, p.last_leaderboard_rank)}
+                for p in storage.list_players(chat_id)}
+        rows = period_rows(played, info)
+        board.png = await _render_png("итоги недели", _weekly_png, rows, weekly_tiles(report), weekly_records(report),
+                                      weekly_awards(report), None)
+        if board.png is not None:
+            board.caption = fit_caption(weekly_caption(report))
+    return board
 
 
 def _records_png(period: str, tiles: list, streak, note) -> bytes:

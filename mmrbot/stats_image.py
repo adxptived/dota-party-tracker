@@ -42,9 +42,13 @@ def _place(img, draw, cx: float, cy: float, place: int) -> None:
 def render_stats_image(
     title: str, subtitle: Optional[str], badge: Optional[tuple[str, str]], rows: list, tiles: Optional[list] = None,
     records: Optional[list] = None, awards: Optional[list] = None, note: Optional[str] = None,
-    icons: Optional[dict] = None, avatars: Optional[dict] = None,
+    icons: Optional[dict] = None, avatars: Optional[dict] = None, big_label: str = "MMR",
 ) -> bytes:
-    """Рейтинг → PNG-байты. icons: {hero_id: байты}; avatars: {url: байты}; отсутствующие рисуются заглушками."""
+    """Рейтинг → PNG-байты. icons: {hero_id: байты}; avatars: {url: байты}; отсутствующие рисуются заглушками.
+
+    big_label — подпись столбца крупных чисел («MMR» для рейтинга, «±MMR» для периода); столбцы «Форма» и «Герой»
+    подписаны, только если хоть у одной строки есть что в них показать.
+    """
     icons, avatars = icons or {}, avatars or {}
     tiles, records, awards = tiles or [], records or [], awards or []
     canvas = cards.Canvas(400 + len(rows) * (ROW_H + ROW_GAP) + 240 + len(records) * 40 + len(awards) * 60)
@@ -53,10 +57,12 @@ def render_stats_image(
     y = cards.header(img, draw, title, subtitle, badge)
     if rows:
         draw_text(draw, (NAME_X, y + 10), "ИГРОК", 18, MUTED, anchor="lm")
-        draw_text(draw, (BIG_RIGHT, y + 10), "MMR", 18, MUTED, anchor="rm")
+        draw_text(draw, (BIG_RIGHT, y + 10), big_label, 18, MUTED, anchor="rm")
         draw_text(draw, (WL_X, y + 10), "РЕЗУЛЬТАТ", 18, MUTED, anchor="lm")
-        draw_text(draw, (FORM_X, y + 10), "ФОРМА", 18, MUTED, anchor="lm")
-        draw_text(draw, (HERO_X + HERO_W / 2, y + 10), "ГЕРОЙ", 18, MUTED, anchor="mm")
+        if any(r.get("form") for r in rows):
+            draw_text(draw, (FORM_X, y + 10), "ФОРМА", 18, MUTED, anchor="lm")
+        if any(r.get("hero_id") for r in rows):
+            draw_text(draw, (HERO_X + HERO_W / 2, y + 10), "ГЕРОЙ", 18, MUTED, anchor="mm")
         y += HEAD_ROW_H
     for place, row in enumerate(rows, start=1):
         _draw_row(img, draw, y, place, row, icons, avatars)
@@ -128,7 +134,7 @@ def _draw_tiles(img, draw, y: int, tiles: list) -> int:
 def _draw_records(img, draw, y: int, records: list, icons: dict) -> int:
     """Рекорды: плитка с иконкой героя, значением и игроком (до 3 в ряд)."""
     records = records[:6]
-    per_row = 3
+    per_row = min(3, len(records)) or 1
     w = (WIDTH - 2 * PAD - TILE_GAP * (per_row - 1)) / per_row
     for i, rec in enumerate(records):
         x0 = PAD + (i % per_row) * (w + TILE_GAP)

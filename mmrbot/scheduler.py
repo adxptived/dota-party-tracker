@@ -27,15 +27,13 @@ from mmrbot.formatting import (
     render_achievement_alert,
     render_start_alert,
     render_steam_change,
-    render_weekly,
 )
-from mmrbot.service import _chat_lock, alert_board, render_board, split_message
+from mmrbot.service import _chat_lock, alert_board, refresh_only, split_message, stats_board, weekly_board
 from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
 from mmrbot.tracker import (
     backfill_opendota,
     backfill_stratz,
-    build_weekly_report,
     detect_new_games,
     detect_presence,
     detect_steam_changes,
@@ -57,7 +55,9 @@ async def send_board(bot: Bot, chat_id: int, board: ImageBoard, markup=None) -> 
             return
         except TelegramBadRequest:  # фото не принято (формат, размер, подпись) — текстом; «чат не найден» повторится и уйдёт наверх
             log.warning("Telegram не принял картинку для чата %s — шлём текстом", chat_id, exc_info=True)
-    await bot.send_message(chat_id, board.text, parse_mode="HTML", reply_markup=markup)
+    chunks = split_message(board.text)
+    for i, chunk in enumerate(chunks):  # без картинки длинный отчёт (много игроков) идёт несколькими сообщениями
+        await bot.send_message(chat_id, chunk, parse_mode="HTML", reply_markup=markup if i == len(chunks) - 1 else None)
 
 
 def due_local_date(chat: Chat, now_utc: datetime) -> Optional[str]:
@@ -120,13 +120,13 @@ async def send_digest(bot: Bot, storage: Storage, od: OpenDota, chat: Chat, due_
     сделанными: иначе каждый час повторялось бы полное обновление игроков впустую.
     """
     try:
-        text = await render_board(storage, od, chat.chat_id, today_only=False, refresh=True, stratz=stratz, awards_period="day")
-        last = storage.last_activity(chat.chat_id)  # после обновления — по свежим данным
+        await refresh_only(storage, od, chat.chat_id, stratz)  # сначала данные: тихий день не стоит рисования картинки
+        last = storage.last_activity(chat.chat_id)
         if last is None or time.time() - last > IDLE_DIGEST_SEC:
             storage.set_last_digest_date(chat.chat_id, due_date)  # никто не играл — не шумим
             return
-        for chunk in split_message("📰 <b>Ежедневная сводка</b>\n\n" + text):
-            await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
+        board = await stats_board(storage, od, chat.chat_id, "digest", stratz)
+        await send_board(bot, chat.chat_id, board)
         storage.set_last_digest_date(chat.chat_id, due_date)
     except (TelegramForbiddenError, TelegramMigrateToChat) as exc:
         storage.set_last_digest_date(chat.chat_id, due_date)
@@ -309,9 +309,8 @@ def setup_scheduler(
             if key is None or not chat.notify_weekly or not storage.list_players(chat.chat_id):
                 continue
             try:
-                report = await asyncio.to_thread(build_weekly_report, storage, chat.chat_id, int(now_utc.timestamp()))
-                for chunk in split_message(render_weekly(report)):
-                    await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
+                board = await weekly_board(storage, chat.chat_id, int(now_utc.timestamp()))
+                await send_board(bot, chat.chat_id, board)
                 storage.set_last_weekly(chat.chat_id, key)
             except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
                 log.warning("Недельная сводка в чат %s не доставлена — пропускаю неделю", chat.chat_id)
