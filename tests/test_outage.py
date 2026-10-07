@@ -345,7 +345,7 @@ def test_every_button_works_while_opendota_is_down(e2e, outage_env, data):
     assert session.gets <= 1
 
 
-@pytest.mark.parametrize("data", ["m:stats", "m:week", "m:compare", "m:together", "m:match", "pp:player:1105542592"])
+@pytest.mark.parametrize("data", ["m:stats", "m:week", "m:compare", "m:together", "pp:match:1105542592", "pp:player:1105542592"])
 def test_data_buttons_carry_outage_note(e2e, outage_env, data):
     import mmrbot.bot as botmod
     storage, od, stratz, _ = outage_env
