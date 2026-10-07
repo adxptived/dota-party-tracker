@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from typing import Optional
 
 import requests
@@ -68,6 +69,11 @@ def _party_size(rows: list, me: dict) -> Optional[int]:
 
 
 class Stratz:
+    MATCH_CACHE_SIZE = 64  # сколько последних полных матчей держим в памяти
+    MATCH_CACHE_TTL = 600  # сек: свежий матч у Stratz может дополниться (разбор) — долго не держим
+    OLD_MATCH_TTL = 86_400  # сек: матч старше суток уже не меняется
+    OLD_MATCH_AGE = 86_400
+
     def __init__(
         self,
         api_key: str,
@@ -90,6 +96,7 @@ class Stratz:
         self._session = session or requests.Session()
         self._last_call = 0.0
         self._lock = threading.Lock()
+        self._match_cache: "OrderedDict[int, tuple[float, float, dict]]" = OrderedDict()  # id → (когда, TTL, матч)
 
     def _throttle(self) -> None:
         """Резервируем слот под локом, спим вне лока (как в opendota.py): запросы идут параллельно."""
@@ -200,7 +207,17 @@ class Stratz:
         return result
 
     def get_match(self, match_id: int):
-        """Полный матч (все 10 игроков) по id → dict | None, если Stratz матча не знает."""
+        """Полный матч (все 10 игроков) по id → dict | None, если Stratz матча не знает.
+
+        Ответ кэшируется в памяти (LRU): /match, «📝 Текстом» и «Весь матч» под оповещением — один запрос.
+        None не кэшируем: Stratz мог ещё не разобрать матч.
+        """
+        match_id = int(match_id)
+        with self._lock:
+            hit = self._match_cache.get(match_id)
+            if hit and time.monotonic() - hit[0] < hit[1]:
+                self._match_cache.move_to_end(match_id)
+                return hit[2]
         data = self._query(_FULL_MATCH_QUERY % int(match_id), {})
         raw = data.get("match")
         if not raw:
@@ -223,10 +240,18 @@ class Stratz:
             for src, out in _FIELD_MAP.items():
                 player[out] = row.get(src)
             players.append(player)
-        return {
+        match = {
             "match_id": raw.get("id", match_id),
             "start_time": raw.get("startDateTime"),
             "duration": raw.get("durationSeconds"),
             "radiant_win": raw.get("didRadiantWin"),
             "players": players,
         }
+        started = match["start_time"]
+        old = started is not None and time.time() - started > self.OLD_MATCH_AGE
+        with self._lock:
+            self._match_cache[match_id] = (time.monotonic(), self.OLD_MATCH_TTL if old else self.MATCH_CACHE_TTL, match)
+            self._match_cache.move_to_end(match_id)
+            while len(self._match_cache) > self.MATCH_CACHE_SIZE:
+                self._match_cache.popitem(last=False)
+        return match
