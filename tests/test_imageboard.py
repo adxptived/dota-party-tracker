@@ -205,3 +205,19 @@ def _env_for_match(e2e):
     storage.get_or_create_chat(100)
     storage.add_player(100, e2e.ACC, "shinoame", 5000, 0, 0)
     return storage, e2e.FakeOD(), e2e.FakeStratz()
+
+
+def test_alert_buttons_open_whole_match_and_dotabuff():
+    from mmrbot.keyboards import alert_buttons
+    buttons = _flat(alert_buttons(7812345678))
+    assert buttons[0].callback_data == "mx:7812345678" and "матч" in buttons[0].text.lower()
+    assert buttons[1].url == "https://www.dotabuff.com/matches/7812345678"
+
+
+def test_whole_match_button_sends_match_picture(e2e):
+    import mmrbot.bot as botmod
+    storage, od, sz = _env_for_match(e2e)
+    cb = e2e.FakeCallback("mx:9100000007")
+    run(botmod.on_callback(cb, storage, od, sz))
+    assert len(cb.message.photos) == 1
+    run(botmod.on_callback(e2e.FakeCallback("mx:abc"), storage, od, sz))  # мусор в данных — молча игнорируем

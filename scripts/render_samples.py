@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from mmrbot.alert_image import render_alert_image  # noqa: E402
 from mmrbot.match_image import render_match_image  # noqa: E402
 
 NOW = 1_760_000_000
@@ -31,11 +32,47 @@ def sample_match() -> dict:
     return {"match_id": 7812345678, "start_time": NOW, "duration": 2280, "radiant_win": True, "players": players}
 
 
+def fake_photo(seed: int, size: int = 184) -> bytes:
+    """Условная «фотография» для аватара/иконки: цветной градиент (в проде — настоящие картинки Steam)."""
+    import io
+
+    from PIL import Image
+    img = Image.new("RGB", (size, size))
+    px = img.load()
+    for x in range(size):
+        for y in range(size):
+            px[x, y] = ((seed * 53 + x) % 256, (seed * 97 + y) % 256, (seed * 29 + (x + y) // 2) % 256)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def sample_alert(kind: str = "win") -> dict:
+    def row(name, hero, won, k, d, a, **extra):
+        data = {"name": name, "hero_id": hero, "kills": k, "deaths": d, "assists": a, "won": won, "step": 25,
+                "current_mmr": 5420, "streak_type": "W" if won else "L", "streak_len": 4, "gpm": 640,
+                "hero_damage": 31250, "position": 1, "imp": 21 if won else -14, "leaver_status": 0,
+                "account_id": 1, "avatar": None}
+        data.update(extra)
+        return data
+    won = kind != "loss"
+    rows = [row("Вася", 12, won, 13, 3, 10, avatar="https://avatars.steamstatic.com/a.jpg"),
+            row("Петя", 1, won if kind != "mixed" else False, 7, 6, 14, current_mmr=4975, streak_len=1, imp=3),
+            row("Оооочень длинный ник игрока", 26, won, 2, 9, 21, current_mmr=6120, position=5, leaver_status=3)]
+    return {"kind": "match", "chat_id": 1, "match_id": 7812345678, "start_time": NOW, "duration": 2280, "rows": rows,
+            "shared": {"games": 5, "wins": 3, "losses": 2}, "average_rank": 55}
+
+
 def build() -> dict[str, bytes]:
     match = sample_match()
-    return {
+    out = {
         "match.png": render_match_image(match, {1: "Вася", 7: "Петя"}, focus=1, tz="Europe/Moscow", icons={}),
     }
+    for kind in ("win", "loss", "mixed"):
+        out[f"alert_{kind}.png"] = render_alert_image(
+            sample_alert(kind), "Europe/Moscow", icons={12: fake_photo(1, 256), 1: fake_photo(2, 256)},
+            avatars={"https://avatars.steamstatic.com/a.jpg": fake_photo(7)})
+    return out
 
 
 def main() -> None:

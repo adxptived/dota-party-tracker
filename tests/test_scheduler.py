@@ -204,3 +204,86 @@ def test_background_job_network_error_has_no_traceback(tmp_path, monkeypatch, ca
         asyncio.run(jobs["opendota_backfill"]())
     records = [r for r in caplog.records if r.name == "mmrbot.scheduler"]
     assert [r.levelno for r in records] == [logging.WARNING] and records[0].exc_info is None
+
+
+# --- C1: оповещение о матче картинкой --------------------------------------------------------
+
+class _AlertBot:
+    """Фейковый бот: что и как отправили; photo_exc/text_exc — чем падать."""
+
+    def __init__(self, photo_exc=None, text_exc=None):
+        self.photos, self.texts = [], []
+        self.photo_exc, self.text_exc = photo_exc, text_exc
+
+    async def send_photo(self, chat_id, photo, caption=None, **kw):
+        if self.photo_exc:
+            raise self.photo_exc
+        assert photo.data[:8] == b"\x89PNG\r\n\x1a\n"
+        self.photos.append((chat_id, caption, kw))
+
+    async def send_message(self, chat_id, text, **kw):
+        if self.text_exc:
+            raise self.text_exc
+        self.texts.append((chat_id, text, kw))
+
+
+def _alert_event(match_id=777):
+    return {"kind": "match", "chat_id": 5, "match_id": match_id, "start_time": 1_700_000_000, "duration": 2280,
+            "rows": [{"name": "Вася", "account_id": 1, "avatar": None, "hero_id": 12, "kills": 5, "deaths": 2,
+                      "assists": 9, "won": True, "step": 25, "current_mmr": 5000, "streak_type": "W",
+                      "streak_len": 1}],
+            "shared": None, "average_rank": None, "pending": [(1, match_id)]}
+
+
+def _run_game_watch(tmp_path, monkeypatch, bot, event=None):
+    storage = Storage(str(tmp_path / "g.db"))
+    storage.get_or_create_chat(5)
+    storage.add_player(5, 1, "Вася", None, 0, 0)
+    marked = []
+    monkeypatch.setattr(sched, "detect_new_games", lambda *a, **kw: [event or _alert_event()])
+    monkeypatch.setattr(storage, "mark_notified_matches", lambda pending: marked.append(list(pending)))
+    scheduler = sched.setup_scheduler(bot, storage, _Provider())
+    jobs = {job.func.__name__: job.func for job in scheduler.get_jobs()}
+    asyncio.run(jobs["game_watch"]())
+    return marked
+
+
+def test_match_alert_goes_as_photo_with_caption_and_buttons(tmp_path, monkeypatch):
+    bot = _AlertBot()
+    marked = _run_game_watch(tmp_path, monkeypatch, bot)
+    (chat_id, caption, kw), = bot.photos
+    assert chat_id == 5 and "Матч завершён" in caption and "Вася" in caption and kw["parse_mode"] == "HTML"
+    data = [b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row]
+    assert "mx:777" in data
+    assert not bot.texts and marked == [[(1, 777)]]  # помечено оповещённым после успешной отправки
+
+
+def test_match_alert_falls_back_to_text_when_telegram_rejects_photo(tmp_path, monkeypatch):
+    exc = TelegramBadRequest(method=SendMessage(chat_id=5, text="x"), message="PHOTO_INVALID_DIMENSIONS")
+    bot = _AlertBot(photo_exc=exc)
+    marked = _run_game_watch(tmp_path, monkeypatch, bot)
+    assert not bot.photos and len(bot.texts) == 1 and "Матч завершён" in bot.texts[0][1]
+    assert marked == [[(1, 777)]]
+
+
+def test_match_alert_falls_back_to_text_when_render_fails(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("нет шрифта")
+
+    monkeypatch.setattr("mmrbot.service.render_alert_image", boom)
+    bot = _AlertBot()
+    marked = _run_game_watch(tmp_path, monkeypatch, bot)
+    assert not bot.photos and len(bot.texts) == 1 and marked == [[(1, 777)]]
+
+
+def test_alert_stays_pending_when_telegram_is_down(tmp_path, monkeypatch):
+    bot = _AlertBot(photo_exc=RuntimeError("сеть"))
+    marked = _run_game_watch(tmp_path, monkeypatch, bot)
+    assert marked == []  # не отправлено — уйдёт в следующем опросе
+
+
+def test_achievement_alert_stays_text(tmp_path, monkeypatch):
+    bot = _AlertBot()
+    event = {"kind": "achievement", "chat_id": 5, "name": "Вася", "items": [("first_blood", None)], "pending": []}
+    _run_game_watch(tmp_path, monkeypatch, bot, event)
+    assert not bot.photos and len(bot.texts) == 1

@@ -3,7 +3,8 @@
 Схема callback_data (до 64 байт): `m:<действие>` — главное меню, `m:c:<категория>` — его подменю; `pp:<вид>:<account_id>` —
 выбор игрока; `x:close` — удалить сообщение; `r:<период>` — рекорды; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом;
 `tx:<вид>:<аргументы>` — тот же отчёт текстом (кнопка «📝 Текстом» под любой карточкой-картинкой;
-старое `mt:<match_id>:<account_id|0>` = `tx:match:…` понимается для уже отправленных сообщений).
+старое `mt:<match_id>:<account_id|0>` = `tx:match:…` понимается для уже отправленных сообщений);
+`mx:<match_id>` — весь матч картинкой (кнопка под оповещением о конце матча).
 """
 from __future__ import annotations
 
@@ -229,6 +230,14 @@ def match_photo_buttons(match_id: int, focus, text_shown: bool = False) -> Inlin
     if not text_shown:
         row.insert(0, text_button("match", match_id, focus or 0))
     return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
+
+
+def alert_buttons(match_id: int) -> InlineKeyboardMarkup:
+    """Под оповещением о матче: весь матч картинкой (`mx:<match_id>`) и ссылка на Dotabuff."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🎮 Весь матч", callback_data=f"mx:{match_id}"),
+        InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{match_id}"),
+    ]])
 
 
 def list_actions() -> InlineKeyboardMarkup:

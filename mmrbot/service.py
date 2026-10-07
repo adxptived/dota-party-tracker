@@ -12,8 +12,9 @@ import time
 import weakref
 from typing import Optional
 
-from mmrbot import hero_icons, perf
-from mmrbot.boards import CAPTION_LIMIT, MatchBoard
+from mmrbot import avatars, hero_icons, perf
+from mmrbot.alert_image import alert_caption, render_alert_image
+from mmrbot.boards import CAPTION_LIMIT, ImageBoard, MatchBoard, build_png
 from mmrbot.health import log_network_error
 from mmrbot.formatting import (
     outage_note,
@@ -21,6 +22,7 @@ from mmrbot.formatting import (
     render_party_pulse,
     render_compare_table,
     render_full_match,
+    render_game_alert,
     render_hero_detail,
     render_heroes,
     render_leaderboard,
@@ -397,6 +399,25 @@ async def render_roles_board(
         return NOT_FOUND
     player, rows = result
     return _with_stale(storage, chat_id, render_roles(player.display_name, rows, period), od)
+
+
+def _alert_png(event: dict, tz: str) -> bytes:
+    """В потоке: иконки героев и аватары (кэш/CDN) + рендер картинки оповещения."""
+    icons, loader = hero_icons.shared(), avatars.shared()
+    rows = event.get("rows") or []
+    found_icons = icons.get_many(r.get("hero_id") for r in rows) if icons is not None else {}
+    found_avatars = loader.get_many(r.get("avatar") for r in rows) if loader is not None else {}
+    return render_alert_image(event, tz, found_icons, found_avatars)
+
+
+async def alert_board(event: dict, tz: str, image: bool = True) -> ImageBoard:
+    """Оповещение о конце матча: текст всегда, картинка с короткой подписью — если нарисовалась."""
+    board = ImageBoard(render_game_alert(event))
+    if image:
+        board.png = await asyncio.to_thread(build_png, "оповещение о матче", lambda: _alert_png(event, tz))
+        if board.png is not None:
+            board.caption = alert_caption(event)
+    return board
 
 
 def _cached_as_match(view: dict) -> dict:

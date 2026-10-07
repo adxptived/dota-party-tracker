@@ -420,7 +420,8 @@ def detect_new_games(
             })
             entry["pending"].append((player.id, match["match_id"]))
             entry["rows"].append({
-                "name": player.display_name, "hero_id": match.get("hero_id"),
+                "name": player.display_name, "account_id": player.account_id, "avatar": player.steam_avatar,
+                "hero_id": match.get("hero_id"),
                 "kills": match.get("kills") or 0, "deaths": match.get("deaths") or 0,
                 "assists": match.get("assists") or 0,
                 "won": stats.is_win(match["player_slot"], match["radiant_win"]),

@@ -15,19 +15,21 @@ from typing import Optional
 import pytz
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
+from aiogram.types import BufferedInputFile
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from mmrbot.boards import ImageBoard
 from mmrbot.health import log_network_error, provider_down
+from mmrbot.keyboards import alert_buttons
 from mmrbot.opendota import OpenDota
 from mmrbot.backup import backup_db
 from mmrbot.formatting import (
     render_achievement_alert,
-    render_game_alert,
     render_start_alert,
     render_steam_change,
     render_weekly,
 )
-from mmrbot.service import _chat_lock, render_board, split_message
+from mmrbot.service import _chat_lock, alert_board, render_board, split_message
 from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
 from mmrbot.tracker import (
@@ -41,6 +43,21 @@ from mmrbot.tracker import (
 )
 
 log = logging.getLogger(__name__)
+
+
+async def send_board(bot: Bot, chat_id: int, board: ImageBoard, markup=None) -> None:
+    """Отчёт в чат: фото с подписью; нет картинки или Telegram её не принял — тот же отчёт текстом.
+
+    Ошибки доступа к чату и сети летят наверх — решает вызывающий код (повтор в следующем опросе и т. п.).
+    """
+    if board.png is not None:
+        try:
+            await bot.send_photo(chat_id, BufferedInputFile(board.png, filename="card.png"), caption=board.caption,
+                                 parse_mode="HTML", reply_markup=markup)
+            return
+        except TelegramBadRequest:  # фото не принято (формат, размер, подпись) — текстом; «чат не найден» повторится и уйдёт наверх
+            log.warning("Telegram не принял картинку для чата %s — шлём текстом", chat_id, exc_info=True)
+    await bot.send_message(chat_id, board.text, parse_mode="HTML", reply_markup=markup)
 
 
 def due_local_date(chat: Chat, now_utc: datetime) -> Optional[str]:
@@ -252,10 +269,14 @@ def setup_scheduler(
                                   health=getattr(od, "health", None))
                 continue
             for event in events:
-                text = render_game_alert(event) if event["kind"] == "match" else render_achievement_alert(event)
+                if event["kind"] == "match":
+                    board = await alert_board(event, chat.tz)
+                    markup = alert_buttons(event["match_id"])
+                else:
+                    board, markup = ImageBoard(render_achievement_alert(event)), None
                 delivered = True
                 try:
-                    await bot.send_message(chat.chat_id, text, parse_mode="HTML")
+                    await send_board(bot, chat.chat_id, board, markup)
                 except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
                     # Чат недоступен или сообщение не принято — повтор не поможет, не зацикливаемся.
                     if chat_gone(storage, chat.chat_id, exc):

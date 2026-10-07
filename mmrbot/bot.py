@@ -993,7 +993,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "mt", "tx"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "mt", "tx", "mx"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -1013,6 +1013,14 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         period = args[0] if args else "week"
         if period in {"day", "week", "month", "year", "all"}:
             await do_records(message, storage, od, period, stratz, edit=True)  # меняем период на месте
+        return
+
+    if kind == "mx":  # «🎮 Весь матч» под оповещением: тот же разбор, что и /match <id>
+        try:
+            match_id = int(args[0])
+        except (IndexError, ValueError):
+            return
+        await do_match(message, storage, od, None, match_id, stratz)
         return
 
     if kind in {"tx", "mt"}:  # mt — прежний формат кнопки «Текстом» под матчем (сообщения уже в чатах)
