@@ -12,6 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mmrbot.alert_image import render_alert_image  # noqa: E402
+from mmrbot.compare_image import render_compare_image  # noqa: E402
+from mmrbot.together_image import render_together_image  # noqa: E402
 from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image  # noqa: E402
 from mmrbot.match_image import render_match_image  # noqa: E402
 from mmrbot.player_image import render_player_image  # noqa: E402
@@ -129,7 +131,36 @@ def build() -> dict[str, bytes]:
     out["player_sparse.png"] = render_player_image(card)
     out.update(sample_heroes(icons, avatars))
     out.update(sample_records(icons))
+    out.update(sample_party(avatars))
     return out
+
+
+def sample_party(avatars: dict) -> dict[str, bytes]:
+    def cell(value, rank):
+        return {"value": value, "rank": rank}
+    rows = [
+        {"name": "Вася", "avatar": "https://avatars.steamstatic.com/a.jpg", "rank_tier": 55, "rank_text": "Legend 5", "power": 0.83,
+         "index_text": "83", "cells": [cell("74", 1), cell("62%", 1), cell("3.1", 2), cell("540", 1)]},
+        {"name": "Петя", "avatar": None, "rank_tier": 43, "rank_text": "Archon 3", "power": 0.5, "index_text": "50",
+         "cells": [cell("61", 2), cell("49%", 3), cell("3.4", 1), cell("510", 2)]},
+        {"name": "Оооочень длинный ник игрока", "avatar": None, "rank_tier": 74, "rank_text": "Divine 4", "power": 0.17,
+         "index_text": "17", "cells": [cell(None, None), cell("40%", 4), cell("2.0", 4), cell("390", 4)]},
+        {"name": "Новичок", "avatar": None, "rank_tier": None, "rank_text": "Без ранга", "power": None, "index_text": None,
+         "cells": [cell(None, None)] * 4},
+    ]
+    names = ["Вася", "Петя", "Оооочень длинный ник игрока", "Новичок", "Ира", "Макс"]
+    players = [{"name": n, "avatar": "https://avatars.steamstatic.com/a.jpg" if i == 0 else None} for i, n in enumerate(names)]
+    pairs = [{"a": 0, "b": 1, "games": 24, "wins": 15}, {"a": 0, "b": 2, "games": 9, "wins": 3}, {"a": 1, "b": 2, "games": 5, "wins": 3},
+             {"a": 0, "b": 4, "games": 12, "wins": 6}, {"a": 3, "b": 5, "games": 2, "wins": 0}]
+    summary = {"games": 33, "wins": 19, "losses": 14}
+    duo = {"names": ("Вася", "Петя"), "games": 24, "wins": 15}
+    many = [{"name": f"P{i}", "avatar": None} for i in range(11)]
+    many_pairs = [{"a": i, "b": j, "games": 1 + (i * j) % 9, "wins": (i + j) % 3} for i in range(11) for j in range(i + 1, 11)]
+    return {"compare.png": render_compare_image(rows, avatars, "данные обновлены 12:30"),
+            "compare_empty.png": render_compare_image([]),
+            "together.png": render_together_image(summary, duo, players, pairs, avatars, "данные обновлены 12:30"),
+            "together_many.png": render_together_image(summary, duo, many, many_pairs),
+            "together_empty.png": render_together_image({"games": 0}, None, players, [])}
 
 
 def sample_records(icons: dict) -> dict[str, bytes]:

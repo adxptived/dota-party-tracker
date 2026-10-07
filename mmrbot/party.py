@@ -46,31 +46,36 @@ def together_summary(players: list[tuple[str, list[dict]]]) -> dict:
     return {"games": games, "wins": wins, "losses": games - wins}
 
 
-def best_duo(players: list[tuple[str, list[dict]]]) -> Optional[dict]:
-    """Пара с наибольшим числом совместных матчей (на одной стороне).
+def pair_stats(players: list[tuple[str, list[dict]]]) -> list[dict]:
+    """Все пары с совместными играми на одной стороне: [{a, b, games, wins}] — a < b, индексы в `players`.
 
-    Держим список (имя, win_map), НЕ dict: имена не уникальны, и два аккаунта
-    с одинаковым именем не должны схлопываться (иначе теряем матчи одного из них).
+    Индексы, а не имена: имена не уникальны, и два аккаунта с одинаковым именем не должны схлопываться
+    (иначе теряем матчи одного из них).
     """
-    win_maps = [(name, _win_map(matches)) for name, matches in players]
-
-    best: Optional[dict] = None
-    for (name_a, wm_a), (name_b, wm_b) in combinations(win_maps, 2):
-        shared = set(wm_a) & set(wm_b)
+    win_maps = [_win_map(matches) for _, matches in players]
+    result = []
+    for (a, wm_a), (b, wm_b) in combinations(enumerate(win_maps), 2):
         games = wins = 0
-        for match_id in shared:
+        for match_id in set(wm_a) & set(wm_b):
             if wm_a[match_id] != wm_b[match_id]:  # разные команды
                 continue
             games += 1
             if wm_a[match_id]:
                 wins += 1
-        if games == 0:
-            continue
+        if games:
+            result.append({"a": a, "b": b, "games": games, "wins": wins})
+    return result
+
+
+def best_duo(players: list[tuple[str, list[dict]]]) -> Optional[dict]:
+    """Пара с наибольшим числом совместных матчей (на одной стороне); при равенстве — с лучшим винрейтом."""
+    best: Optional[dict] = None
+    for pair in pair_stats(players):
         candidate = {
-            "pair": (name_a, name_b),
-            "games": games,
-            "wins": wins,
-            "winrate": wins / games,
+            "pair": (players[pair["a"]][0], players[pair["b"]][0]),
+            "games": pair["games"],
+            "wins": pair["wins"],
+            "winrate": pair["wins"] / pair["games"],
         }
         if best is None or (candidate["games"], candidate["winrate"]) > (best["games"], best["winrate"]):
             best = candidate

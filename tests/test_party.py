@@ -1,4 +1,4 @@
-from mmrbot.party import best_duo, together_summary
+from mmrbot.party import best_duo, pair_stats, together_summary
 
 
 def wm(match_id, slot, radiant_win):
@@ -98,3 +98,20 @@ def test_together_ignores_games_where_a_player_was_solo():
     players = [("Alice", [solo, duo, unknown]), ("Bob", [{**win(1), "party_size": 2}, {**win(2), "party_size": 2}, win(3)])]
     assert together_summary(players)["games"] == 2          # матч 1 не считается; 2 (пати) и 3 (размер неизвестен) — да
     assert best_duo(players)["games"] == 2
+
+
+def test_pair_stats_lists_every_pair_with_shared_games_by_index():
+    players = [
+        ("Alice", [win(1), loss(2), win(3)]),
+        ("Bob", [win(1), loss(2), win(4)]),
+        ("Carol", [win(1), win(5)]),
+    ]
+    pairs = {(p["a"], p["b"]): (p["games"], p["wins"]) for p in pair_stats(players)}
+    assert pairs == {(0, 1): (2, 1), (0, 2): (1, 1), (1, 2): (1, 1)}
+    assert pair_stats([("A", [win(1)]), ("B", [win(2)])]) == []
+
+
+def test_pair_stats_keeps_same_named_accounts_apart():
+    players = [("Вася", [win(1), win(2)]), ("Вася", [win(1)]), ("Вася", [win(2)])]
+    pairs = {(p["a"], p["b"]): p["games"] for p in pair_stats(players)}
+    assert pairs == {(0, 1): 1, (0, 2): 1}

@@ -1000,4 +1000,6 @@ def build_together(storage: Storage, chat_id: int) -> dict:
         "player_count": len(players),
         "summary": party.together_summary(named_matches),
         "duo": party.best_duo(named_matches),
+        "players": [{"name": p.display_name, "avatar": p.steam_avatar} for p in players],
+        "pairs": party.pair_stats(named_matches),
     }

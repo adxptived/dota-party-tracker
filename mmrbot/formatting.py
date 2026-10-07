@@ -419,6 +419,11 @@ def standing_line(comparison: dict, name: str) -> Optional[str]:
     return line
 
 
+def _place(ranks: dict, key: str) -> str:
+    """« (#2)» — место по показателю; пусто, если он посчитан по слишком малому числу игр и в ранжирование не вошёл."""
+    return f" (#{ranks[key]})" if key in ranks else ""
+
+
 def render_compare_table(comparison: dict, summaries: list[PlayerSummary]) -> str:
     """Сравнительная таблица: игроки по «силе в чате» + ранги по метрикам."""
     order = sorted(summaries, key=lambda s: comparison["players"][s.display_name]["power_rank"])
@@ -431,12 +436,12 @@ def render_compare_table(comparison: dict, summaries: list[PlayerSummary]) -> st
         lines.append(f"{_pos(player['power_rank'])} {_b(s.display_name)} — индекс {_b(power_str)}")
         parts = []
         if s.avg_perf is not None:
-            parts.append(f"перф {s.avg_perf * 100:.0f} (#{ranks['perf']})")
+            parts.append(f"перф {s.avg_perf * 100:.0f}{_place(ranks, 'perf')}")
         if s.games_total:
-            parts.append(f"винрейт {s.winrate * 100:.0f}% (#{ranks['winrate']})")
-            parts.append(f"KDA {s.kda_ratio:.1f} (#{ranks['kda']})")
+            parts.append(f"винрейт {s.winrate * 100:.0f}%{_place(ranks, 'winrate')}")
+            parts.append(f"KDA {s.kda_ratio:.1f}{_place(ranks, 'kda')}")
         if s.avg_gpm_window is not None:
-            parts.append(f"GPM {s.avg_gpm_window:.0f} (#{ranks['gpm']})")
+            parts.append(f"GPM {s.avg_gpm_window:.0f}{_place(ranks, 'gpm')}")
         if parts:
             lines.append("    " + " · ".join(parts))
     return "\n".join(lines)

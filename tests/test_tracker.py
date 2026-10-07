@@ -273,6 +273,8 @@ def test_build_together_counts_shared(store):
     result = build_together(store, 100)
     assert result["summary"]["games"] == 1  # общий матч 1
     assert result["summary"]["wins"] == 1
+    assert [p["name"] for p in result["players"]] == ["Alice", "Bob"]
+    assert result["pairs"] == [{"a": 0, "b": 1, "games": 1, "wins": 1}]  # матрица пар для картинки
 
 
 def test_leaderboard_reread_by_account_id_not_name(store):

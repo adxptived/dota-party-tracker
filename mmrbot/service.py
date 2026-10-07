@@ -17,11 +17,13 @@ from mmrbot import avatars, hero_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
 from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
 from mmrbot.card_data import (
-    award_items, hero_caption, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
+    award_items, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
     summary_rows,
 )
 from mmrbot.cards import ACCENT
+from mmrbot.compare_image import render_compare_image
+from mmrbot.together_image import render_together_image
 from mmrbot.health import log_network_error
 from mmrbot.formatting import (
     outage_note,
@@ -461,11 +463,29 @@ async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stra
     return (await heroes_board(storage, od, chat_id, stratz, image=False)).text
 
 
-async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
+def _together_png(summary, duo, players, pairs, note) -> bytes:
+    """В потоке: аватары игроков (кэш/CDN) + рендер совместных игр."""
+    loader = avatars.shared()
+    found = loader.get_many(p.get("avatar") for p in players) if loader is not None else {}
+    return render_together_image(summary, duo, players, pairs, found, note)
+
+
+async def together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: bool = True) -> ImageBoard:
+    """Совместные игры: текст всегда, картинка (плитки и матрица пар) — если нарисовалась."""
     # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
     await refresh_for("together", storage, od, chat_id, stratz)
     result = await _build(build_together, storage, chat_id)
-    return _with_stale(storage, chat_id, render_together(result), od)
+    board = ImageBoard(_with_stale(storage, chat_id, render_together(result), od))
+    if image:
+        note = _stale_line(storage, chat_id, od)
+        board.png = await _render_png("совместные игры", _together_png, *together_card(result), _plain(note))
+        if board.png is not None:
+            board.caption = fit_caption(together_caption(result) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
+    return (await together_board(storage, od, chat_id, stratz, image=False)).text
 
 
 def _player_png(card: dict) -> bytes:
@@ -516,12 +536,30 @@ async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name
     return board.text if board is not None else None
 
 
-async def render_compare_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
+def _compare_png(rows: list, note) -> bytes:
+    """В потоке: аватары игроков (кэш/CDN) + рендер сравнения."""
+    loader = avatars.shared()
+    found = loader.get_many(r.get("avatar") for r in rows) if loader is not None else {}
+    return render_compare_image(rows, found, note)
+
+
+async def compare_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: bool = True) -> ImageBoard:
+    """Сравнение игроков: текст всегда, картинка-таблица с местами — если нарисовалась."""
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="compare")
     if not summaries:
-        return NO_PLAYERS
+        return ImageBoard(NO_PLAYERS)
     comparison = build_chat_comparison(summaries)
-    return _with_stale(storage, chat_id, render_compare_table(comparison, summaries), od)
+    board = ImageBoard(_with_stale(storage, chat_id, render_compare_table(comparison, summaries), od))
+    if image:
+        note = _stale_line(storage, chat_id, od)
+        board.png = await _render_png("сравнение", _compare_png, compare_rows(comparison, summaries), _plain(note))
+        if board.png is not None:
+            board.caption = fit_caption(compare_caption(comparison, summaries) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def render_compare_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
+    return (await compare_board(storage, od, chat_id, stratz, image=False)).text
 
 
 def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:

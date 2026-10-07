@@ -26,6 +26,7 @@ from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
     STATS_MODES,
     stats_board,
+    compare_board,
     render_compare_board,
     hero_board,
     render_hero_board,
@@ -41,6 +42,7 @@ from mmrbot.service import (
     render_player_board,
     render_player_heroes_board,
     render_roles_board,
+    together_board,
     render_together_board,
     split_message,
 )
@@ -287,6 +289,22 @@ async def _reply_image(message: Message, board: ImageBoard, markup, status=None,
             log.warning("Не удалось отправить картинку — шлём текстом", exc_info=True)
     await _delete(status)
     await _send_chunks(message, board.text, nav_menu())
+
+
+async def _image_report(message: Message, make_board, markup, what: str, edit: Optional[bool] = None) -> None:
+    """Общий путь «отчёт картинкой»: индикатор → сборка борда → картинка с кнопками (не вышло — текстом).
+
+    make_board — корутина, дающая ImageBoard; markup — кнопки под отчётом; what — для лога при сбое сборки.
+    """
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await make_board
+    except Exception:
+        log.exception("Ошибка сборки %s для чата %s", what, message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    await _reply_image(message, board, markup, status, edit=edit)
 
 
 @router.message(Command("help"))
@@ -592,32 +610,27 @@ async def _stats_card(message: Message, storage: Storage, od: OpenDota, mode: st
 
 
 async def do_together(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
+    """Совместные игры картинкой (плитки и матрица пар) с кнопкой «📝 Текстом»; не вышло — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
-    await _reply_board(message, render_together_board(storage, od, message.chat.id, stratz), status)
+    await _image_report(message, together_board(storage, od, message.chat.id, stratz),
+                        with_text_button(nav_menu(), "together"), "совместных игр")
 
 
 async def do_compare(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
+    """Сравнение игроков картинкой (индекс и места по показателям) с кнопкой «📝 Текстом»; не вышло — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
-    await _reply_board(message, render_compare_board(storage, od, message.chat.id, stratz), status)
+    await _image_report(message, compare_board(storage, od, message.chat.id, stratz),
+                        with_text_button(nav_menu(), "compare"), "сравнения")
 
 
 async def do_heroes_board(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
     """Любимые герои пати картинкой (под ней «📝 Текстом»); не вышло с картинкой — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT, "upload_photo")
-    try:
-        board = await heroes_board(storage, od, message.chat.id, stratz)
-    except Exception:
-        log.exception("Ошибка сборки героев пати для чата %s", message.chat.id)
-        await _delete(status)
-        await message.answer(FAILED, reply_markup=nav_menu())
-        return
-    await _reply_image(message, board, with_text_button(nav_menu(), "heroes"), status)
+    await _image_report(message, heroes_board(storage, od, message.chat.id, stratz),
+                        with_text_button(nav_menu(), "heroes"), "героев пати")
 
 
 async def do_hero(message: Message, storage: Storage, od: OpenDota, query: str, period: str, stratz=None) -> None:
@@ -734,6 +747,16 @@ async def _text_hero(storage: Storage, od: OpenDota, chat_id: int, args: list[st
     return await render_hero_board(storage, od, chat_id, hero_name(hero_id), args[1], stratz)
 
 
+async def _text_together(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:together — совместные игры текстом."""
+    return await render_together_board(storage, od, chat_id, stratz)
+
+
+async def _text_compare(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:compare — сравнение игроков текстом."""
+    return await render_compare_board(storage, od, chat_id, stratz)
+
+
 async def _text_records(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
     """tx:records:<period> — рекорды пати текстом."""
     if len(args) != 1 or args[0] not in PERIODS_KEYS:
@@ -741,7 +764,7 @@ async def _text_records(storage: Storage, od: OpenDota, chat_id: int, args: list
     return await render_records_board(storage, od, chat_id, args[0], stratz)
 
 
-TEXT_VIEWS = {"records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
+TEXT_VIEWS = {"together": _text_together, "compare": _text_compare, "records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
               "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero}
 
 
@@ -779,15 +802,8 @@ async def do_player_card(message: Message, storage: Storage, od: OpenDota, name:
 async def do_records(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None,
                      edit: bool = False) -> None:
     """Рекорды пати картинкой (периоды меняют её на месте, «📝 Текстом» — текстом); не вышло — текстом."""
-    status = await _progress(message, WAIT, "upload_photo")
-    try:
-        board = await records_board(storage, od, message.chat.id, period, stratz)
-    except Exception:
-        log.exception("Ошибка сборки рекордов для чата %s", message.chat.id)
-        await _delete(status)
-        await message.answer(FAILED, reply_markup=nav_menu())
-        return
-    await _reply_image(message, board, with_text_button(records_buttons(period), "records", period), status, edit=edit)
+    await _image_report(message, records_board(storage, od, message.chat.id, period, stratz),
+                        with_text_button(records_buttons(period), "records", period), "рекордов", edit=edit)
 
 
 async def do_graph(

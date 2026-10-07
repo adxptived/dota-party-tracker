@@ -373,3 +373,56 @@ def weekly_caption(report: dict) -> str:
     best = max(rows, key=lambda r: r["delta"])
     lead = f" · Лидер: <b>{_esc(best['name'])}</b> {signed(best['delta'])}" if best["delta"] > 0 and len(rows) >= 2 else ""
     return f"{head} · {plural_games(games)}{lead}"
+
+
+# --- сравнение и совместные игры -------------------------------------------------------------------------
+
+def compare_rows(comparison: dict, summaries: list) -> list[dict]:
+    """Строки сравнения по убыванию «силы в чате»: индекс и четыре показателя с местом среди участников."""
+    order = sorted(summaries, key=lambda s: comparison["players"][s.display_name]["power_rank"])
+    rows = []
+    for s in order:
+        info = comparison["players"][s.display_name]
+        ranks = info["ranks"]
+        power = info["power"]
+        perf = f"{s.avg_perf * 100:.0f}" if s.avg_perf is not None else None
+        winrate = f"{s.winrate * 100:.0f}%" if s.games_total else None
+        kda = f"{s.kda_ratio:.1f}" if s.games_total else None
+        gpm = f"{s.avg_gpm_window:.0f}" if s.avg_gpm_window is not None else None
+        rows.append({
+            "name": s.display_name, "avatar": s.avatar, "rank_tier": s.rank_tier, "rank_text": s.rank, "power": power,
+            "index_text": f"{power * 100:.0f}" if power is not None else None,
+            "cells": [{"value": value, "rank": ranks.get(key)} for key, value in
+                      (("perf", perf), ("winrate", winrate), ("kda", kda), ("gpm", gpm))],
+        })
+    return rows
+
+
+def compare_caption(comparison: dict, summaries: list) -> str:
+    head = f"⚖️ <b>Сравнение игроков</b> · участников: {comparison['size']}"
+    top = [s for s in summaries if comparison["players"][s.display_name]["power_rank"] == 1]
+    if len(summaries) < 2 or not top or comparison["players"][top[0].display_name]["power"] is None:
+        return head
+    power = comparison["players"][top[0].display_name]["power"]
+    return head + f"\nсильнее всех в чате: <b>{_esc(top[0].display_name)}</b> · индекс {power * 100:.0f}"
+
+
+def together_card(result: dict) -> tuple[dict, Optional[dict], list, list]:
+    """Результат `build_together` → (сводка, лучшая пара для карточки, игроки, пары)."""
+    duo = result.get("duo")
+    card_duo = {"names": duo["pair"], "games": duo["games"], "wins": duo["wins"]} if duo else None
+    return result.get("summary") or {}, card_duo, result.get("players") or [], result.get("pairs") or []
+
+
+def together_caption(result: dict) -> str:
+    summary = result.get("summary") or {}
+    games = summary.get("games", 0)
+    head = "🤝 <b>Совместные игры</b>"
+    if not games:
+        return head + " · совместных игр пока нет"
+    wins = summary.get("wins", 0)
+    caption = head + f" · {plural_games(games)} · {wins}–{summary.get('losses', 0)} ({round(wins * 100 / games)}%)"
+    duo = result.get("duo")
+    if duo:
+        caption += f"\nлучшая пара: <b>{_esc(duo['pair'][0])} + {_esc(duo['pair'][1])}</b> — {plural_games(duo['games'])}"
+    return caption

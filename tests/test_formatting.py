@@ -273,6 +273,15 @@ def test_render_compare_table_orders_by_power():
     assert "🥇" in text and "🥈" in text
 
 
+def test_render_compare_table_survives_metrics_without_enough_games():
+    # перф и GPM посчитаны, но по < 5 играм: в ранжирование они не попадают, а текст не должен падать на отсутствующем месте
+    a = summary(display_name="A", avg_perf=0.8, winrate=0.6, kda_ratio=4.0, avg_gpm_window=500.0, enriched_games=2, detail_games=2)
+    b = summary(display_name="B", avg_perf=0.4, winrate=0.4, kda_ratio=2.0, avg_gpm_window=400.0, enriched_games=2, detail_games=2)
+    text = render_compare_table(build_chat_comparison([a, b]), [a, b])
+    assert "A" in text and "винрейт 60% (#1)" in text and "перф 80" in text and "(#" in text
+    assert "перф 80 (#" not in text and "GPM 500 (#" not in text  # места нет — скобок нет
+
+
 def test_standing_line_shows_ranks():
     comp, _ = _two_player_comparison()
     line = standing_line(comp, "A")

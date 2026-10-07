@@ -165,11 +165,12 @@ def test_stats(env, args):
 
 
 def test_compare_and_together(env):
-    storage, od, sz = env
-    for handler in (botmod.cmd_compare, botmod.cmd_together):
+    for handler, caption in ((botmod.cmd_compare, "Сравнение игроков"), (botmod.cmd_together, "Совместные игры")):
         msg = FakeMessage()
-        run(handler(msg, storage, od, sz))
+        run(handler(msg, *env))
         assert_ok(msg)
+        assert len(msg.photos) == 1 and caption in msg.photos[0][0]  # картинкой; текст — по кнопке
+        assert caption in _text_button(msg, env).texts
 
 
 def test_heroes_party_board(env):
