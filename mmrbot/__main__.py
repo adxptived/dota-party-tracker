@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import ErrorEvent
 
 import mmrbot.bot as botmod
-from mmrbot import hero_icons, service
+from mmrbot import avatars, hero_icons, service
 import mmrbot.tracker as tracker
 from mmrbot.access import ChatGateMiddleware
 from mmrbot.bot import PerfMiddleware, router, set_bot_commands
@@ -43,7 +43,9 @@ async def main() -> None:
     service.COMMAND_REFRESH_WAIT = config.command_refresh_wait
     botmod.MAX_PLAYERS = config.max_players
     stratz = Stratz(config.stratz_api_key) if config.stratz_api_key else None
-    hero_icons.setup(str(Path(config.db_path).resolve().parent / "hero_icons"))  # иконки для картинки матча
+    data_dir = Path(config.db_path).resolve().parent
+    icons = hero_icons.setup(str(data_dir / "hero_icons"))  # иконки для картинок
+    avatars.setup(str(data_dir / "avatars"), health=icons.health)  # аватары Steam; общий предохранитель CDN
     steam = Steam(config.steam_api_key) if config.steam_api_key else None
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(link_preview_is_disabled=True))
