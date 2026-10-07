@@ -164,3 +164,10 @@ def test_bar_fraction_marker_and_clamping():
     assert canvas.img.getpixel((290, 58)) == _hex(cards.ACCENT)
     cards.bar(canvas.img, (100, 70, 300, 86), None)           # нет значения — пусто
     cards.bar(canvas.img, (100, 70, 100, 86), 0.5)            # нулевая ширина
+
+
+def test_png_is_valid_and_warmup_is_safe():
+    from mmrbot import cards
+    cards.warmup()  # не падает и не требует сети/диска
+    png = cards.Canvas(100).png(50)
+    assert png.startswith(b"\x89PNG") and cards.to_png(cards.Canvas(60).img) == cards.to_png(cards.Canvas(60).img)

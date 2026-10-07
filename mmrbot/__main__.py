@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import ErrorEvent
 
 import mmrbot.bot as botmod
-from mmrbot import avatars, hero_icons, service
+from mmrbot import avatars, cards, hero_icons, service
 import mmrbot.tracker as tracker
 from mmrbot.access import ChatGateMiddleware
 from mmrbot.bot import PerfMiddleware, router, set_bot_commands
@@ -69,6 +69,7 @@ async def main() -> None:
 
     await set_bot_commands(bot)
     asyncio.get_running_loop().run_in_executor(None, warmup)  # прогрев matplotlib: первый график без задержки
+    asyncio.get_running_loop().run_in_executor(None, cards.warmup)  # шрифты и первый рендер Pillow-карточек
 
     scheduler = setup_scheduler(
         bot, storage, od, stratz, backup_keep=config.backup_keep, steam=steam,

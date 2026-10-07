@@ -14,6 +14,7 @@ import hashlib
 import io
 import math
 import os
+import logging
 from functools import lru_cache
 from typing import Optional, Sequence
 
@@ -29,6 +30,8 @@ SILVER = "#c9d3de"
 BRONZE = "#d9904f"
 ACCENT = PALETTE[0]
 RADIANT, DIRE = "#5cc46a", "#e5553f"
+log = logging.getLogger(__name__)
+
 WIDTH = WIDTH_PX
 PAD = 32
 
@@ -117,9 +120,23 @@ class Canvas:
 
 
 def to_png(img) -> bytes:
+    # compress_level=6 без optimize: в ~4 раза быстрее optimize=True при размере на ~2% больше (замер на карточках 1280 px).
     buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True)
+    img.save(buf, format="PNG", compress_level=6)
     return buf.getvalue()
+
+
+def warmup() -> None:
+    """Прогрев при старте: шрифты всех размеров карточек и один пробный рендер — первая карточка без задержки."""
+    try:
+        for size in range(16, 72, 2):
+            font(size)
+            font(size, True)
+        canvas = Canvas(200)
+        draw_text(canvas.draw, (PAD, 40), "Прогрев 0123", 24, FG)
+        canvas.png(100)
+    except Exception:
+        log.warning("Прогрев карточек не удался", exc_info=True)
 
 
 # --- сглаженные фигуры ---------------------------------------------------------------------------
