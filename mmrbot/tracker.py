@@ -309,10 +309,16 @@ def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional
     return events
 
 
+ACHIEVEMENT_FRESH_SEC = 86_400  # достижение объявляем, только если его принесла игра не старше суток
+
+
 def check_achievements(storage: Storage, player: Player, now: int) -> list[tuple[str, Optional[str]]]:
-    """Пересчитать достижения игрока; вернуть новые [(code, деталь)].
+    """Пересчитать достижения игрока; вернуть новые [(code, деталь)] — только заработанные недавно.
 
     Первая проверка игрока только запоминает уже заработанное (без оповещений, чтобы не «завалить» чат).
+    Дальше объявляется лишь то, что принесла свежая игра: если история доехала позже засева (при /add
+    OpenDota не ответил, профиль был закрыт, бот долго стоял), всё давнее запоминается молча —
+    иначе чат получал десяток «достижений» многолетней давности разом.
     """
     earned = achievements.evaluate_timed(storage.get_matches(player.id))
     known = storage.get_achievements(player.id)
@@ -324,7 +330,7 @@ def check_achievements(storage: Storage, player: Player, now: int) -> list[tuple
     new = {code: detail for code, (_, detail) in earned.items() if code not in known}
     if new:
         storage.add_achievements(player.id, new, now, {code: earned[code][0] for code in new})
-    return list(new.items())
+    return [(code, detail) for code, detail in new.items() if now - earned[code][0] <= ACHIEVEMENT_FRESH_SEC]
 
 
 def list_achievements(storage: Storage, chat_id: int, now: int, name: Optional[str] = None) -> list[tuple]:
