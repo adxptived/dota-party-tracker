@@ -319,6 +319,24 @@ def winrate_bar(img, box, wins: int, losses: int, radius: Optional[int] = None) 
     img.paste(bar, (x0, y0), _rr_mask(w, h, radius if radius is not None else h // 2))
 
 
+def bar(img, box, frac: float, color: str = ACCENT, track: str = GRID, marker: Optional[float] = None) -> None:
+    """Горизонтальная полоска заполнения (0–1) на тёмной дорожке; marker — риска-ориентир (например, 0.5 — «средний игрок»)."""
+    from PIL import Image
+    x0, y0, x1, y1 = (round(v) for v in box)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    frac = max(0.0, min(1.0, float(frac or 0)))
+    strip = Image.new("RGB", (w, h), track)
+    filled = round(w * frac)
+    if filled:
+        strip.paste(color, (0, 0, filled, h))
+    if marker is not None and 0 < marker < 1:
+        mx = round(w * marker)
+        strip.paste(FG, (max(mx - 1, 0), 0, min(mx + 1, w), h))
+    img.paste(strip, (x0, y0), _rr_mask(w, h, h // 2))
+
+
 def sparkline(img, box, values: Sequence[float], color: str = ACCENT, fill: bool = True, last_dot: bool = True,
               width: int = 3) -> None:
     """Линия по значениям (сглажена суперсэмплингом) с мягкой заливкой под ней и точкой на последнем значении."""

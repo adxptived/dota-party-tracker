@@ -152,3 +152,15 @@ def test_tile_and_header_footer_return_layout_positions():
 def test_hero_icon_cache_returns_same_object_for_same_args():
     data = _icon_bytes()
     assert cards.hero_icon(data, 1) is cards.hero_icon(data, 1)
+
+
+def test_bar_fraction_marker_and_clamping():
+    canvas = Canvas(100)
+    cards.bar(canvas.img, (100, 20, 300, 36), 0.5, "#ff0000", marker=0.5)
+    assert canvas.img.getpixel((130, 28)) == (255, 0, 0)
+    assert canvas.img.getpixel((250, 28)) == _hex(cards.GRID)
+    assert canvas.img.getpixel((200, 28)) == _hex(cards.FG)  # риска посередине
+    cards.bar(canvas.img, (100, 50, 300, 66), 7.0)            # больше 1 — полная
+    assert canvas.img.getpixel((290, 58)) == _hex(cards.ACCENT)
+    cards.bar(canvas.img, (100, 70, 300, 86), None)           # нет значения — пусто
+    cards.bar(canvas.img, (100, 70, 100, 86), 0.5)            # нулевая ширина

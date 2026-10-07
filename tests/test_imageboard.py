@@ -262,3 +262,36 @@ def test_stats_command_sends_card_with_tabs_and_text_button(e2e):
     msg_today = e2e.FakeMessage()
     run(botmod.cmd_stats(msg_today, e2e.cmdobj("stats", "сегодня"), storage, od, sz))
     assert "tx:stats:today" in {b.callback_data for b in _flat(msg_today.photos[0][1]["reply_markup"])}
+
+
+def test_player_command_sends_card_with_actions_and_text_button(e2e):
+    import mmrbot.bot as botmod
+    storage, od, sz = _env_for_match(e2e)
+    msg = e2e.FakeMessage()
+    run(botmod.cmd_player(msg, e2e.cmdobj("player", "shinoame"), storage, od, sz))
+    (caption, kw), = msg.photos
+    assert "shinoame" in caption
+    data = {b.callback_data for b in _flat(kw["reply_markup"])}
+    assert {"pp:heroes:%d" % e2e.ACC, "tx:player:%d" % e2e.ACC, "m:menu"} <= data
+    text_cb = e2e.FakeCallback("tx:player:%d" % e2e.ACC)
+    text_cb.message.reply_markup = kw["reply_markup"]
+    run(botmod.on_callback(text_cb, storage, od, sz))
+    assert "Dotabuff" in text_cb.message.texts and "KDA" in text_cb.message.texts  # прежняя текстовая карточка
+    assert not any((d or "").startswith("tx:") for d in _data(text_cb.message.markup_edits[-1]))
+
+
+def test_player_card_failure_and_unknown_player(e2e, monkeypatch):
+    import mmrbot.bot as botmod
+    from mmrbot import service
+    storage, od, sz = _env_for_match(e2e)
+
+    def boom(*a, **kw):
+        raise RuntimeError("нет шрифта")
+
+    monkeypatch.setattr(service, "render_player_image", boom)
+    msg = e2e.FakeMessage()
+    run(botmod.cmd_player(msg, e2e.cmdobj("player", "shinoame"), storage, od, sz))
+    assert not msg.photos and "Dotabuff" in msg.texts  # текстовая карточка
+    nobody = e2e.FakeMessage()
+    run(botmod.cmd_player(nobody, e2e.cmdobj("player", "несуществующий"), storage, od, sz))
+    assert not nobody.photos and nobody.sent

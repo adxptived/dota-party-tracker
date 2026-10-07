@@ -143,3 +143,94 @@ def period_caption(rows: list[dict], period: str) -> str:
         return head + " · игр не было"
     best = played[0]  # строки уже отсортированы: сверху лучший по дельте
     return f"{head} · Лидер: <b>{_esc(best['name'])}</b> {signed(best['delta'])} ({best['wins']}–{best['losses']})"
+
+
+# --- карточка игрока ----------------------------------------------------------------------------
+
+def _k(value) -> str:
+    if value is None:
+        return "—"
+    return f"{value / 1000:.1f}k" if value >= 1000 else f"{value:.0f}"
+
+
+def player_card(s, standing: Optional[dict] = None, series: Optional[list] = None, note: Optional[str] = None) -> dict:
+    """Сводка игрока → описание карточки для player_image.render_player_image.
+
+    standing — запись игрока из tracker.build_chat_comparison()["players"][имя] (+ size); series — накопленные ±MMR
+    по играм (последние ~60); note — пометка об устаревании данных (обычный текст).
+    """
+    from mmrbot.formatting import SKILL_GROUPS
+    from mmrbot.ranks import rank_label
+
+    games = s.games_total
+    card: dict = {
+        "name": s.display_name, "steam_name": s.steam_name, "avatar": s.avatar, "rank_tier": s.rank_tier,
+        "rank_text": s.rank, "mmr_text": f"≈{s.current_mmr}" if s.current_mmr is not None else "≈ ?",
+        "mmr_delta": s.mmr_delta if games and s.anchor_games else None,
+        "delta_note": f"за {plural_games(s.anchor_games)}" if s.anchor_games else "",
+        "perf": round(s.avg_perf * 100) if s.avg_perf is not None else None,
+        "streak": (s.streak_type, s.streak_len) if s.streak_len >= 2 else None,
+        "warnings": [], "note": note,
+    }
+    if s.mmr_drift:
+        card["warnings"].append(f"Оценка MMR расходится с медалью {s.rank} — обновите стартовый: /setmmr")
+    if s.history_closed:
+        card["warnings"].append("История матчей закрыта у OpenDota — игры могли не загрузиться, цифры неполные.")
+    if not games:
+        card["warnings"].append("Ранкед-игр с момента добавления пока нет.")
+        return card
+
+    partial = f"по {s.detail_games} из {games}" if 0 < s.detail_games < games else None
+    card["tiles"] = [
+        {"label": "Результат", "value": f"{s.wins_total}–{s.losses_total}", "sub": f"{s.winrate * 100:.0f}% винрейт",
+         "color": delta_color((s.winrate - 0.5) * 100)},
+        {"label": "KDA", "value": f"{s.kda_ratio:.2f}", "sub": f"{s.avg_kills:.0f}/{s.avg_deaths:.0f}/{s.avg_assists:.0f}"},
+        {"label": "GPM", "value": f"{s.avg_gpm_window:.0f}" if s.avg_gpm_window is not None else "—", "sub": partial},
+        {"label": "Нетворт", "value": _k(s.avg_net_worth_window), "sub": partial},
+        {"label": "Урон по героям", "value": _k(s.avg_hero_damage_window), "sub": partial},
+        {"label": "Игр сыграно", "value": str(games), "sub": f"ср. {s.avg_duration_min:.0f} мин" if s.avg_duration_min else None},
+    ]
+    values = list(series or [])
+    if values:
+        base = s.anchor_mmr or 0
+        card["series"] = [base + v for v in values] if s.anchor_mmr is not None else values
+        card["series_label"] = f"Динамика ≈MMR · последние {plural_games(len(values))}" if s.anchor_mmr is not None \
+            else f"Динамика ±MMR · последние {plural_games(len(values))}"
+    card["form"] = list(s.form_long or [])
+    card["split"] = [{"label": label, "wins": pair[1], "losses": pair[0] - pair[1]}
+                     for label, pair in (("Соло", s.solo), ("В группе", s.party)) if pair[0]]
+    if s.best_hour and s.worst_hour:
+        card["hours"] = {"best": f"{s.best_hour[0]:02d}:00 · {s.best_hour[1] * 100:.0f}%",
+                         "worst": f"{s.worst_hour[0]:02d}:00 · {s.worst_hour[1] * 100:.0f}%"}
+    from mmrbot.heroes import hero_name
+    card["heroes"] = [{"hero_id": h["hero_id"], "name": hero_name(h["hero_id"]), "games": h["games"], "wins": h["wins"],
+                       "winrate": h["winrate"]} for h in s.top_heroes]
+    if s.best_game:
+        bg = s.best_game
+        card["best_game"] = {"hero_id": bg["hero_id"], "name": hero_name(bg["hero_id"]), "kills": bg["kills"],
+                             "deaths": bg["deaths"], "assists": bg["assists"], "kda": bg["kda"]}
+    skills = []
+    for label, metrics in SKILL_GROUPS:
+        pcts = [s.skill[m] for m in metrics if m in (s.skill or {})]
+        if pcts:
+            skills.append({"label": label, "pct": sum(pcts) / len(pcts)})
+    card["skills"] = skills
+    if s.lobby_rank:
+        card["lobby_rank"], card["lobby_text"] = s.lobby_rank, rank_label(s.lobby_rank)
+    if standing and standing.get("size", 0) >= 2 and standing.get("power_rank"):
+        card["standing"] = f"#{standing['power_rank']} из {standing['size']} в чате по силе"
+    return card
+
+
+def player_caption(s) -> str:
+    """Подпись под карточкой игрока: ник, ранг, ≈MMR с дельтой и результат."""
+    head = f"🪪 <b>{_esc(s.display_name)}</b> · {html.escape(s.rank)}"
+    if s.current_mmr is not None:
+        head += f" · ≈{s.current_mmr}"
+        if s.games_total and s.anchor_games and s.mmr_delta:
+            head += f" ({signed(s.mmr_delta)})"
+    if s.games_total:
+        head += f"\n🎮 {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%) · KDA {s.kda_ratio:.2f}"
+    else:
+        head += "\n💤 ранкед-игр пока нет"
+    return head

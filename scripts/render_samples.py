@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mmrbot.alert_image import render_alert_image  # noqa: E402
 from mmrbot.match_image import render_match_image  # noqa: E402
+from mmrbot.player_image import render_player_image  # noqa: E402
 from mmrbot.stats_image import render_stats_image  # noqa: E402
 
 NOW = 1_760_000_000
@@ -114,7 +115,42 @@ def build() -> dict[str, bytes]:
         "данные обновлены 12:30", icons, avatars)
     out["stats_today.png"] = render_stats_image("Сегодня", None, None, sample_stats_rows()[:2], tiles[:2], icons=icons)
     out["stats_empty.png"] = render_stats_image("Рейтинг", None, None, [])
+    out["player.png"] = render_player_image(sample_player(), icons, avatars)
+    card = sample_player()
+    card.update(warnings=[], steam_name=None, perf=None, streak=None, series=[], split=[], hours=None, skills=[],
+                heroes=[], best_game=None, lobby_rank=None, standing=None)
+    out["player_sparse.png"] = render_player_image(card)
     return out
+
+
+def sample_player() -> dict:
+    series = [5000, 5025, 5050, 5025, 5075, 5100, 5075, 5125, 5150, 5125, 5175, 5200, 5175, 5225, 5250, 5300, 5275, 5325, 5350, 5420]
+    return {
+        "name": "Вася", "steam_name": "shinoame_steam", "avatar": "https://avatars.steamstatic.com/a.jpg",
+        "rank_tier": 55, "rank_text": "Legend 5", "mmr_text": "≈5420", "mmr_delta": 420, "delta_note": "за 56 игр",
+        "perf": 73, "streak": ("W", 4),
+        "warnings": ["Оценка MMR расходится с медалью Legend 5 — обновите стартовый: /setmmr",
+                     "История матчей закрыта у OpenDota — игры могли не загрузиться, цифры неполные."],
+        "tiles": [
+            {"label": "Результат", "value": "35–21", "sub": "62% винрейт", "color": "#3ddc84"},
+            {"label": "KDA", "value": "3.10", "sub": "8/5/11"},
+            {"label": "GPM", "value": "540", "sub": "по 40 из 56"},
+            {"label": "Нетворт", "value": "18.2k", "sub": "по 40 из 56"},
+            {"label": "Урон по героям", "value": "21.0k", "sub": "по 40 из 56"},
+            {"label": "Игр сыграно", "value": "56", "sub": "ср. 36 мин"},
+        ],
+        "series": series, "series_label": "Динамика ≈MMR · последние 20 игр",
+        "form": [True, True, False, True, True, True, False, True, True, True],
+        "split": [{"label": "Соло", "wins": 12, "losses": 8}, {"label": "В группе", "wins": 23, "losses": 13}],
+        "hours": {"best": "21:00 · 70%", "worst": "03:00 · 30%"},
+        "heroes": [{"hero_id": 12, "name": "Phantom Lancer", "games": 12, "wins": 8, "winrate": 8 / 12},
+                   {"hero_id": 1, "name": "Anti-Mage", "games": 9, "wins": 4, "winrate": 4 / 9},
+                   {"hero_id": 26, "name": "Lion", "games": 5, "wins": 1, "winrate": 0.2}],
+        "best_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0},
+        "skills": [{"label": "Фарм", "pct": 0.78}, {"label": "Урон", "pct": 0.41}, {"label": "Участие в боях", "pct": 0.22},
+                   {"label": "Поддержка", "pct": 0.55}],
+        "lobby_rank": 55, "lobby_text": "Legend 5", "standing": "#2 из 5 в чате по силе", "note": "данные обновлены 12:30",
+    }
 
 
 def main() -> None:

@@ -32,6 +32,7 @@ from mmrbot.service import (
     render_records_board,
     render_heroes_board,
     match_board,
+    player_board,
     render_match_board,
     render_player_board,
     render_player_heroes_board,
@@ -679,7 +680,12 @@ async def _text_stats(storage: Storage, od: OpenDota, chat_id: int, args: list[s
     return (await stats_board(storage, od, chat_id, mode, stratz, image=False)).text
 
 
-TEXT_VIEWS = {"match": _text_match, "stats": _text_stats}
+async def _text_player(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:player:<account_id> — карточка игрока текстом."""
+    return await render_player_board(storage, od, chat_id, args[0], stratz) if args else None
+
+
+TEXT_VIEWS = {"match": _text_match, "stats": _text_stats, "player": _text_player}
 
 
 async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
@@ -695,10 +701,22 @@ async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: l
 
 
 async def do_player_card(message: Message, storage: Storage, od: OpenDota, name: str, stratz=None) -> None:
-    status = await _progress(message, WAIT)
+    """Карточка игрока картинкой (под ней кнопки игрока и «📝 Текстом»); не вышло — текстом."""
+    status = await _progress(message, WAIT, "upload_photo")
     player = storage.get_player(message.chat.id, name)
-    markup = player_actions(player.account_id) if player else None
-    await _reply_board(message, render_player_board(storage, od, message.chat.id, name, stratz), status, markup)
+    try:
+        board = await player_board(storage, od, message.chat.id, name, stratz)
+    except Exception:
+        log.exception("Ошибка сборки карточки игрока для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board is None:
+        await _delete(status)
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    markup = with_text_button(player_actions(player.account_id), "player", player.account_id) if player else nav_menu()
+    await _reply_image(message, board, markup, status)
 
 
 async def do_records(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None,

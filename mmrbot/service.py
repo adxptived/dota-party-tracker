@@ -17,7 +17,8 @@ from mmrbot import avatars, hero_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
 from mmrbot.boards import CAPTION_LIMIT, ImageBoard, MatchBoard, build_png, fit_caption
 from mmrbot.card_data import (
-    award_items, leader_caption, party_tiles, period_caption, period_rows, record_items, summary_rows,
+    award_items, leader_caption, party_tiles, period_caption, period_rows, player_caption, player_card, record_items,
+    summary_rows,
 )
 from mmrbot.cards import ACCENT
 from mmrbot.health import log_network_error
@@ -48,6 +49,8 @@ from mmrbot.heroes import find_hero
 from mmrbot.match_image import render_match_image
 from mmrbot.opendota import OpenDota
 from mmrbot.ranks import rank_label
+from mmrbot import stats
+from mmrbot.player_image import render_player_image
 from mmrbot.stats import period_since
 from mmrbot.stats_image import render_stats_image
 from mmrbot.storage import Storage
@@ -387,15 +390,52 @@ async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, st
     return _with_stale(storage, chat_id, render_together(result), od)
 
 
-async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None) -> Optional[str]:
+def _player_png(card: dict) -> bytes:
+    """В потоке: иконки героев и аватар (кэш/CDN) + рендер карточки игрока."""
+    icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
+    hero_ids = [h["hero_id"] for h in card.get("heroes") or []] + ([card["best_game"]["hero_id"]] if card.get("best_game") else [])
+    icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
+    found = avatar_loader.get_many([card.get("avatar")]) if avatar_loader is not None else {}
+    return render_player_image(card, icons, found)
+
+
+def _mmr_values(storage: Storage, chat_id: int, player_id: int) -> list[int]:
+    """Накопленное ±MMR по последним играм игрока — для линии на карточке."""
+    step = storage.get_or_create_chat(chat_id).mmr_step
+    return [value for _, value in stats.mmr_series(storage.get_outcomes(player_id), step)[-60:]]
+
+
+async def player_board(
+    storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None, image: bool = True
+) -> Optional[ImageBoard]:
+    """Карточка игрока: текст всегда, картинка с короткой подписью — если нарисовалась; None — игрока нет."""
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="player")
     comparison = build_chat_comparison(summaries)
     name_lower = name.strip().lower()
     for summary in summaries:
         if summary.display_name.lower() == name_lower or str(summary.account_id) == name.strip():
-            standing = standing_line(comparison, summary.display_name)
-            return _with_stale(storage, chat_id, render_player_card(summary, standing=standing), od)
-    return None
+            break
+    else:
+        return None
+    standing = standing_line(comparison, summary.display_name)
+    board = ImageBoard(_with_stale(storage, chat_id, render_player_card(summary, standing=standing), od))
+    if image:
+        note = _stale_line(storage, chat_id, od)
+        plain = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
+        player = storage.get_player_by_account_id(chat_id, summary.account_id)
+        series = await _build(_mmr_values, storage, chat_id, player.id) if player is not None else []
+        position = dict(comparison["players"].get(summary.display_name) or {}, size=comparison["size"])
+        card = player_card(summary, position, series, plain)
+        board.png = await asyncio.to_thread(build_png, "карточку игрока", lambda: _player_png(card))
+        if board.png is not None:
+            board.caption = fit_caption(player_caption(summary) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None) -> Optional[str]:
+    """Карточка игрока текстом (см. player_board)."""
+    board = await player_board(storage, od, chat_id, name, stratz, image=False)
+    return board.text if board is not None else None
 
 
 async def render_compare_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
