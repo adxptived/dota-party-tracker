@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 
 import re
+from collections import OrderedDict
 from typing import Optional
 
 from aiogram import BaseMiddleware, Bot, F, Router
@@ -280,6 +282,42 @@ async def _show_text(message: Message, text: str, markup, edit: bool) -> None:
     await _send_chunks(message, text, markup)
 
 
+_file_ids: OrderedDict = OrderedDict()  # sha1 PNG → file_id уже отправленной картинки (B7)
+FILE_ID_LIMIT = 256
+
+
+def _remember_file_id(digest: str, sent) -> None:
+    """Запомнить file_id самого крупного размера из ответа Telegram (у фейков и True ответа нет — тогда ничего)."""
+    try:
+        file_id = sent.photo[-1].file_id
+    except (AttributeError, IndexError, TypeError):
+        return
+    if isinstance(file_id, str) and file_id:
+        _file_ids[digest] = file_id
+        _file_ids.move_to_end(digest)
+        while len(_file_ids) > FILE_ID_LIMIT:
+            _file_ids.popitem(last=False)
+
+
+async def _send_photo(message: Message, photo, caption, markup, edit: bool):
+    """Показать картинку: edit — заменить на месте (не вышло — новая, прежняя убирается), иначе новое сообщение."""
+    if edit and getattr(message, "photo", None):
+        try:
+            return await message.edit_media(InputMediaPhoto(media=photo, caption=caption, parse_mode="HTML"), reply_markup=markup)
+        except Exception as exc:
+            if "not modified" in str(exc):
+                return None
+            if isinstance(photo, str):  # file_id отвергнут — пусть вызывающий пробует загрузить PNG
+                raise
+            sent = await message.answer_photo(photo, caption=caption, parse_mode="HTML", reply_markup=markup)
+            await _delete(message)
+            return sent
+    sent = await message.answer_photo(photo, caption=caption, parse_mode="HTML", reply_markup=markup)
+    if edit:
+        await _delete(message)
+    return sent
+
+
 async def _reply_image(message: Message, board: ImageBoard, markup, status=None, edit: Optional[bool] = None) -> None:
     """Картинка + подпись + кнопки; не собралась (или в чате выбраны отчёты текстом) или Telegram не принял —
     тот же отчёт текстом, с теми же вкладками/периодами, но без «📝 Текстом».
@@ -290,25 +328,21 @@ async def _reply_image(message: Message, board: ImageBoard, markup, status=None,
     if edit is None:
         edit = isinstance(message, _InPlace)  # кнопка на сообщении: правим его на месте
     if board.png is not None:
-        photo = BufferedInputFile(board.png, filename="card.png")
-        try:
-            if edit and getattr(message, "photo", None):
-                try:
-                    await message.edit_media(
-                        InputMediaPhoto(media=photo, caption=board.caption, parse_mode="HTML"), reply_markup=markup
-                    )
-                except Exception as exc:
-                    if "not modified" not in str(exc):  # старое сообщение и т.п. — новая картинка, прежнюю убираем
-                        await message.answer_photo(photo, caption=board.caption, parse_mode="HTML", reply_markup=markup)
-                        await _delete(message)
-            else:
-                await message.answer_photo(photo, caption=board.caption, parse_mode="HTML", reply_markup=markup)
-                if edit:
-                    await _delete(message)
+        digest = hashlib.sha1(board.png).hexdigest()
+        known = _file_ids.get(digest)
+        for photo in ([known] if known else []) + [BufferedInputFile(board.png, filename="card.png")]:
+            try:
+                sent = await _send_photo(message, photo, board.caption, markup, bool(edit))
+            except Exception:
+                if photo is known:  # Telegram не принял старый file_id — грузим картинку заново
+                    _file_ids.pop(digest, None)
+                    log.info("file_id картинки устарел — отправляем PNG заново")
+                    continue
+                log.warning("Не удалось отправить картинку — шлём текстом", exc_info=True)
+                break
+            _remember_file_id(digest, sent)
             await _delete(status)
             return
-        except Exception:
-            log.warning("Не удалось отправить картинку — шлём текстом", exc_info=True)
     await _delete(status)
     await _show_text(message, board.text, without_text_button(markup) if markup is not None else nav_menu(), bool(edit))
 

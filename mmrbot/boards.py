@@ -19,7 +19,6 @@ class ImageBoard:
     text: str
     png: Optional[bytes] = None
     caption: Optional[str] = None
-    cache_key: Optional[tuple] = None  # ключ для повторной отправки по file_id (B7)
 
 
 @dataclass
