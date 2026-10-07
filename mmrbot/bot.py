@@ -15,6 +15,7 @@ from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceRep
 from mmrbot import commands as cmd
 from mmrbot.access import DENIED, may_manage
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
+from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
 from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
@@ -319,8 +320,9 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
 
     try:
         await asyncio.to_thread(refresh_player, storage, od, player, now, stratz)
-    except Exception:  # первичная подгрузка не критична — досчитается в /stats
-        log.warning("Первая загрузка истории игрока %s не удалась", account_id, exc_info=True)
+    except Exception as exc:  # первичная подгрузка не критична — досчитается в /stats
+        log_network_error(log, f"Первая загрузка истории игрока {account_id} не удалась", exc,
+                          health=getattr(od, "health", None))
 
     try:  # история при добавлении — не «новые игры»: помечаем оповещённой и запоминаем достижения молча
         storage.mark_notified(player.id)

@@ -16,6 +16,7 @@ from typing import Optional, Protocol
 from mmrbot import achievements, party, records, stats
 from mmrbot.presence import advance
 from mmrbot.awards import compute_period_awards
+from mmrbot.health import log_network_error
 from mmrbot.health import provider_down as _provider_down
 from mmrbot.ranks import mmr_rank_mismatch, rank_emoji, rank_label
 from mmrbot.storage import Chat, Player, Storage
@@ -152,8 +153,9 @@ def _enrich_from_stratz(
         return
     try:
         data = stratz.get_matches(player.account_id, pending, hints=storage.get_match_hints(player.id, pending))
-    except Exception:
-        log.warning("Stratz недоступен для игрока %s, пропускаю", player.account_id, exc_info=True)
+    except Exception as exc:
+        log_network_error(log, f"Stratz недоступен для игрока {player.account_id}, пропускаю", exc,
+                          health=getattr(stratz, "health", None))
         return
     for match_id in pending:
         if match_id in data:
@@ -221,8 +223,9 @@ def _enrich_from_opendota(
             details = client.get_match_player_stats(
                 match_id, player.account_id, storage.get_match_slot(player.id, match_id)
             )
-        except Exception:  # сбой/лимит — не «нет данных»: попытку не тратим и остальные матчи не дёргаем
-            log.debug("OpenDota не ответил по матчу %s, остановка прогона", match_id, exc_info=True)
+        except Exception as exc:  # сбой/лимит — не «нет данных»: попытку не тратим и остальные матчи не дёргаем
+            log_network_error(log, f"OpenDota не ответил по матчу {match_id}, остановка прогона", exc,
+                              health=getattr(client, "health", None))
             break
         if not details:
             storage.mark_enrich_miss(player.id, match_id)
@@ -306,8 +309,9 @@ def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional
                     continue
                 try:
                     profiles[player.account_id] = client.get_profile(player.account_id)
-                except Exception:
-                    log.warning("Не удалось получить Steam-профиль %s", player.account_id, exc_info=True)
+                except Exception as exc:
+                    log_network_error(log, f"Не удалось получить Steam-профиль {player.account_id}", exc,
+                                      health=getattr(client, "health", None))
                     profiles[player.account_id] = None
             profile = profiles[player.account_id]
             if not profile:
@@ -393,8 +397,9 @@ def detect_new_games(
         if stale:
             try:
                 refresh_player(storage, client, player, now, stratz=stratz)
-            except Exception:
-                log.warning("Фоновое обновление игрока %s не удалось", player.display_name, exc_info=True)
+            except Exception as exc:
+                log_network_error(log, f"Фоновое обновление игрока {player.display_name} не удалось", exc,
+                                  health=getattr(client, "health", None))
             player = storage.get_player_by_account_id(chat.chat_id, player.account_id) or player
         fresh = storage.get_unnotified_matches(player.id, now - RECENT_GAME_SEC)
         # Матч, о котором чату уже сообщили (OpenDota отдал его напарнику на опрос раньше), второй раз не объявляем.
@@ -602,8 +607,9 @@ def refresh_player(
             profile = client.get_profile(player.account_id)
             if profile is not None:
                 _store_profile(storage, player, profile, now)
-        except Exception:
-            log.debug("Не удалось получить профиль игрока %s", player.account_id, exc_info=True)
+        except Exception as exc:
+            log_network_error(log, f"Не удалось получить профиль игрока {player.account_id}", exc,
+                              health=getattr(client, "health", None))
 
     if not fast and enrich_cap > 0:
         # Свежесыгранные матчи обогащаем сразу; без новых игр это разбор старого бэклога — он ждёт, если лимит на исходе.
@@ -752,9 +758,9 @@ def refresh_chat(
     def _refresh_safe(player: Player) -> None:
         try:
             refresh_player(storage, client, player, now, stratz=stratz, fast=fast)
-        except Exception:  # ошибка по одному игроку не должна рушить весь чат
-            log.warning("Не удалось обновить игрока %s (id %s), беру кэш",
-                        player.display_name, player.account_id, exc_info=True)
+        except Exception as exc:  # ошибка по одному игроку не должна рушить весь чат
+            log_network_error(log, f"Не удалось обновить игрока {player.display_name} (id {player.account_id}), беру кэш",
+                              exc, health=getattr(client, "health", None))
 
     if len(stale) > 1:  # игроки независимы: сетевые ожидания перекрываются
         with ThreadPoolExecutor(max_workers=min(REFRESH_WORKERS, len(stale))) as pool:

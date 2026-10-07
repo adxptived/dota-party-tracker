@@ -156,3 +156,51 @@ def test_background_jobs_run_when_provider_is_up(tmp_path, monkeypatch):
     asyncio.run(jobs["opendota_backfill"]())
     asyncio.run(jobs["stratz_backfill"]())
     assert called == ["od", "stratz"]
+
+
+def test_heroes_refresh_network_failure_is_one_warning_and_retried_in_an_hour(tmp_path, caplog):
+    import logging
+
+    import requests
+
+    class Flaky(_Provider):
+        def get_heroes(self):
+            raise requests.exceptions.ConnectTimeout("boom")
+
+    scheduler, jobs = _jobs(tmp_path, Flaky())
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.scheduler"):
+        asyncio.run(jobs["heroes_refresh"]())
+    records = [r for r in caplog.records if r.name == "mmrbot.scheduler"]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert records[0].exc_info is None and "Traceback" not in caplog.text
+    assert any(j.id == "heroes_retry" for j in scheduler.get_jobs())
+
+
+def test_background_job_unexpected_error_keeps_traceback(tmp_path, monkeypatch, caplog):
+    import logging
+
+    def bug(*a, **kw):
+        raise KeyError("bug")
+
+    monkeypatch.setattr(sched, "backfill_opendota", bug)
+    _, jobs = _jobs(tmp_path, _Provider())
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.scheduler"):
+        asyncio.run(jobs["opendota_backfill"]())
+    record = next(r for r in caplog.records if r.name == "mmrbot.scheduler")
+    assert record.levelno == logging.ERROR and record.exc_info is not None
+
+
+def test_background_job_network_error_has_no_traceback(tmp_path, monkeypatch, caplog):
+    import logging
+
+    import requests
+
+    def down(*a, **kw):
+        raise requests.exceptions.ConnectTimeout("boom")
+
+    monkeypatch.setattr(sched, "backfill_opendota", down)
+    _, jobs = _jobs(tmp_path, _Provider())
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.scheduler"):
+        asyncio.run(jobs["opendota_backfill"]())
+    records = [r for r in caplog.records if r.name == "mmrbot.scheduler"]
+    assert [r.levelno for r in records] == [logging.WARNING] and records[0].exc_info is None

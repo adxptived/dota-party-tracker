@@ -17,7 +17,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from mmrbot.health import provider_down
+from mmrbot.health import log_network_error, provider_down
 from mmrbot.opendota import OpenDota
 from mmrbot.backup import backup_db
 from mmrbot.formatting import (
@@ -160,8 +160,8 @@ def setup_scheduler(
             return
         try:
             await asyncio.to_thread(backfill_stratz, storage, stratz)
-        except Exception:
-            log.exception("Фоновое дозаполнение Stratz не удалось")
+        except Exception as exc:
+            log_network_error(log, "Фоновое дозаполнение Stratz не удалось", exc, health=getattr(stratz, "health", None))
 
     async def opendota_backfill() -> None:
         if provider_down(od):
@@ -169,8 +169,8 @@ def setup_scheduler(
             return
         try:
             await asyncio.to_thread(backfill_opendota, storage, od)
-        except Exception:
-            log.exception("Фоновое обогащение матчей OpenDota не удалось")
+        except Exception as exc:
+            log_network_error(log, "Фоновое обогащение матчей OpenDota не удалось", exc, health=getattr(od, "health", None))
 
     def retry_heroes_in_an_hour() -> None:
         """OpenDota недоступен — справочник героев догоним через час, а не ждём следующих суток."""
@@ -189,8 +189,9 @@ def setup_scheduler(
             added = await asyncio.to_thread(refresh_heroes, od)
             if added:
                 log.info("Справочник героев пополнен: +%d", added)
-        except Exception:
-            log.exception("Обновление справочника героев не удалось")
+        except Exception as exc:
+            log_network_error(log, "Обновление справочника героев не удалось", exc, health=getattr(od, "health", None))
+            retry_heroes_in_an_hour()
 
     async def steam_watch() -> None:
         """Оповещения о смене ника/аватарки Steam (профили берём из OpenDota)."""
@@ -199,8 +200,8 @@ def setup_scheduler(
             return
         try:
             events = await asyncio.to_thread(detect_steam_changes, storage, od)
-        except Exception:
-            log.exception("Проверка смены Steam-профилей не удалась")
+        except Exception as exc:
+            log_network_error(log, "Проверка смены Steam-профилей не удалась", exc, health=getattr(od, "health", None))
             return
         for event in events:
             text = render_steam_change(event["player"], event["changes"])
@@ -246,8 +247,9 @@ def setup_scheduler(
             try:
                 async with _chat_lock(chat.chat_id):
                     events = await asyncio.to_thread(detect_new_games, storage, od, chat, now, stratz, False)
-            except Exception:
-                log.exception("Проверка новых игр в чате %s не удалась", chat.chat_id)
+            except Exception as exc:
+                log_network_error(log, f"Проверка новых игр в чате {chat.chat_id} не удалась", exc,
+                                  health=getattr(od, "health", None))
                 continue
             for event in events:
                 text = render_game_alert(event) if event["kind"] == "match" else render_achievement_alert(event)

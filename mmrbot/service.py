@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from mmrbot import hero_icons
+from mmrbot.health import log_network_error
 from mmrbot.formatting import (
     render_awards,
     render_party_pulse,
@@ -91,8 +92,8 @@ def _kick_finish(storage: Storage, od: OpenDota, chat_id: int) -> None:
     async def run() -> None:
         try:
             await asyncio.to_thread(finish_refresh, storage, od, chat_id)
-        except Exception:
-            log.debug("Фоновое дообновление чата %s не удалось", chat_id, exc_info=True)
+        except Exception as exc:
+            log_network_error(log, f"Фоновое дообновление чата {chat_id} не удалось", exc, health=getattr(od, "health", None))
         finally:
             _finish_running.discard(key)
 
@@ -407,8 +408,8 @@ async def match_board(
     if stratz is not None:
         try:
             full = await asyncio.to_thread(stratz.get_match, match_id)
-        except Exception:
-            log.warning("Stratz: не удалось получить матч %s", match_id, exc_info=True)
+        except Exception as exc:
+            log_network_error(log, f"Stratz: не удалось получить матч {match_id}", exc, health=getattr(stratz, "health", None))
     if full is None and cached is None and name:  # матч своего игрока по id — без Stratz из кэша БД
         cached = await asyncio.to_thread(build_match_view, storage, chat_id, name, match_id)
     tz = storage.get_or_create_chat(chat_id).tz

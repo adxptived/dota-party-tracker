@@ -1210,3 +1210,88 @@ def test_detect_new_games_announces_db_matches_without_network_when_opendota_is_
     events = detect_new_games(store, client, store.get_or_create_chat(100), now, mark=False)
     assert [e["match_id"] for e in events if e["kind"] == "match"] == [7]  # матч уже в БД — оповещение не теряем
     assert client.match_calls == 0 and client.profile_calls == 0
+
+
+# --- A5: ожидаемые сетевые сбои — одна строка в логе, без трейсбеков ----------------------
+
+class _RaisingOpenDota(FakeOpenDota):
+    def __init__(self, exc):
+        super().__init__()
+        self.exc = exc
+
+    def get_matches(self, account_id, limit=200):
+        raise self.exc
+
+
+def _tracker_records(caplog):
+    return [r for r in caplog.records if r.name == "mmrbot.tracker"]
+
+
+def test_refresh_chat_network_failure_is_one_line_without_traceback(store, caplog):
+    import logging
+
+    import requests
+    from mmrbot.tracker import refresh_chat
+    store.add_player(1, 11, "Вася", None, 0, 0)
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.tracker"):
+        refresh_chat(store, _RaisingOpenDota(requests.exceptions.ConnectTimeout("boom")), 1, 1_000_000)
+    records = _tracker_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+    assert "ConnectTimeout" in records[0].getMessage() and "Traceback" not in caplog.text
+
+
+def test_refresh_chat_unexpected_error_keeps_traceback(store, caplog):
+    import logging
+
+    from mmrbot.tracker import refresh_chat
+    store.add_player(1, 11, "Вася", None, 0, 0)
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.tracker"):
+        refresh_chat(store, _RaisingOpenDota(KeyError("bug")), 1, 1_000_000)
+    records = _tracker_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None  # баг в нашем коде не должен прятаться
+
+
+def test_outage_of_real_client_logs_one_warning_for_the_whole_chat(store, caplog):
+    """Четыре игрока обновляются параллельно, OpenDota лежит: в логе одна строка о падении и одна от трекера."""
+    import logging
+
+    import requests
+    from mmrbot.opendota import OpenDota
+    from mmrbot.tracker import refresh_chat
+
+    class Down:
+        def get(self, *a, **kw):
+            raise requests.exceptions.ConnectTimeout("connect timeout")
+
+        post = get
+
+    for n in range(4):
+        store.add_player(1, 100 + n, f"Игрок{n}", None, 0, 0)
+    od = OpenDota(session=Down(), min_interval=0)
+    with caplog.at_level(logging.DEBUG):
+        refresh_chat(store, od, 1, 1_000_000)
+        refresh_chat(store, od, 1, 1_000_001)  # вторая команда в паузу — вообще без записей уровня WARNING
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert [r.name for r in warnings].count("mmrbot.health") == 1
+    assert [r.name for r in warnings].count("mmrbot.tracker") <= 1
+    assert all(r.exc_info is None for r in warnings) and "Traceback" not in caplog.text
+
+
+def test_stratz_network_failure_in_enrichment_is_one_line(store, caplog):
+    import logging
+
+    import requests
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [od_match(100, 1000)])
+
+    class DownStratz:
+        def get_matches(self, *a, **kw):
+            raise requests.exceptions.ConnectTimeout("boom")
+
+    from mmrbot.tracker import _enrich_from_stratz
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.tracker"):
+        _enrich_from_stratz(store, DownStratz(), player, 2000)
+    records = _tracker_records(caplog)
+    assert [r.levelno for r in records] == [logging.WARNING] and records[0].exc_info is None
