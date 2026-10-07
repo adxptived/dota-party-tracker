@@ -70,3 +70,16 @@ def test_mmr_rank_mismatch_detects_drift():
     assert mmr_rank_mismatch(2000, 52) is True
     assert mmr_rank_mismatch(5900, 81) is False        # Immortal — только нижняя граница
     assert mmr_rank_mismatch(4000, 81) is True
+
+
+def test_average_rank_tier_all_immortal():
+    from mmrbot.ranks import average_rank_tier
+    assert average_rank_tier([80] * 10) == 80
+
+
+def test_average_rank_tier_mixed_and_skips_uncalibrated():
+    from mmrbot.ranks import average_rank_tier
+    assert average_rank_tier([75, 75, None, 0]) == 75
+    assert average_rank_tier([71, 75]) == 73
+    assert average_rank_tier([75, 80, 80]) == 80
+    assert average_rank_tier([None, 0]) is None

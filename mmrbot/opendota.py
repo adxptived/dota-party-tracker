@@ -12,6 +12,8 @@ from typing import Optional
 
 import requests
 
+from .ranks import average_rank_tier
+
 BASE_URL = "https://api.opendota.com/api"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 RANKED_LOBBY = 7
@@ -308,6 +310,8 @@ class OpenDota:
             return None
         result = {out: player.get(src) for src, out in self._MATCH_FIELDS.items()}
         result["party_size"] = _party_size(players, player)
+        # average_rank из OpenDota врёт на высоких лобби (Immortal-лобби → Divine 5), считаем сами по игрокам.
+        result["average_rank"] = average_rank_tier([p.get("rank_tier") for p in players])
         benchmarks = {}
         for metric, value in (player.get("benchmarks") or {}).items():
             benchmarks[metric] = value.get("pct") if isinstance(value, dict) else value

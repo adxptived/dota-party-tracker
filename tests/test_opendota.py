@@ -403,3 +403,11 @@ def test_get_heroes_returns_list_or_empty():
     heroes = [{"id": 1, "localized_name": "Anti-Mage"}]
     assert OpenDota(session=FakeSession(heroes), min_interval=0).get_heroes() == heroes
     assert OpenDota(session=FakeSession({"oops": 1}), min_interval=0).get_heroes() == []
+
+
+def test_get_match_player_stats_average_rank_from_players():
+    match = {"average_rank": 75, "players": [
+        {"account_id": 42, "rank_tier": 80}, {"account_id": 1, "rank_tier": 80}, {"account_id": 2, "rank_tier": 80},
+    ]}
+    od = OpenDota(session=FakeSession(match), min_interval=0)
+    assert od.get_match_player_stats(123, 42)["average_rank"] == 80
