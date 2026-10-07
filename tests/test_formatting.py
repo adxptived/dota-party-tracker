@@ -348,6 +348,17 @@ def test_render_full_match_marks_tracked_and_shows_both_teams():
     assert "GPM" not in no_focus and "Матч 77" in no_focus
 
 
+def test_match_caption_short_with_and_without_focus():
+    from mmrbot.formatting import render_match_caption
+    match = {"match_id": 77, "start_time": 1_700_000_000, "duration": 2400, "radiant_win": False,
+             "players": [_fp(1, True, 2, 1, "Steam<1>"), _fp(3, False, 1, 2, "Чужой")]}
+    text = render_match_caption(match, {1: "Вася"}, focus=1)
+    assert "Матч 77" in text and "40 мин" in text
+    assert "Поражение" in text and "<b>Вася</b>" in text and "Axe" in text and "3/1/4" in text
+    stranger = render_match_caption(match, {}, focus=None)
+    assert "Матч 77" in stranger and "Dire" in stranger and "Steam" not in stranger
+
+
 def test_imp_formatting_has_no_negative_zero():
     from mmrbot.formatting import _imp
     assert _imp(-0.4) == "0" and _imp(0.2) == "0" and _imp(-9.3) == "-9" and _imp(4.6) == "+5"

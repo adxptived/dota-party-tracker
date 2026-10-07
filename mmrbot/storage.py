@@ -673,7 +673,7 @@ class Storage:
 
         Пустое значение в ответе не затирает уже известное (например, GPM из списка матчей).
         """
-        fields = self._DETAIL_FIELDS + ("party_size",)
+        fields = self._DETAIL_FIELDS + ("party_size", "average_rank")
         assignments = ", ".join(f"{field} = COALESCE(?, {field})" for field in fields)
         bench_json = json.dumps(details.get("benchmarks") or {})
         params = [details.get(field) for field in fields]

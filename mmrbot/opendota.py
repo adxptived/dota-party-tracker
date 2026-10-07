@@ -12,6 +12,8 @@ from typing import Optional
 
 import requests
 
+from .ranks import average_rank_tier
+
 BASE_URL = "https://api.opendota.com/api"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 RANKED_LOBBY = 7
@@ -21,6 +23,7 @@ _MAX_RETRY_AFTER = 30.0
 _INLINE_WAIT = 10.0  # дольше этого лимит не пережидаем в запросе — сразу отдаём кэш из БД
 _MAX_BLOCK = 900.0  # потолок паузы после 429 (сек): дальше пробуем снова
 _BLOCK_NO_HEADER = 30.0  # 429 без Retry-After и после всех попыток — короткая пауза
+_OUTAGE_PAUSE = 60.0  # сервер недоступен по сети — столько не ходим (команды берут кэш БД, а не ждут таймаутов)
 
 
 class RateLimited(RuntimeError):
@@ -147,7 +150,7 @@ class OpenDota:
         limited = False
         for attempt in range(self.max_retries):
             if time.monotonic() < self._blocked_until:
-                raise RateLimited("OpenDota: лимит запросов, пауза ещё не истекла")
+                raise RateLimited("OpenDota: пауза после лимита или недоступности ещё не истекла")
             self._throttle()
             delay = 1.5 * (attempt + 1)
             try:
@@ -166,6 +169,9 @@ class OpenDota:
                     resp.raise_for_status()  # 4xx — не ретраим, сразу наверх
                     return resp.json()
             except requests.HTTPError:
+                raise
+            except requests.ConnectionError:  # не достучались (connect timeout, DNS): ретраи — только лишнее ожидание
+                self._pause_outage()
                 raise
             except (requests.RequestException, ValueError) as exc:  # сеть / битый JSON
                 last_exc = exc
@@ -198,10 +204,16 @@ class OpenDota:
             )
             self._note_quota(resp)
             return True
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 self._refresh_at.pop(account_id, None)  # не дошло — в следующий раз попробуем снова
+            if isinstance(exc, requests.ConnectionError):
+                self._pause_outage()
             return False
+
+    def _pause_outage(self) -> None:
+        """Сервер недоступен: следующие запросы сразу падают (RateLimited) до конца паузы, не дожидаясь таймаутов."""
+        self._blocked_until = max(self._blocked_until, time.monotonic() + _OUTAGE_PAUSE)
 
     def get_heroes(self) -> list[dict]:
         """Справочник героев /heroes: [{id, localized_name, ...}] (пусто при сбое формата)."""
@@ -308,6 +320,8 @@ class OpenDota:
             return None
         result = {out: player.get(src) for src, out in self._MATCH_FIELDS.items()}
         result["party_size"] = _party_size(players, player)
+        # average_rank из OpenDota врёт на высоких лобби (Immortal-лобби → Divine 5), считаем сами по игрокам.
+        result["average_rank"] = average_rank_tier([p.get("rank_tier") for p in players])
         benchmarks = {}
         for metric, value in (player.get("benchmarks") or {}).items():
             benchmarks[metric] = value.get("pct") if isinstance(value, dict) else value

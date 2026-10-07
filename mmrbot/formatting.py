@@ -956,3 +956,19 @@ def render_full_match(match: dict, tracked: dict, focus=None, tz: str = "UTC") -
     lines += _team_lines(radiant, tracked)
     lines += ["🌑 <b>Dire</b>"] + _team_lines(dire, tracked)
     return "\n".join(lines)
+
+
+def render_match_caption(match: dict, tracked: dict, focus=None, tz: str = "UTC") -> str:
+    """Короткая подпись под картинкой матча: исход фокус-игрока (или победившая сторона) + шапка матча."""
+    when = fmt_local(match.get("start_time") or 0, tz, "%d.%m %H:%M")
+    duration = f" · {match['duration'] // 60} мин" if match.get("duration") else ""
+    head = f"🎮 <b>Матч {match['match_id']}</b> <i>{when}{duration}</i>"
+    me = next((p for p in match.get("players") or [] if focus is not None and p.get("account_id") == focus), None)
+    if me is None:
+        winner = "Radiant" if match.get("radiant_win") else "Dire"
+        return f"{head}\n🏆 Победитель: {winner}"
+    won = bool(me.get("is_radiant")) == bool(match.get("radiant_win"))
+    name = tracked.get(focus) or me.get("name") or "—"
+    kda = f"{me.get('kills') or 0}/{me.get('deaths') or 0}/{me.get('assists') or 0}"
+    result = "🏆 Победа" if won else "💀 Поражение"
+    return f"{result} — {_b(name)} на {_b(hero_name(me.get('hero_id')))} · {kda}\n{head}"

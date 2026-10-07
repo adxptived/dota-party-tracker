@@ -60,6 +60,25 @@ def rank_label(rank_tier: Optional[int], leaderboard_rank: Optional[int] = None)
     return name
 
 
+def average_rank_tier(tiers) -> Optional[int]:
+    """Средний `rank_tier` по игрокам лобби (без ранга игнорируем); Immortal — верхняя ступень шкалы."""
+    ordinals = []
+    for tier in tiers:
+        if not tier:
+            continue
+        medal, star = tier // 10, tier % 10
+        if medal >= 8:
+            ordinals.append(35)
+        elif 1 <= medal <= 7:
+            ordinals.append((medal - 1) * 5 + max(star, 1) - 1)
+    if not ordinals:
+        return None
+    mean = round(sum(ordinals) / len(ordinals))
+    if mean >= 35:
+        return 80
+    return (mean // 5 + 1) * 10 + mean % 5 + 1
+
+
 MEDAL_STEP = 770   # MMR-ширина одной медали (Herald..Divine)
 STAR_STEP = 154    # и одной звезды внутри медали
 MMR_DRIFT_TOLERANCE = 350  # на сколько оценка может разойтись с медалью, прежде чем это считаем расхождением

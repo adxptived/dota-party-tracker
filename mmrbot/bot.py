@@ -17,7 +17,7 @@ from mmrbot.access import DENIED, may_manage
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.service import (
     render_board,
@@ -26,6 +26,7 @@ from mmrbot.service import (
     render_graph_board,
     render_records_board,
     render_heroes_board,
+    match_board,
     render_match_board,
     render_period_board,
     render_player_board,
@@ -583,8 +584,42 @@ async def do_roles(message: Message, storage: Storage, od: OpenDota, name: str, 
 
 
 async def do_match(message: Message, storage: Storage, od: OpenDota, name, match_id, stratz=None) -> None:
+    """Матч картинкой (иконки героев, ники, K/D/A…) с кнопкой «Текстом»; не вышло с картинкой — текстом."""
     status = await _progress(message, WAIT)
-    await _reply_board(message, render_match_board(storage, od, message.chat.id, name, match_id, stratz), status)
+    try:
+        board = await match_board(storage, od, message.chat.id, name, match_id, stratz)
+    except Exception:
+        log.exception("Ошибка сборки матча для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board.png is not None:
+        try:
+            await message.answer_photo(
+                BufferedInputFile(board.png, filename="match.png"), caption=board.caption, parse_mode="HTML",
+                reply_markup=match_photo_buttons(board.match_id, board.focus),
+            )
+            await _delete(status)
+            return
+        except Exception:
+            log.warning("Не удалось отправить картинку матча %s — шлём текстом", board.match_id, exc_info=True)
+    await _delete(status)
+    await _send_chunks(message, board.text, nav_menu())
+
+
+async def on_match_text(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
+    """Кнопка «📝 Текстом» под картинкой: тот же матч текстом отдельным сообщением, кнопку под фото убираем."""
+    try:
+        match_id, account = int(args[0]), int(args[1])
+    except (IndexError, ValueError):
+        return
+    player = storage.get_player(message.chat.id, str(account)) if account else None
+    name = player.display_name if player else None
+    await _reply_board(message, render_match_board(storage, od, message.chat.id, name, match_id, stratz))
+    try:
+        await message.edit_reply_markup(reply_markup=match_photo_buttons(match_id, account, text_shown=True))
+    except Exception:
+        pass  # старое сообщение / уже изменено — не важно
 
 
 async def do_player_card(message: Message, storage: Storage, od: OpenDota, name: str, stratz=None) -> None:
@@ -901,7 +936,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "mt"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -921,6 +956,10 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         period = args[0] if args else "week"
         if period in {"day", "week", "month", "year", "all"}:
             await do_records(message, storage, od, period, stratz, edit=True)  # меняем период на месте
+        return
+
+    if kind == "mt":
+        await on_match_text(message, storage, od, args, stratz)  # текст — новым сообщением, фото остаётся
         return
 
     if kind == "g":

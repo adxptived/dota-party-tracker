@@ -322,6 +322,66 @@ def test_long_rate_limit_fails_fast_and_blocks_next_calls(monkeypatch):
     assert od.refresh(1) is False and session.post_calls == []
 
 
+def test_unreachable_server_fails_fast_and_pauses_next_calls(monkeypatch):
+    """Сервер недоступен по сети (connect timeout): без пачки ретраев, и следующие вызовы сразу отдают ошибку —
+    команды берут кэш БД, а не ждут по 20 с на каждый запрос."""
+    import requests
+    from mmrbot.opendota import RateLimited
+    sleeps = _no_sleep(monkeypatch)
+
+    class DownSession(FakeSession):
+        def get(self, url, params=None, timeout=None, headers=None):
+            self.calls.append(url)
+            raise requests.exceptions.ConnectTimeout("connect timeout")
+
+        def post(self, url, timeout=None, headers=None):
+            self.post_calls.append(url)
+            raise requests.exceptions.ConnectTimeout("connect timeout")
+
+    session = DownSession({})
+    od = OpenDota(session=session, min_interval=0)
+    try:
+        od.get_profile(1)
+        assert False, "ожидали ошибку сети"
+    except requests.exceptions.ConnectionError:
+        pass
+    assert len(session.calls) == 1 and sleeps == []  # недоступен — повторять сразу бессмысленно
+    try:
+        od.get_profile(1)
+        assert False, "ожидали RateLimited"
+    except RateLimited:
+        pass
+    assert len(session.calls) == 1  # пауза: в сеть не ходили
+    assert od.refresh(2) is False and session.post_calls == []
+    od._blocked_until = 0.0  # пауза истекла — пробуем снова
+    try:
+        od.get_profile(1)
+    except requests.exceptions.ConnectionError:
+        pass
+    assert len(session.calls) == 2
+
+
+def test_refresh_post_to_unreachable_server_pauses_calls(monkeypatch):
+    import requests
+    from mmrbot.opendota import RateLimited
+    _no_sleep(monkeypatch)
+
+    class DownSession(FakeSession):
+        def post(self, url, timeout=None, headers=None):
+            self.post_calls.append(url)
+            raise requests.exceptions.ConnectionError("no route")
+
+    session = DownSession({"rank_tier": 5})
+    od = OpenDota(session=session, min_interval=0)
+    assert od.refresh(1) is False
+    try:
+        od.get_profile(1)
+        assert False, "ожидали RateLimited"
+    except RateLimited:
+        pass
+    assert session.calls == []
+
+
 def test_rate_limit_block_expires(monkeypatch):
     from mmrbot.opendota import RateLimited
     _no_sleep(monkeypatch)
@@ -403,3 +463,11 @@ def test_get_heroes_returns_list_or_empty():
     heroes = [{"id": 1, "localized_name": "Anti-Mage"}]
     assert OpenDota(session=FakeSession(heroes), min_interval=0).get_heroes() == heroes
     assert OpenDota(session=FakeSession({"oops": 1}), min_interval=0).get_heroes() == []
+
+
+def test_get_match_player_stats_average_rank_from_players():
+    match = {"average_rank": 75, "players": [
+        {"account_id": 42, "rank_tier": 80}, {"account_id": 1, "rank_tier": 80}, {"account_id": 2, "rank_tier": 80},
+    ]}
+    od = OpenDota(session=FakeSession(match), min_interval=0)
+    assert od.get_match_player_stats(123, 42)["average_rank"] == 80

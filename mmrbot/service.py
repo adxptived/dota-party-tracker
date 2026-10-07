@@ -10,8 +10,10 @@ import html
 import logging
 import time
 import weakref
+from dataclasses import dataclass
 from typing import Optional
 
+from mmrbot import hero_icons
 from mmrbot.formatting import (
     render_awards,
     render_party_pulse,
@@ -20,6 +22,7 @@ from mmrbot.formatting import (
     render_hero_detail,
     render_heroes,
     render_leaderboard,
+    render_match_caption,
     render_match_card,
     render_player_card,
     render_period_leaderboard,
@@ -33,6 +36,7 @@ from mmrbot.formatting import (
 from mmrbot.texts import HIDDEN_HINT, NO_PLAYERS, NOT_FOUND, STRATZ_OFF
 from mmrbot.charts import _games_word as games_word, render_mmr_chart, series_stats
 from mmrbot.heroes import find_hero
+from mmrbot.match_image import render_match_image
 from mmrbot.opendota import OpenDota
 from mmrbot.stats import period_since
 from mmrbot.storage import Storage
@@ -325,31 +329,78 @@ async def render_roles_board(
     return render_roles(player.display_name, rows, period)
 
 
-async def render_match_board(
-    storage: Storage, od: OpenDota, chat_id: int, name: Optional[str], match_id: Optional[int], stratz=None
-) -> str:
+@dataclass
+class MatchBoard:
+    """Матч для ответа: текстовая карточка всегда, картинка и подпись — если собрались."""
+    text: str
+    png: Optional[bytes] = None
+    caption: Optional[str] = None
+    match_id: Optional[int] = None
+    focus: Optional[int] = None
+
+
+def _cached_as_match(view: dict) -> dict:
+    """Матч из кэша БД (одна строка игрока) → формат Stratz.get_match с одним игроком — для картинки."""
+    player, row = view["player"], view["match"]
+    me = {key: row.get(key) for key in (
+        "hero_id", "kills", "deaths", "assists", "position", "lane", "imp", "gpm", "xpm", "net_worth",
+        "hero_damage", "tower_damage", "hero_healing", "last_hits", "denies", "level",
+    )}
+    me.update(account_id=player.account_id, name=player.display_name, is_radiant=row["player_slot"] < 128)
+    return {"match_id": row["match_id"], "start_time": row.get("start_time"), "duration": row.get("duration"),
+            "radiant_win": bool(row["radiant_win"]), "players": [me]}
+
+
+MATCH_REFRESH_WAIT = 6.0  # сек: дольше обновления не ждём — показываем матч из БД, обновление доходит фоном
+_background_refreshes: set = set()
+
+
+async def _refresh_capped(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> None:
+    """Обновить игроков, но ждать не дольше MATCH_REFRESH_WAIT (OpenDota тормозит/лежит — отвечаем из кэша)."""
+    task = asyncio.ensure_future(refresh_only(storage, od, chat_id, stratz))
+    done, _ = await asyncio.wait({task}, timeout=MATCH_REFRESH_WAIT)
+    if task in done:
+        task.result()  # ошибку обновления — наверх, как раньше
+        return
+    log.info("Обновление чата %s дольше %.0f с — матч из кэша, обновление идёт фоном", chat_id, MATCH_REFRESH_WAIT)
+    _background_refreshes.add(task)  # держим ссылку: иначе задачу может собрать GC
+    task.add_done_callback(_background_refreshes.discard)
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())  # без «exception was never retrieved»
+
+
+def _render_match_png(match: dict, tracked: dict, focus, tz: str, icons) -> bytes:
+    """В потоке: иконки (кэш/CDN) + рендер картинки."""
+    source = icons if icons is not None else hero_icons.shared()
+    found = source.get_many(p.get("hero_id") for p in match["players"]) if source is not None else {}
+    return render_match_image(match, tracked, focus, tz, found)
+
+
+async def match_board(
+    storage: Storage, od: OpenDota, chat_id: int, name: Optional[str], match_id: Optional[int], stratz=None,
+    image: bool = True, icons=None,
+) -> MatchBoard:
     """Карточка матча. С match_id — любой матч (не обязательно игроков пати), через Stratz.
 
     Без match_id — последний матч игрока (или самого свежего в чате). Если Stratz недоступен,
-    для своих игроков показываем карточку из кэша БД.
+    для своих игроков показываем карточку из кэша БД. image=True — ещё и картинка (сбой рендера → только текст).
     """
     tracked = {p.account_id: p.display_name for p in storage.list_players(chat_id)}
     focus = None
     cached = None
     if match_id is None:
-        await refresh_only(storage, od, chat_id, stratz)
+        await _refresh_capped(storage, od, chat_id, stratz)
         view = await asyncio.to_thread(build_match_view, storage, chat_id, name, None)
         if view is None:
             empty = _empty_players(storage, chat_id, name)
             who = html.escape(", ".join(empty)) if empty else "участников пати"  # уйдёт с parse_mode=HTML
-            return f"Ранкед-матчей не видно ({who}). " + HIDDEN_HINT
+            return MatchBoard(f"Ранкед-матчей не видно ({who}). " + HIDDEN_HINT)
         cached = view
         match_id = view["match"]["match_id"]
         focus = view["player"].account_id
     elif name:
         target = storage.get_player(chat_id, name)
         if target is None:
-            return NOT_FOUND
+            return MatchBoard(NOT_FOUND)
         focus = target.account_id
 
     full = None
@@ -358,15 +409,36 @@ async def render_match_board(
             full = await asyncio.to_thread(stratz.get_match, match_id)
         except Exception:
             log.warning("Stratz: не удалось получить матч %s", match_id, exc_info=True)
+    if full is None and cached is None and name:  # матч своего игрока по id — без Stratz из кэша БД
+        cached = await asyncio.to_thread(build_match_view, storage, chat_id, name, match_id)
+    tz = storage.get_or_create_chat(chat_id).tz
     if full is not None:
         if focus is None:
             focus = next((p["account_id"] for p in full["players"] if p["account_id"] in tracked), None)
-        return render_full_match(full, tracked, focus, storage.get_or_create_chat(chat_id).tz)
-    if cached is not None:
-        return render_match_card(cached, storage.get_or_create_chat(chat_id).tz)
-    if stratz is None:
-        return STRATZ_OFF
-    return f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт)."
+        board = MatchBoard(render_full_match(full, tracked, focus, tz), match_id=match_id, focus=focus)
+        match = full
+    elif cached is not None:
+        board = MatchBoard(render_match_card(cached, tz), match_id=match_id, focus=focus)
+        match = _cached_as_match(cached)
+    elif stratz is None:
+        return MatchBoard(STRATZ_OFF)
+    else:
+        return MatchBoard(f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт).")
+    if image:
+        try:
+            board.png = await asyncio.to_thread(_render_match_png, match, tracked, focus, tz, icons)
+            board.caption = render_match_caption(match, tracked, focus, tz)
+        except Exception:
+            log.exception("Не удалось нарисовать матч %s — отвечаем текстом", match_id)
+            board.png = board.caption = None
+    return board
+
+
+async def render_match_board(
+    storage: Storage, od: OpenDota, chat_id: int, name: Optional[str], match_id: Optional[int], stratz=None
+) -> str:
+    """Карточка матча текстом (см. match_board)."""
+    return (await match_board(storage, od, chat_id, name, match_id, stratz, image=False)).text
 
 
 async def render_hero_board(

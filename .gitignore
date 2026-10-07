@@ -6,6 +6,7 @@
 *.db-shm
 *.sqlite3
 backups/
+hero_icons/
 
 # python
 __pycache__/
