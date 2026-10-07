@@ -151,3 +151,94 @@ def test_hidden_profile_found_by_side_and_hero():
     st = Stratz("k", session=session, min_interval=0)
     assert st.get_matches(42, [1]) == {}                                   # без подсказки — не угадываем
     assert st.get_matches(42, [1], hints={1: (True, 8)})[1]["position"] == 2
+
+
+# --- предохранитель: Stratz недоступен --------------------------------------------------
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def mono(self):
+        return self.now
+
+    def wall(self):
+        return 1_700_000_000.0 + (self.now - 1000.0)
+
+
+def _st_with_clock(session, **kw):
+    from mmrbot.health import ProviderHealth
+    clock = _Clock()
+    health = ProviderHealth("Stratz", clock=clock.mono, wall=clock.wall)
+    return Stratz("k", session=session, min_interval=0, retry_sleep=0, health=health, **kw), clock
+
+
+class _DownSession:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        import requests
+        self.calls.append(url)
+        raise requests.exceptions.ConnectTimeout("connect timeout")
+
+
+def test_network_failure_is_not_retried_and_next_calls_fail_fast():
+    """Stratz лёг: одна попытка (без 3 × таймаут), следующие вызовы отказывают без обращения в сеть."""
+    import requests
+    from mmrbot.health import ProviderUnavailable
+    session = _DownSession()
+    st, clock = _st_with_clock(session)
+    try:
+        st.get_matches(1, [5])
+        assert False, "ожидали ошибку сети"
+    except requests.exceptions.ConnectionError:
+        pass
+    assert len(session.calls) == 1
+    for call in (lambda: st.get_matches(1, [5]), lambda: st.get_match(7)):
+        try:
+            call()
+            assert False, "ожидали отказ предохранителя"
+        except ProviderUnavailable:
+            pass
+    assert len(session.calls) == 1  # пауза: в сеть не ходили
+    clock.now += 61  # пауза истекла — одна пробная попытка
+    try:
+        st.get_matches(1, [5])
+    except requests.exceptions.ConnectionError:
+        pass
+    assert len(session.calls) == 2
+
+
+def test_server_errors_on_all_attempts_open_the_breaker():
+    from mmrbot.health import ProviderUnavailable
+    session = FakeSession([FakeResp({}, 503)] * 3)
+    st, _ = _st_with_clock(session)
+    try:
+        st.get_matches(1, [5])
+        assert False, "ожидали ошибку"
+    except RuntimeError:
+        pass
+    try:
+        st.get_matches(1, [5])
+        assert False, "ожидали отказ предохранителя"
+    except ProviderUnavailable:
+        pass
+    assert len(session.calls) == 3
+
+
+def test_graphql_error_does_not_open_the_breaker():
+    """Stratz ответил (пусть и ошибкой запроса) — он жив, остальные запросы идут как обычно."""
+    session = FakeSession([{"errors": [{"message": "boom"}]}, {"data": {"m0": _match()}}])
+    st, _ = _st_with_clock(session)
+    try:
+        st.get_matches(1, [5])
+    except RuntimeError:
+        pass
+    assert 5 in st.get_matches(1, [5])
+    assert st.health.status()["state"] == "up"
+
+
+def test_health_is_available_for_status():
+    st, _ = _st_with_clock(FakeSession([]))
+    assert st.health.status()["state"] == "up" and st.health.name == "Stratz"

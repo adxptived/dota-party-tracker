@@ -12,8 +12,11 @@ from typing import Optional
 
 import requests
 
+from .health import ProviderHealth, ProviderUnavailable
+
 URL = "https://api.stratz.com/graphql"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
+_BLOCK_NO_HEADER = 30.0  # 429 на всех попытках — короткая пауза, чтобы не долбить сервис в соседних командах
 
 _PLAYER_FIELDS = """
     lobbyType
@@ -74,8 +77,11 @@ class Stratz:
         retry_sleep: float = 1.5,
         chunk: int = 10,
         session=None,
+        health: Optional[ProviderHealth] = None,
     ):
         self.api_key = api_key
+        # Предохранитель: при падении Stratz команды не ждут timeout × ретраи, а сразу получают отказ.
+        self.health = health or ProviderHealth("Stratz")
         self.min_interval = min_interval
         self.timeout = timeout
         self.max_retries = max_retries
@@ -98,13 +104,24 @@ class Stratz:
             time.sleep(wait)
 
     def _query(self, query: str, variables: dict) -> dict:
+        if not self.health.allow():
+            raise ProviderUnavailable("Stratz недоступен: пауза ещё не истекла")
+        try:
+            return self._query_with_retries(query, variables)
+        finally:
+            self.health.release()  # проба не должна «зависнуть», если запрос ушёл нестандартным исключением
+
+    def _query_with_retries(self, query: str, variables: dict) -> dict:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "User-Agent": "STRATZ_API",  # без него Stratz отвечает 403
             "Content-Type": "application/json",
         }
         last_exc: Optional[Exception] = None
+        limited = False
         for attempt in range(self.max_retries):
+            if attempt and self.health.paused():  # пока ретраили, другой поток уже объявил паузу
+                raise ProviderUnavailable("Stratz недоступен: пауза ещё не истекла")
             self._throttle()
             try:
                 resp = self._session.post(
@@ -112,18 +129,32 @@ class Stratz:
                     headers=headers, timeout=self.timeout,
                 )
                 if resp.status_code not in _RETRY_STATUSES:
-                    resp.raise_for_status()
+                    try:
+                        resp.raise_for_status()
+                    except requests.HTTPError:
+                        self.health.success()  # сервис ответил — он жив
+                        raise
                     payload = resp.json()
+                    self.health.success()
                     if payload.get("errors"):
                         raise RuntimeError(f"Stratz: {payload['errors'][0].get('message')}")
                     return payload.get("data") or {}
                 last_exc = RuntimeError(f"Stratz HTTP {resp.status_code}")
+                limited = resp.status_code == 429
             except requests.HTTPError:
                 raise  # 4xx — не ретраим
+            except requests.ConnectionError as exc:  # не достучались: ретраи — только лишнее ожидание
+                self.health.failure(exc)
+                raise
             except (requests.RequestException, ValueError) as exc:  # сеть / битый JSON
                 last_exc = exc
+                limited = False
             if attempt < self.max_retries - 1:  # после последней попытки не спим зря
                 time.sleep(self.retry_sleep * (attempt + 1))
+        if limited:
+            self.health.limit(_BLOCK_NO_HEADER)
+        elif last_exc is not None:
+            self.health.failure(last_exc)
         raise last_exc or RuntimeError("Stratz: не удалось получить ответ")
 
     def get_matches(

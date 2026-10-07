@@ -69,3 +69,58 @@ def test_icon_bad_response_and_unknown_hero(tmp_path):
 def test_get_many_skips_missing(tmp_path):
     icons = HeroIcons(None, session=FakeSession())  # без папки — только память
     assert icons.get_many([1, 2, None, 9999]) == {1: b"PNG", 2: b"PNG"}
+
+
+# --- предохранитель: Steam CDN недоступен -----------------------------------------------
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def mono(self):
+        return self.now
+
+    def wall(self):
+        return 1_700_000_000.0 + (self.now - 1000.0)
+
+
+def _icons_with_clock(session, folder=None):
+    from mmrbot.health import ProviderHealth
+    clock = _Clock()
+    health = ProviderHealth("Steam CDN", clock=clock.mono, wall=clock.wall)
+    return HeroIcons(folder, session=session, health=health), clock
+
+
+def test_cdn_down_stops_further_downloads_without_remembering_misses():
+    """CDN лёг: после первого сбоя остальные иконки не ждут таймаут; промах не запоминаем — после паузы пробуем снова."""
+    import requests
+    session = FakeSession(exc=requests.exceptions.ConnectTimeout("connect timeout"))
+    icons, clock = _icons_with_clock(session)
+    assert [icons.get(hid) for hid in (1, 2, 3, 4)] == [None] * 4
+    assert len(session.urls) == 1
+    assert icons.health.status()["state"] == "down"
+    session.exc = None
+    clock.now += 61  # пауза истекла — первая же иконка работает как проба
+    assert icons.get(2) == b"PNG"
+    assert icons.get(3) == b"PNG" and icons.health.status()["state"] == "up"  # 3 не «запомнена как промах»
+
+
+def test_icon_404_does_not_open_the_breaker():
+    icons, _ = _icons_with_clock(FakeSession(FakeResp(status=404)))
+    assert icons.get(1) is None and icons.get(2) is None
+    assert icons.health.status()["state"] == "up"
+
+
+def test_icon_server_error_opens_the_breaker():
+    session = FakeSession(FakeResp(status=503))
+    icons, _ = _icons_with_clock(session)
+    assert icons.get(1) is None and icons.get(2) is None
+    assert len(session.urls) == 1 and icons.health.status()["state"] == "down"
+
+
+def test_icons_on_disk_are_served_while_cdn_is_down(tmp_path):
+    import requests
+    (tmp_path / "antimage.png").write_bytes(b"PNG")
+    icons, _ = _icons_with_clock(FakeSession(exc=requests.exceptions.ConnectTimeout("x")), str(tmp_path))
+    assert icons.get(2) is None            # этой иконки на диске нет — CDN лёг
+    assert icons.get(1) == b"PNG"          # кэш на диске работает и во время паузы

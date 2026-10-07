@@ -322,24 +322,48 @@ def test_long_rate_limit_fails_fast_and_blocks_next_calls(monkeypatch):
     assert od.refresh(1) is False and session.post_calls == []
 
 
+class _Clock:
+    """Фейковые часы предохранителя: пауза «истекает» сдвигом времени, а не правкой приватных полей."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def mono(self):
+        return self.now
+
+    def wall(self):
+        return 1_700_000_000.0 + (self.now - 1000.0)
+
+
+def _od_with_clock(session, **kw):
+    from mmrbot.health import ProviderHealth
+    clock = _Clock()
+    health = ProviderHealth("OpenDota", clock=clock.mono, wall=clock.wall)
+    return OpenDota(session=session, min_interval=0, health=health, **kw), clock
+
+
+class DownSession(FakeSession):
+    """OpenDota недоступен по сети: и GET, и POST падают по connect timeout."""
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        import requests
+        self.calls.append(url)
+        raise requests.exceptions.ConnectTimeout("connect timeout")
+
+    def post(self, url, timeout=None, headers=None):
+        import requests
+        self.post_calls.append(url)
+        raise requests.exceptions.ConnectTimeout("connect timeout")
+
+
 def test_unreachable_server_fails_fast_and_pauses_next_calls(monkeypatch):
     """Сервер недоступен по сети (connect timeout): без пачки ретраев, и следующие вызовы сразу отдают ошибку —
     команды берут кэш БД, а не ждут по 20 с на каждый запрос."""
     import requests
-    from mmrbot.opendota import RateLimited
+    from mmrbot.health import ProviderUnavailable
     sleeps = _no_sleep(monkeypatch)
-
-    class DownSession(FakeSession):
-        def get(self, url, params=None, timeout=None, headers=None):
-            self.calls.append(url)
-            raise requests.exceptions.ConnectTimeout("connect timeout")
-
-        def post(self, url, timeout=None, headers=None):
-            self.post_calls.append(url)
-            raise requests.exceptions.ConnectTimeout("connect timeout")
-
     session = DownSession({})
-    od = OpenDota(session=session, min_interval=0)
+    od, clock = _od_with_clock(session)
     try:
         od.get_profile(1)
         assert False, "ожидали ошибку сети"
@@ -348,12 +372,12 @@ def test_unreachable_server_fails_fast_and_pauses_next_calls(monkeypatch):
     assert len(session.calls) == 1 and sleeps == []  # недоступен — повторять сразу бессмысленно
     try:
         od.get_profile(1)
-        assert False, "ожидали RateLimited"
-    except RateLimited:
+        assert False, "ожидали отказ предохранителя"
+    except ProviderUnavailable:
         pass
     assert len(session.calls) == 1  # пауза: в сеть не ходили
     assert od.refresh(2) is False and session.post_calls == []
-    od._blocked_until = 0.0  # пауза истекла — пробуем снова
+    clock.now += 61  # пауза истекла — пробуем снова
     try:
         od.get_profile(1)
     except requests.exceptions.ConnectionError:
@@ -361,37 +385,112 @@ def test_unreachable_server_fails_fast_and_pauses_next_calls(monkeypatch):
     assert len(session.calls) == 2
 
 
-def test_refresh_post_to_unreachable_server_pauses_calls(monkeypatch):
+def test_outage_pause_grows_when_probe_fails(monkeypatch):
     import requests
-    from mmrbot.opendota import RateLimited
     _no_sleep(monkeypatch)
+    session = DownSession({})
+    od, clock = _od_with_clock(session)
+    for expected_pause in (60, 120, 240):
+        try:
+            od.get_profile(1)
+        except requests.exceptions.ConnectionError:
+            pass
+        assert round(od.health.status()["next_try"] - clock.wall()) == expected_pause
+        clock.now += expected_pause + 1
+    assert len(session.calls) == 3  # ровно одна пробная попытка на паузу
 
-    class DownSession(FakeSession):
-        def post(self, url, timeout=None, headers=None):
-            self.post_calls.append(url)
-            raise requests.exceptions.ConnectionError("no route")
 
+def test_refresh_post_to_unreachable_server_pauses_calls(monkeypatch):
+    from mmrbot.health import ProviderUnavailable
+    _no_sleep(monkeypatch)
     session = DownSession({"rank_tier": 5})
-    od = OpenDota(session=session, min_interval=0)
+    od, _ = _od_with_clock(session)
     assert od.refresh(1) is False
     try:
         od.get_profile(1)
-        assert False, "ожидали RateLimited"
-    except RateLimited:
+        assert False, "ожидали отказ предохранителя"
+    except ProviderUnavailable:
         pass
     assert session.calls == []
+
+
+def test_server_errors_on_all_attempts_open_the_breaker(monkeypatch):
+    """5xx на всех попытках — сервис считаем недоступным: следующие вызовы не ждут ретраев."""
+    from mmrbot.health import ProviderUnavailable
+    sleeps = _no_sleep(monkeypatch)
+    session = SeqSession([FakeResp({}, 503)] * 3)
+    od, _ = _od_with_clock(session)
+    try:
+        od.get_profile(1)
+        assert False, "ожидали ошибку"
+    except RuntimeError:
+        pass
+    assert len(sleeps) == 2
+    try:
+        od.get_profile(1)
+        assert False, "ожидали отказ предохранителя"
+    except ProviderUnavailable:
+        pass
+    assert len(session.calls) == 3
+
+
+def test_http_4xx_means_server_is_alive(monkeypatch):
+    """404/403 — сервис отвечает: предохранитель не открывается."""
+    import requests
+    _no_sleep(monkeypatch)
+
+    class NotFound(FakeSession):
+        def get(self, url, params=None, timeout=None, headers=None):
+            resp = requests.Response()
+            resp.status_code, resp._content = 404, b"{}"
+            return resp
+
+    od, _ = _od_with_clock(NotFound({}))
+    for _ in range(3):
+        try:
+            od.get_profile(1)
+            assert False, "ожидали HTTPError"
+        except requests.HTTPError:
+            pass
+    assert od.health.status()["state"] == "up"
+
+
+def test_success_after_probe_closes_the_breaker(monkeypatch):
+    import requests
+    _no_sleep(monkeypatch)
+
+    class Flaky(FakeSession):
+        down = True
+
+        def get(self, url, params=None, timeout=None, headers=None):
+            self.calls.append(url)
+            if self.down:
+                raise requests.exceptions.ConnectTimeout("x")
+            return FakeResp({"rank_tier": 7})
+
+    session = Flaky({})
+    od, clock = _od_with_clock(session)
+    try:
+        od.get_profile(1)
+    except requests.exceptions.ConnectionError:
+        pass
+    session.down = False
+    clock.now += 61
+    assert od.get_profile(1)["rank_tier"] == 7
+    assert od.health.status()["state"] == "up"
+    assert od.get_profile(1)["rank_tier"] == 7  # дальше — как обычно
 
 
 def test_rate_limit_block_expires(monkeypatch):
     from mmrbot.opendota import RateLimited
     _no_sleep(monkeypatch)
     session = SeqSession([RespWithHeaders({}, 429, {"Retry-After": "60"}), FakeResp({"rank_tier": 5})])
-    od = OpenDota(session=session, min_interval=0)
+    od, clock = _od_with_clock(session)
     try:
         od.get_profile(1)
     except RateLimited:
         pass
-    od._blocked_until = 0.0  # пауза истекла
+    clock.now += 61  # пауза истекла
     assert od.get_profile(1)["rank_tier"] == 5
 
 

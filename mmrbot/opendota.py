@@ -12,6 +12,7 @@ from typing import Optional
 
 import requests
 
+from .health import ProviderHealth, ProviderUnavailable
 from .ranks import average_rank_tier
 
 BASE_URL = "https://api.opendota.com/api"
@@ -23,10 +24,9 @@ _MAX_RETRY_AFTER = 30.0
 _INLINE_WAIT = 10.0  # дольше этого лимит не пережидаем в запросе — сразу отдаём кэш из БД
 _MAX_BLOCK = 900.0  # потолок паузы после 429 (сек): дальше пробуем снова
 _BLOCK_NO_HEADER = 30.0  # 429 без Retry-After и после всех попыток — короткая пауза
-_OUTAGE_PAUSE = 60.0  # сервер недоступен по сети — столько не ходим (команды берут кэш БД, а не ждут таймаутов)
 
 
-class RateLimited(RuntimeError):
+class RateLimited(ProviderUnavailable):
     """OpenDota ответил 429: до конца паузы запросы не отправляются (вызывающий код берёт кэш)."""
 
 
@@ -77,8 +77,11 @@ class OpenDota:
         session=None,
         burst: int = 1,
         background_reserve: Optional[int] = None,
+        health: Optional[ProviderHealth] = None,
     ):
         self.api_key = api_key
+        # Предохранитель: недоступность по сети и 429 — одна логика «не ходить в сеть» (команды берут кэш БД).
+        self.health = health or ProviderHealth("OpenDota")
         self.refresh_gap = self.REFRESH_GAP if api_key else self.REFRESH_GAP_NO_KEY
         self.background_reserve = self.BACKGROUND_RESERVE if background_reserve is None else background_reserve
         # Остаток бесплатного суточного лимита — из заголовка ответа OpenDota (без ключа); None — ещё неизвестен.
@@ -97,7 +100,6 @@ class OpenDota:
             session.mount("https://", adapter)
         self._session = session
         self._last_call = 0.0
-        self._blocked_until = 0.0  # monotonic-время, до которого OpenDota просил не ходить (429)
         self._match_cache: "OrderedDict[int, tuple[float, dict]]" = OrderedDict()
         self._match_locks: dict[int, threading.Lock] = {}
         self._refresh_at: dict[int, float] = {}
@@ -142,15 +144,29 @@ class OpenDota:
             return True
         return self.remaining_day > self.background_reserve
 
+    def _refusal(self) -> ProviderUnavailable:
+        """Исключение для отказа предохранителя: лимит (429) или недоступность — по состоянию."""
+        if self.health.status()["state"] == "limited":
+            return RateLimited("OpenDota: пауза после лимита ещё не истекла")
+        return ProviderUnavailable("OpenDota недоступен: пауза ещё не истекла")
+
     def _get(self, path: str, params: Optional[dict] = None):
+        if not self.health.allow():
+            raise self._refusal()
+        try:
+            return self._get_with_retries(path, params)
+        finally:
+            self.health.release()  # проба не должна «зависнуть», если запрос ушёл нестандартным исключением
+
+    def _get_with_retries(self, path: str, params: Optional[dict] = None):
         params = dict(params or {})
         url = f"{BASE_URL}{path}"
 
         last_exc: Optional[Exception] = None
         limited = False
         for attempt in range(self.max_retries):
-            if time.monotonic() < self._blocked_until:
-                raise RateLimited("OpenDota: пауза после лимита или недоступности ещё не истекла")
+            if attempt and self.health.paused():  # пока ретраили, другой поток уже объявил паузу
+                raise self._refusal()
             self._throttle()
             delay = 1.5 * (attempt + 1)
             try:
@@ -162,23 +178,31 @@ class OpenDota:
                     asked = _retry_after_raw(resp) if limited else None
                     if asked is not None and asked > _INLINE_WAIT:
                         # Долгая пауза (дневной лимит и т.п.): не висим и не шлём запросы впустую.
-                        self._blocked_until = time.monotonic() + min(asked, _MAX_BLOCK)
+                        self.health.limit(min(asked, _MAX_BLOCK))
                         raise RateLimited(f"OpenDota HTTP 429, повтор через {asked:.0f} с")
                     delay = _retry_after(resp, delay)
                 else:
-                    resp.raise_for_status()  # 4xx — не ретраим, сразу наверх
-                    return resp.json()
+                    try:
+                        resp.raise_for_status()  # 4xx — не ретраим, сразу наверх
+                    except requests.HTTPError:
+                        self.health.success()  # сервер ответил — он жив
+                        raise
+                    data = resp.json()
+                    self.health.success()
+                    return data
             except requests.HTTPError:
                 raise
-            except requests.ConnectionError:  # не достучались (connect timeout, DNS): ретраи — только лишнее ожидание
-                self._pause_outage()
+            except requests.ConnectionError as exc:  # не достучались (connect timeout, DNS): ретраи — только лишнее ожидание
+                self.health.failure(exc)
                 raise
             except (requests.RequestException, ValueError) as exc:  # сеть / битый JSON
                 last_exc = exc
             if attempt < self.max_retries - 1:  # после последней попытки не спим зря
                 time.sleep(delay)
         if limited:  # лимит не отпустил за все попытки — остальные запросы этой волны не тратим
-            self._blocked_until = time.monotonic() + _BLOCK_NO_HEADER
+            self.health.limit(_BLOCK_NO_HEADER)
+        elif last_exc is not None:  # 5xx / read timeout / битый ответ на всех попытках
+            self.health.failure(last_exc)
         raise last_exc or RuntimeError("OpenDota: не удалось получить ответ")
 
     def refresh(self, account_id: int) -> bool:
@@ -195,7 +219,9 @@ class OpenDota:
             if last is not None and now - last < self.refresh_gap:
                 return False
             self._refresh_at[account_id] = now
-        if now < self._blocked_until:
+        if not self.health.allow():  # пауза: пинок не ушёл — слот «не чаще раза в refresh_gap» не расходуем
+            with self._lock:
+                self._refresh_at.pop(account_id, None)
             return False
         self._throttle()
         try:
@@ -203,17 +229,19 @@ class OpenDota:
                 f"{BASE_URL}/players/{account_id}/refresh", timeout=self.timeout, **self._auth()
             )
             self._note_quota(resp)
+            if getattr(resp, "status_code", 200) < 500:
+                self.health.success()
+            else:
+                self.health.release()
             return True
         except Exception as exc:
             with self._lock:
                 self._refresh_at.pop(account_id, None)  # не дошло — в следующий раз попробуем снова
             if isinstance(exc, requests.ConnectionError):
-                self._pause_outage()
+                self.health.failure(exc)
+            else:
+                self.health.release()
             return False
-
-    def _pause_outage(self) -> None:
-        """Сервер недоступен: следующие запросы сразу падают (RateLimited) до конца паузы, не дожидаясь таймаутов."""
-        self._blocked_until = max(self._blocked_until, time.monotonic() + _OUTAGE_PAUSE)
 
     def get_heroes(self) -> list[dict]:
         """Справочник героев /heroes: [{id, localized_name, ...}] (пусто при сбое формата)."""

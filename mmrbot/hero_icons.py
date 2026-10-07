@@ -14,6 +14,7 @@ from typing import Optional
 
 import requests
 
+from mmrbot.health import ProviderHealth
 from mmrbot.heroes import hero_slug
 
 ICON_URL = "https://cdn.steamstatic.com/apps/dota2/images/dota_react/heroes/{slug}.png"
@@ -24,8 +25,13 @@ log = logging.getLogger(__name__)
 
 
 class HeroIcons:
-    def __init__(self, folder: Optional[str], session=None, timeout=(8, 15)):  # TLS-рукопожатие идёт в первый таймаут
+    def __init__(
+        self, folder: Optional[str], session=None, timeout=(8, 15),  # TLS-рукопожатие идёт в первый таймаут
+        health: Optional[ProviderHealth] = None,
+    ):
         self.folder = folder
+        # Предохранитель CDN: пока он лежит, картинка рисуется с заглушками без ожидания таймаутов.
+        self.health = health or ProviderHealth("Steam CDN")
         self.timeout = timeout
         self._session = session or requests.Session()
         self._memory: dict[str, bytes] = {}
@@ -42,7 +48,14 @@ class HeroIcons:
                 return self._memory[slug]
             if time.monotonic() - self._misses.get(slug, -MISS_TTL) < MISS_TTL:
                 return None
-        data = self._from_disk(slug) or self._download(slug)
+        data = self._from_disk(slug)
+        if data is None and self.health.allow():  # CDN лежит — иконки нет; промах не запоминаем, после паузы попробуем
+            try:
+                data = self._download(slug)
+            finally:
+                self.health.release()  # проба не должна «зависнуть», если загрузка ушла нестандартным исключением
+        elif data is None:
+            return None
         with self._lock:
             if data is None:
                 self._misses[slug] = time.monotonic()
@@ -76,8 +89,13 @@ class HeroIcons:
         try:
             resp = self._session.get(ICON_URL.format(slug=slug), timeout=self.timeout)
         except Exception as exc:
+            self.health.failure(exc)
             log.warning("Иконка героя %s не скачалась: %s", slug, exc)  # без трейсбека: 10 иконок — 10 простыней
             return None
+        if resp.status_code >= 500:
+            self.health.failure(RuntimeError(f"HTTP {resp.status_code}"))
+        else:
+            self.health.success()  # CDN ответил (пусть и 404 на конкретную иконку) — он жив
         content_type = (resp.headers or {}).get("Content-Type", "")
         if resp.status_code != 200 or not content_type.startswith("image/") or not resp.content:
             log.warning("Иконка героя %s: HTTP %s %s", slug, resp.status_code, content_type)
