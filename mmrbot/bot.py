@@ -14,12 +14,13 @@ from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceRep
 
 from mmrbot import commands as cmd
 from mmrbot import perf
+from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, may_manage
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
@@ -246,6 +247,36 @@ async def _reply_board(message: Message, coro, status=None, markup=None) -> None
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
     await _send_chunks(message, text, markup or nav_menu())
+
+
+async def _reply_image(message: Message, board: ImageBoard, markup, status=None, edit: bool = False) -> None:
+    """Картинка + подпись + кнопки; не собралась или Telegram не принял — тот же отчёт текстом.
+
+    edit=True — под сообщением-фото нажата кнопка (период и т.п.): картинка меняется на месте (edit_media);
+    не вышло (старое сообщение) — шлём новую и убираем прежнюю.
+    """
+    if board.png is not None:
+        photo = BufferedInputFile(board.png, filename="card.png")
+        try:
+            if edit and getattr(message, "photo", None):
+                try:
+                    await message.edit_media(
+                        InputMediaPhoto(media=photo, caption=board.caption, parse_mode="HTML"), reply_markup=markup
+                    )
+                except Exception as exc:
+                    if "not modified" not in str(exc):  # старое сообщение и т.п. — новая картинка, прежнюю убираем
+                        await message.answer_photo(photo, caption=board.caption, parse_mode="HTML", reply_markup=markup)
+                        await _delete(message)
+            else:
+                await message.answer_photo(photo, caption=board.caption, parse_mode="HTML", reply_markup=markup)
+                if edit:
+                    await _delete(message)
+            await _delete(status)
+            return
+        except Exception:
+            log.warning("Не удалось отправить картинку — шлём текстом", exc_info=True)
+    await _delete(status)
+    await _send_chunks(message, board.text, nav_menu())
 
 
 @router.message(Command("help"))
@@ -619,31 +650,31 @@ async def do_match(message: Message, storage: Storage, od: OpenDota, name, match
         await _delete(status)
         await message.answer(FAILED, reply_markup=nav_menu())
         return
-    if board.png is not None:
-        try:
-            await message.answer_photo(
-                BufferedInputFile(board.png, filename="match.png"), caption=board.caption, parse_mode="HTML",
-                reply_markup=match_photo_buttons(board.match_id, board.focus),
-            )
-            await _delete(status)
-            return
-        except Exception:
-            log.warning("Не удалось отправить картинку матча %s — шлём текстом", board.match_id, exc_info=True)
-    await _delete(status)
-    await _send_chunks(message, board.text, nav_menu())
+    await _reply_image(message, board, match_photo_buttons(board.match_id, board.focus), status)
 
 
-async def on_match_text(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
-    """Кнопка «📝 Текстом» под картинкой: тот же матч текстом отдельным сообщением, кнопку под фото убираем."""
+async def _text_match(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:match:<match_id>:<account_id|0> — тот же матч текстом."""
     try:
         match_id, account = int(args[0]), int(args[1])
     except (IndexError, ValueError):
+        return None
+    player = storage.get_player(chat_id, str(account)) if account else None
+    return await render_match_board(storage, od, chat_id, player.display_name if player else None, match_id, stratz)
+
+
+# Текстовые версии карточек для кнопки «📝 Текстом»: вид → корутина (storage, od, chat_id, args, stratz) → текст.
+TEXT_VIEWS = {"match": _text_match}
+
+
+async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
+    """Кнопка «📝 Текстом» под картинкой: тот же отчёт текстом отдельным сообщением, кнопку под фото убираем."""
+    view = TEXT_VIEWS.get(args[0]) if args else None
+    if view is None:
         return
-    player = storage.get_player(message.chat.id, str(account)) if account else None
-    name = player.display_name if player else None
-    await _reply_board(message, render_match_board(storage, od, message.chat.id, name, match_id, stratz))
+    await _reply_board(message, view(storage, od, message.chat.id, args[1:], stratz))
     try:
-        await message.edit_reply_markup(reply_markup=match_photo_buttons(match_id, account, text_shown=True))
+        await message.edit_reply_markup(reply_markup=without_text_button(getattr(message, "reply_markup", None)))
     except Exception:
         pass  # старое сообщение / уже изменено — не важно
 
@@ -962,7 +993,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "mt"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "mt", "tx"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -984,8 +1015,8 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             await do_records(message, storage, od, period, stratz, edit=True)  # меняем период на месте
         return
 
-    if kind == "mt":
-        await on_match_text(message, storage, od, args, stratz)  # текст — новым сообщением, фото остаётся
+    if kind in {"tx", "mt"}:  # mt — прежний формат кнопки «Текстом» под матчем (сообщения уже в чатах)
+        await on_text_view(message, storage, od, args if kind == "tx" else ["match", *args], stratz)
         return
 
     if kind == "g":

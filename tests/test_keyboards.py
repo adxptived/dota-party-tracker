@@ -16,13 +16,13 @@ def _flat(markup):
 def test_match_photo_buttons_text_dotabuff_and_nav():
     from mmrbot.keyboards import match_photo_buttons
     buttons = _flat(match_photo_buttons(7812345678, 1105542592))
-    assert buttons[0].callback_data == "mt:7812345678:1105542592" and "Текст" in buttons[0].text
+    assert buttons[0].callback_data == "tx:match:7812345678:1105542592" and "Текст" in buttons[0].text
     assert buttons[1].url == "https://www.dotabuff.com/matches/7812345678"
     assert {"m:menu", "x:close"} <= {b.callback_data for b in buttons}
     assert all(len((b.callback_data or "").encode()) <= 64 for b in buttons)
-    assert _flat(match_photo_buttons(5, None))[0].callback_data == "mt:5:0"
+    assert _flat(match_photo_buttons(5, None))[0].callback_data == "tx:match:5:0"
     shown = _flat(match_photo_buttons(5, None, text_shown=True))
-    assert not any((b.callback_data or "").startswith("mt:") for b in shown)
+    assert not any((b.callback_data or "").startswith("tx:") for b in shown)
 
 
 def _all_menu_buttons():

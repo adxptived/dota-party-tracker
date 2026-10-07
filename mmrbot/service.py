@@ -10,10 +10,10 @@ import html
 import logging
 import time
 import weakref
-from dataclasses import dataclass
 from typing import Optional
 
 from mmrbot import hero_icons, perf
+from mmrbot.boards import CAPTION_LIMIT, MatchBoard
 from mmrbot.health import log_network_error
 from mmrbot.formatting import (
     outage_note,
@@ -62,7 +62,6 @@ from mmrbot.tracker import (
 log = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4096
-CAPTION_LIMIT = 1024  # лимит подписи к фото в Telegram
 
 
 async def _build(fn, *args):
@@ -398,16 +397,6 @@ async def render_roles_board(
         return NOT_FOUND
     player, rows = result
     return _with_stale(storage, chat_id, render_roles(player.display_name, rows, period), od)
-
-
-@dataclass
-class MatchBoard:
-    """Матч для ответа: текстовая карточка всегда, картинка и подпись — если собрались."""
-    text: str
-    png: Optional[bytes] = None
-    caption: Optional[str] = None
-    match_id: Optional[int] = None
-    focus: Optional[int] = None
 
 
 def _cached_as_match(view: dict) -> dict:

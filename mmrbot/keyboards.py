@@ -2,9 +2,12 @@
 
 Схема callback_data (до 64 байт): `m:<действие>` — главное меню, `m:c:<категория>` — его подменю; `pp:<вид>:<account_id>` —
 выбор игрока; `x:close` — удалить сообщение; `r:<период>` — рекорды; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом;
-`mt:<match_id>:<account_id|0>` — матч текстом (кнопка под картинкой матча).
+`tx:<вид>:<аргументы>` — тот же отчёт текстом (кнопка «📝 Текстом» под любой карточкой-картинкой;
+старое `mt:<match_id>:<account_id|0>` = `tx:match:…` понимается для уже отправленных сообщений).
 """
 from __future__ import annotations
+
+from typing import Optional
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -187,14 +190,44 @@ def player_actions(account_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+TEXT_BUTTON = "📝 Текстом"
+
+
+def text_button(kind: str, *args) -> InlineKeyboardButton:
+    """«📝 Текстом»: `tx:<вид>:<аргументы>` (≤ 64 байт — иначе Telegram отклонит всю клавиатуру)."""
+    data = ":".join(["tx", kind, *(str(a) for a in args)])
+    if len(data.encode("utf-8")) > 64:
+        raise ValueError(f"callback_data длиннее 64 байт: {data}")
+    return InlineKeyboardButton(text=TEXT_BUTTON, callback_data=data)
+
+
+def _is_text_button(button) -> bool:
+    return (getattr(button, "callback_data", None) or "").startswith(("tx:", "mt:"))
+
+
+def with_text_button(markup: Optional[InlineKeyboardMarkup], kind: str, *args) -> InlineKeyboardMarkup:
+    """Добавляет ряд «📝 Текстом» перед последним (навигационным) рядом; без клавиатуры — отдельный ряд."""
+    rows = [list(row) for row in markup.inline_keyboard] if markup is not None else []
+    rows.insert(max(len(rows) - 1, 0), [text_button(kind, *args)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def without_text_button(markup: Optional[InlineKeyboardMarkup]) -> Optional[InlineKeyboardMarkup]:
+    """Убирает «📝 Текстом» (новый и старый формат) и опустевшие ряды: текст уже отправлен, второй раз не нужен."""
+    if markup is None:
+        return None
+    rows = [[b for b in row if not _is_text_button(b)] for row in markup.inline_keyboard]
+    return InlineKeyboardMarkup(inline_keyboard=[row for row in rows if row])
+
+
 def match_photo_buttons(match_id: int, focus, text_shown: bool = False) -> InlineKeyboardMarkup:
-    """Под картинкой матча: «Текстом» (`mt:<match_id>:<account_id|0>`), ссылка на Dotabuff, навигация.
+    """Под картинкой матча: «Текстом» (`tx:match:<match_id>:<account_id|0>`), ссылка на Dotabuff, навигация.
 
     text_shown — текст уже отправлен: кнопку «Текстом» убираем, чтобы не плодить дубли.
     """
     row = [InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{match_id}")]
     if not text_shown:
-        row.insert(0, InlineKeyboardButton(text="📝 Текстом", callback_data=f"mt:{match_id}:{focus or 0}"))
+        row.insert(0, text_button("match", match_id, focus or 0))
     return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
 
 

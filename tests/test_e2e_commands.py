@@ -211,11 +211,12 @@ def _text_button(msg, env, stratz=True):
     storage, od, sz = env
     markup = msg.photos[-1][1]["reply_markup"]
     data = next(b.callback_data for row in markup.inline_keyboard for b in row
-                if (b.callback_data or "").startswith("mt:"))
+                if (b.callback_data or "").startswith("tx:"))
     cb = FakeCallback(data)
+    cb.message.reply_markup = markup  # Telegram отдаёт кнопки сообщения, под которым нажали
     run(botmod.on_callback(cb, storage, od, sz if stratz else None))
     assert cb.message.markup_edits and not any(  # кнопку «Текстом» под фото убрали — второй раз не жмут
-        (b.callback_data or "").startswith("mt:") for row in cb.message.markup_edits[-1].inline_keyboard for b in row)
+        (b.callback_data or "").startswith("tx:") for row in cb.message.markup_edits[-1].inline_keyboard for b in row)
     return cb.message
 
 
