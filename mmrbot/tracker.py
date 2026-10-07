@@ -36,6 +36,7 @@ PROFILE_TTL = 6 * 3600  # сек: ранг без новых игр перечи
 DEEP_SYNC_SEC = 6 * 3600  # сек: раз в столько сверяем историю глубоко (200 матчей), между — лёгкий список
 REFRESH_WORKERS = 4  # игроков обновляем параллельно (частоту запросов держит троттлинг клиента)
 REFRESH_COOLDOWN = 180  # сек: не ходить в OpenDota, если игрок обновлён недавно (скорость /stats)
+FRESH_ENOUGH = 600  # сек: данные моложе — команда отвечает из БД, сеть не трогает (фон и так обновляет каждые 2–10 мин)
 SINGLE_FLIGHT_WAIT = 30.0  # сек: столько присоединившийся вызов ждёт чужое обновление того же игрока
 
 
@@ -789,18 +790,20 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
 def refresh_chat(
     storage: Storage, client: OpenDotaClient, chat_id: int, now: int,
     stratz: Optional[StratzClient] = None, players: Optional[list[Player]] = None,
-    fast: bool = False,
+    fast: bool = False, max_age: Optional[int] = None,
 ) -> list[Player]:
     """Обновить устаревших игроков чата (параллельно) и вернуть актуальный список игроков.
 
     Без сборки сводок — этого достаточно, когда нужны только свежие матчи (например, для графика).
     fast=True — матчи, ранг и позиции Stratz (быстрый ответ на команду); остальное догоняет finish_refresh.
+    max_age — «свежее» не обновляем (по умолчанию REFRESH_COOLDOWN; команды передают FRESH_ENOUGH).
     """
     players = players if players is not None else storage.list_players(chat_id)
     if _provider_down(client):  # OpenDota лежит — отвечаем из БД, не создавая пул потоков и не ловя таймауты
         return players
     # Кулдаун: если обновляли недавно — берём кэш из БД, не дёргаем OpenDota (скорость).
-    stale = [p for p in players if p.updated_ts is None or (now - p.updated_ts) >= REFRESH_COOLDOWN]
+    age = REFRESH_COOLDOWN if max_age is None else max_age
+    stale = [p for p in players if p.updated_ts is None or (now - p.updated_ts) >= age]
     if not stale:
         return players
 

@@ -83,13 +83,13 @@ def _match(match_id, hours_ago, hero=2, win=True):
 
 
 def _seed(storage, names=("Вася",)):
-    """Игроки с историей: обновлялись 10 минут назад (дольше кулдауна — команда захочет в сеть)."""
+    """Игроки с историей: обновлялись 15 минут назад (старше FRESH_ENOUGH — команда захочет в сеть)."""
     storage.get_or_create_chat(100)
     players = []
     for n, name in enumerate(names):
         player = storage.add_player(100, 1 + n, name, 5000, 0, 0)
         storage.add_matches(player.id, [_match(100 * (n + 1) + i, i + 1, win=bool(i % 2)) for i in range(4)])
-        storage.touch_player(player.id, NOW - 600)
+        storage.touch_player(player.id, NOW - 900)
         storage.mark_notified(player.id)
         players.append(player)
     return players
@@ -193,7 +193,7 @@ def test_after_revival_data_updates_and_note_disappears(store):
     clock.now += 61                                 # пауза кончилась
     session.down = False
     storage_player = store.get_player(100, "Вася")
-    store.touch_player(storage_player.id, NOW - 600)  # данные снова «старые» — команда идёт в сеть
+    store.touch_player(storage_player.id, NOW - 900)  # данные снова «старые» — команда идёт в сеть
     text = run(service.render_board(store, od, 100))
     assert session.gets > gets_down                 # пробная попытка прошла
     assert od.health.status()["state"] == "up"
@@ -300,7 +300,7 @@ def outage_env(tmp_path, e2e):
          "average_rank": 80, "position": pos, "imp": imp}
         for mid, h, hero, k, d, a, win, mins, pos, imp in e2e.GAMES
     ])
-    storage.touch_player(player.id, NOW - 600)
+    storage.touch_player(player.id, NOW - 900)
     storage.mark_notified(player.id)
     session = FlakySession(down=True)
     od, _ = _client(session)

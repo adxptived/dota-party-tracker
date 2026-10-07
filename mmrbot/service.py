@@ -43,7 +43,7 @@ from mmrbot.opendota import OpenDota
 from mmrbot.stats import period_since
 from mmrbot.storage import Storage
 from mmrbot.tracker import (
-    REFRESH_COOLDOWN,
+    FRESH_ENOUGH,
     finish_refresh,
     build_chat_comparison,
     build_hero_view,
@@ -107,6 +107,22 @@ def _kick_finish(storage: Storage, od: OpenDota, chat_id: int) -> None:
 COMMAND_REFRESH_WAIT = 4.0  # сек: команда ждёт обновление игроков не дольше (настройка COMMAND_REFRESH_WAIT)
 _background_refreshes: set = set()
 
+# Какие команды ждут обновление (в пределах бюджета), а какие отвечают сразу из БД, а обновление идёт фоном.
+# Ждут отчёты, где свежая игра меняет картину (рейтинг, ±MMR, график, рекорды, матч). Не ждут разрезы по героям/ролям:
+# новые 1–2 игры за месяц их почти не меняют. Игроки, которых ещё ни разу не загружали, ждут всегда: пустой экран хуже.
+WAITS_FOR_REFRESH = {
+    "stats": True, "player": True, "compare": True, "together": True, "records": True, "graph": True,
+    "period": True, "match": True,
+    "heroes": False, "player_heroes": False, "roles": False, "hero": False,
+}
+
+
+async def refresh_for(command: str, storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> bool:
+    """Обновление под команду по таблице WAITS_FOR_REFRESH: ждать (в бюджете) или запустить фоном и ответить из БД."""
+    never_loaded = any(p.updated_ts is None for p in storage.list_players(chat_id))
+    budget = None if WAITS_FOR_REFRESH[command] or never_loaded else 0.0
+    return await refresh_with_budget(storage, od, chat_id, stratz, budget=budget)
+
 
 async def refresh_with_budget(
     storage: Storage, od: OpenDota, chat_id: int, stratz=None, budget: Optional[float] = None
@@ -130,7 +146,8 @@ async def refresh_with_budget(
 
 
 async def gather_summaries(
-    storage: Storage, od: OpenDota, chat_id: int, refresh: bool = True, stratz=None, complete: bool = False
+    storage: Storage, od: OpenDota, chat_id: int, refresh: bool = True, stratz=None, complete: bool = False,
+    command: str = "stats",
 ):
     """Обновить игроков и собрать сводки.
 
@@ -140,7 +157,7 @@ async def gather_summaries(
     """
     if not complete:
         if refresh:
-            await refresh_with_budget(storage, od, chat_id, stratz)
+            await refresh_for(command, storage, od, chat_id, stratz)
         # Сводки — из БД: обновление уже сделано или доходит фоном (лок чата им не нужен).
         return await asyncio.to_thread(build_leaderboard, storage, od, chat_id, int(time.time()), False, stratz, True)
     async with _chat_lock(chat_id):
@@ -151,7 +168,9 @@ async def gather_summaries(
 async def refresh_only(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> None:
     """Только обновить матчи игроков (под локом чата) — без сборки сводок, когда они не нужны."""
     async with _chat_lock(chat_id):
-        await asyncio.to_thread(refresh_chat, storage, od, chat_id, int(time.time()), stratz, None, True)
+        await asyncio.to_thread(
+            refresh_chat, storage, od, chat_id, int(time.time()), stratz, None, True, FRESH_ENOUGH
+        )
     _kick_finish(storage, od, chat_id)
 
 
@@ -165,7 +184,7 @@ def _with_stale(storage: Storage, chat_id: int, text: str, od=None) -> str:
     now = int(time.time())
     health = getattr(od, "health", None)
     note = outage_note(health.status() if health is not None else None, players, now, storage.get_or_create_chat(chat_id).tz)
-    note = note or stale_note(players, now, REFRESH_COOLDOWN)
+    note = note or stale_note(players, now, FRESH_ENOUGH)
     return f"{text}\n\n{note}" if note else text
 
 
@@ -204,7 +223,7 @@ async def render_board(
 async def render_period_board(
     storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None
 ) -> str:
-    await refresh_with_budget(storage, od, chat_id, stratz)
+    await refresh_for("period", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
     return _with_stale(storage, chat_id, render_period_leaderboard(rows, period), od)
@@ -223,7 +242,7 @@ async def render_graph_board(
     refresh=False — без запроса в OpenDota (смена периода под уже показанным графиком: данные только что обновлены).
     """
     if refresh:  # для графика нужны только свежие матчи — сводки игроков не собираем (кулдаун внутри)
-        await refresh_with_budget(storage, od, chat_id, stratz)
+        await refresh_for("graph", storage, od, chat_id, stratz)
     chat = storage.get_or_create_chat(chat_id)
     # В ключе — отпечаток данных: пришла новая игра — старая картинка не отдаётся (как и при смене шага/пояса).
     version = await asyncio.to_thread(storage.data_version, chat_id)
@@ -259,26 +278,26 @@ async def render_graph_board(
 
 
 async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None) -> str:
-    await refresh_with_budget(storage, od, chat_id, stratz)
+    await refresh_for("records", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     data = await asyncio.to_thread(build_records, storage, chat_id, since)
     return _with_stale(storage, chat_id, render_records(data, period, storage.get_or_create_chat(chat_id).tz), od)
 
 
 async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
-    summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="heroes")
     return _with_stale(storage, chat_id, render_heroes(summaries), od)
 
 
 async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
     # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
-    await refresh_with_budget(storage, od, chat_id, stratz)
+    await refresh_for("together", storage, od, chat_id, stratz)
     result = await asyncio.to_thread(build_together, storage, chat_id)
     return _with_stale(storage, chat_id, render_together(result), od)
 
 
 async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None) -> Optional[str]:
-    summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="player")
     comparison = build_chat_comparison(summaries)
     name_lower = name.strip().lower()
     for summary in summaries:
@@ -289,7 +308,7 @@ async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name
 
 
 async def render_compare_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
-    summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
+    summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="compare")
     if not summaries:
         return NO_PLAYERS
     comparison = build_chat_comparison(summaries)
@@ -341,7 +360,7 @@ def _empty_players(storage: Storage, chat_id: int, name: Optional[str]) -> list[
 async def render_player_heroes_board(
     storage: Storage, od: OpenDota, chat_id: int, name: str, period: str, stratz=None
 ) -> str:
-    await refresh_with_budget(storage, od, chat_id, stratz)
+    await refresh_for("player_heroes", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     result = await asyncio.to_thread(build_player_heroes, storage, chat_id, name, since)
     if result is None:
@@ -359,7 +378,7 @@ async def render_player_heroes_board(
 async def render_roles_board(
     storage: Storage, od: OpenDota, chat_id: int, name: str, period: str = "all", stratz=None
 ) -> str:
-    await refresh_with_budget(storage, od, chat_id, stratz)
+    await refresh_for("roles", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     result = await asyncio.to_thread(build_player_roles, storage, chat_id, name, since)
     if result is None:
@@ -481,7 +500,7 @@ async def render_hero_board(
     hero_id = find_hero(query)
     if hero_id is None:
         return f"Герой «{html.escape(query)}» не найден. Пишите по-английски, например: /heroes Axe"  # уйдёт как HTML
-    await refresh_with_budget(storage, od, chat_id, stratz)
+    await refresh_for("hero", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     entries = await asyncio.to_thread(build_hero_view, storage, chat_id, hero_id, since)
     return _with_stale(storage, chat_id, render_hero_detail(hero_id, period, entries), od)
