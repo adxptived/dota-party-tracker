@@ -424,7 +424,7 @@ def test_menu_button_edits_source_message_in_place(env):
     cb.message = DeletableMessage()
     run(botmod.on_callback(cb, storage, od, sz))
     assert not cb.message.deleted and not cb.message.statuses  # одно сообщение: новых не плодим
-    assert len(cb.message.sent) >= 2  # сначала «ждём», потом отчёт — оба правят то же сообщение
+    assert len(cb.message.sent) >= 1  # отчёт правит то же сообщение (статус «Считаю…» отложен и в быстром ответе не показывается)
     markup = cb.message.sent[-1][1]["reply_markup"]  # под отчётом «В меню» / «Закрыть»
     data = {b.callback_data for row in markup.inline_keyboard for b in row}
     assert {"m:menu", "x:close"} <= data and {"m:stats", "m:today", "m:week", "m:month"} <= data  # + вкладки периодов

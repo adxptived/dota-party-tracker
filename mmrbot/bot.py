@@ -13,6 +13,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InputMediaPhoto, Message
 
 from mmrbot import commands as cmd
+from mmrbot import perf
 from mmrbot.access import DENIED, may_manage
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
@@ -20,6 +21,7 @@ from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
 from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
+from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
     render_board,
     render_compare_board,
@@ -56,6 +58,18 @@ async def _can_manage(message, storage: Storage, user=None, bot=None) -> bool:
         return True
     await message.answer(DENIED)
     return False
+
+
+class PerfMiddleware(BaseMiddleware):
+    """Замер каждой команды/кнопки: строка `perf cmd=… total=… refresh=… build=… render=… send=…` в лог."""
+
+    async def __call__(self, handler, event, data):
+        trace = perf.begin()
+        try:
+            return await handler(event, data)
+        finally:
+            chat = getattr(event, "chat", None) or getattr(getattr(event, "message", None), "chat", None)
+            perf.finish(trace, perf.label(event), getattr(chat, "id", None))
 
 
 class DeleteCommandMiddleware(BaseMiddleware):
@@ -191,10 +205,20 @@ class _InPlace:
         return sent
 
 
-async def _progress(message: Message, text: str):
-    """Временное «⏳ Считаю…» — удаляется, когда отчёт готов (на месте кнопки — просто подменяет текст)."""
-    result = await message.answer(text)
-    return None if isinstance(message, _InPlace) else result
+async def _progress(message: Message, text: str, action: str = "typing") -> DeferredStatus:
+    """Отложенное «⏳ Считаю…»: быстрый ответ обходится без статуса вовсе (экономим 2 запроса к Telegram).
+
+    Через ~0.7 с — индикатор действия (action: «печатает…» / «отправляет фото»), через ~2 с — само сообщение.
+    На месте кнопки (_InPlace) статус правит это же сообщение и не удаляется — его заменит отчёт.
+    """
+    chat_id = message.chat.id
+
+    async def send_action():
+        await message.bot.send_chat_action(chat_id, action)
+
+    return DeferredStatus(
+        send_action, lambda: message.answer(text), delete_sent=not isinstance(message, _InPlace)
+    )
 
 
 async def _send_chunks(message: Message, text: str, markup=None) -> None:
@@ -587,7 +611,7 @@ async def do_roles(message: Message, storage: Storage, od: OpenDota, name: str, 
 
 async def do_match(message: Message, storage: Storage, od: OpenDota, name, match_id, stratz=None) -> None:
     """Матч картинкой (иконки героев, ники, K/D/A…) с кнопкой «Текстом»; не вышло с картинкой — текстом."""
-    status = await _progress(message, WAIT)
+    status = await _progress(message, WAIT, "upload_photo")
     try:
         board = await match_board(storage, od, message.chat.id, name, match_id, stratz)
     except Exception:
@@ -661,7 +685,7 @@ async def do_graph(
     """График ±MMR по игрокам за период (картинка + кнопки периодов)."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
+    status = await _progress(message, WAIT, "upload_photo")
     try:
         result = await render_graph_board(storage, od, message.chat.id, period, stratz, by_games=by_games)
     except Exception:

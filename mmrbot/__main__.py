@@ -13,7 +13,7 @@ import mmrbot.bot as botmod
 from mmrbot import hero_icons, service
 import mmrbot.tracker as tracker
 from mmrbot.access import ChatGateMiddleware
-from mmrbot.bot import router, set_bot_commands
+from mmrbot.bot import PerfMiddleware, router, set_bot_commands
 from mmrbot.lifecycle import router as lifecycle_router
 from mmrbot.charts import warmup
 from mmrbot.config import load_config
@@ -54,6 +54,8 @@ async def main() -> None:
     gate = ChatGateMiddleware(config.allowed_chats, storage)
     dp.message.outer_middleware(gate)
     dp.callback_query.outer_middleware(gate)
+    dp.message.outer_middleware(PerfMiddleware())
+    dp.callback_query.outer_middleware(PerfMiddleware())
     dp.include_router(lifecycle_router)
     dp.include_router(router)
 

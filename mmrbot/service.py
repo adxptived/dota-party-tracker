@@ -13,7 +13,7 @@ import weakref
 from dataclasses import dataclass
 from typing import Optional
 
-from mmrbot import hero_icons
+from mmrbot import hero_icons, perf
 from mmrbot.health import log_network_error
 from mmrbot.formatting import (
     outage_note,
@@ -63,6 +63,18 @@ log = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4096
 CAPTION_LIMIT = 1024  # лимит подписи к фото в Telegram
+
+
+async def _build(fn, *args):
+    """Сборка данных из БД в потоке; время идёт в фазу build строки perf."""
+    with perf.phase("build"):
+        return await asyncio.to_thread(fn, *args)
+
+
+async def _render(fn, *args):
+    """Рисование картинки в потоке; время идёт в фазу render строки perf."""
+    with perf.phase("render"):
+        return await asyncio.to_thread(fn, *args)
 
 
 # Блокировки по чату (на каждый event loop): одновременные команды в одном чате не обновляют
@@ -134,7 +146,8 @@ async def refresh_with_budget(
     """
     wait = COMMAND_REFRESH_WAIT if budget is None else budget
     task = asyncio.ensure_future(refresh_only(storage, od, chat_id, stratz))
-    done, _ = await asyncio.wait({task}, timeout=wait)
+    with perf.phase("refresh"):  # то, сколько команда реально прождала обновление
+        done, _ = await asyncio.wait({task}, timeout=wait)
     if task in done:
         task.result()
         return True
@@ -159,10 +172,10 @@ async def gather_summaries(
         if refresh:
             await refresh_for(command, storage, od, chat_id, stratz)
         # Сводки — из БД: обновление уже сделано или доходит фоном (лок чата им не нужен).
-        return await asyncio.to_thread(build_leaderboard, storage, od, chat_id, int(time.time()), False, stratz, True)
+        return await _build(build_leaderboard, storage, od, chat_id, int(time.time()), False, stratz, True)
     async with _chat_lock(chat_id):
         now = int(time.time())  # момент берём уже под локом — кулдаун считается от актуального времени
-        return await asyncio.to_thread(build_leaderboard, storage, od, chat_id, now, refresh, stratz, not complete)
+        return await _build(build_leaderboard, storage, od, chat_id, now, refresh, stratz, not complete)
 
 
 async def refresh_only(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> None:
@@ -202,16 +215,16 @@ async def render_board(
     text = render_leaderboard(summaries, today_only=today_only)
     if not today_only:
         since = int(time.time()) - 7 * 86_400
-        week_rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
-        week_records = await asyncio.to_thread(build_records, storage, chat_id, since)
+        week_rows = await _build(build_period_leaderboard, storage, chat_id, since)
+        week_records = await _build(build_records, storage, chat_id, since)
         day_rows = None
         if awards_period == "day":
-            day_rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, int(time.time()) - 86_400)
+            day_rows = await _build(build_period_leaderboard, storage, chat_id, int(time.time()) - 86_400)
         text += "\n\n" + render_party_pulse(summaries, week_rows, week_records, day_rows)
         if len(summaries) >= 2:  # «отличия» — соревнование между игроками: с одним участником смысла нет
             day = awards_period == "day"
             awards_since = int(time.time()) - (86_400 if day else 7 * 86_400)
-            awards = await asyncio.to_thread(build_period_awards, storage, chat_id, awards_since, 2 if day else 3)
+            awards = await _build(build_period_awards, storage, chat_id, awards_since, 2 if day else 3)
             if not day:  # «Лидер недели» в «Пульсе» уже называет того, кто поднялся больше всех
                 awards = [a for a in awards if a["key"] != "climb"]
             block = render_awards(awards, "за сутки" if day else "за неделю")
@@ -225,7 +238,7 @@ async def render_period_board(
 ) -> str:
     await refresh_for("period", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
-    rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
+    rows = await _build(build_period_leaderboard, storage, chat_id, since)
     return _with_stale(storage, chat_id, render_period_leaderboard(rows, period), od)
 
 
@@ -254,14 +267,14 @@ async def render_graph_board(
         _graph_cache.pop(key, None)  # просроченные картинки не копим в памяти
     now = int(time.time())
     since = period_since(period, now)
-    series = await asyncio.to_thread(build_mmr_series, storage, chat_id, since)
+    series = await _build(build_mmr_series, storage, chat_id, since)
     if not series:
         _graph_cache[cache_key] = (time.monotonic(), None)
         return None
     label = {"day": "за сутки", "week": "за неделю", "month": "за месяц", "year": "за год",
              "all": "за всё время"}[period]
     roster = [p.display_name for p in storage.list_players(chat_id)]  # цвет закреплён за игроком, а не за местом
-    png = await asyncio.to_thread(
+    png = await _render(
         render_mmr_chart, series, f"Динамика MMR {label}", chat.tz, since, now, by_games, roster
     )
     medals = ["🥇", "🥈", "🥉"]
@@ -280,7 +293,7 @@ async def render_graph_board(
 async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None) -> str:
     await refresh_for("records", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
-    data = await asyncio.to_thread(build_records, storage, chat_id, since)
+    data = await _build(build_records, storage, chat_id, since)
     return _with_stale(storage, chat_id, render_records(data, period, storage.get_or_create_chat(chat_id).tz), od)
 
 
@@ -292,7 +305,7 @@ async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stra
 async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
     # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
     await refresh_for("together", storage, od, chat_id, stratz)
-    result = await asyncio.to_thread(build_together, storage, chat_id)
+    result = await _build(build_together, storage, chat_id)
     return _with_stale(storage, chat_id, render_together(result), od)
 
 
@@ -362,14 +375,14 @@ async def render_player_heroes_board(
 ) -> str:
     await refresh_for("player_heroes", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
-    result = await asyncio.to_thread(build_player_heroes, storage, chat_id, name, since)
+    result = await _build(build_player_heroes, storage, chat_id, name, since)
     if result is None:
         return NOT_FOUND
     player, rows = result
     text = render_player_heroes(player.display_name, period, rows)
     if not rows and not storage.has_matches(player.id):
         text += "\n" + HIDDEN_HINT
-    roles = await asyncio.to_thread(build_player_roles, storage, chat_id, name, since)
+    roles = await _build(build_player_roles, storage, chat_id, name, since)
     if roles is not None and roles[1]:
         text += "\n\n" + render_roles(player.display_name, roles[1], period)
     return _with_stale(storage, chat_id, text, od)
@@ -380,7 +393,7 @@ async def render_roles_board(
 ) -> str:
     await refresh_for("roles", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
-    result = await asyncio.to_thread(build_player_roles, storage, chat_id, name, since)
+    result = await _build(build_player_roles, storage, chat_id, name, since)
     if result is None:
         return NOT_FOUND
     player, rows = result
@@ -434,7 +447,7 @@ async def match_board(
     latest = match_id is None  # «последний матч» зависит от свежести данных — там уместна пометка об устаревании
     if match_id is None:
         await refresh_with_budget(storage, od, chat_id, stratz, budget=MATCH_REFRESH_WAIT)
-        view = await asyncio.to_thread(build_match_view, storage, chat_id, name, None)
+        view = await _build(build_match_view, storage, chat_id, name, None)
         if view is None:
             empty = _empty_players(storage, chat_id, name)
             who = html.escape(", ".join(empty)) if empty else "участников пати"  # уйдёт с parse_mode=HTML
@@ -455,7 +468,7 @@ async def match_board(
         except Exception as exc:
             log_network_error(log, f"Stratz: не удалось получить матч {match_id}", exc, health=getattr(stratz, "health", None))
     if full is None and cached is None and name:  # матч своего игрока по id — без Stratz из кэша БД
-        cached = await asyncio.to_thread(build_match_view, storage, chat_id, name, match_id)
+        cached = await _build(build_match_view, storage, chat_id, name, match_id)
     tz = storage.get_or_create_chat(chat_id).tz
     if full is not None:
         if focus is None:
@@ -471,7 +484,7 @@ async def match_board(
         return MatchBoard(f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт).")
     if image:
         try:
-            board.png = await asyncio.to_thread(_render_match_png, match, tracked, focus, tz, icons)
+            board.png = await _render(_render_match_png, match, tracked, focus, tz, icons)
             board.caption = render_match_caption(match, tracked, focus, tz)
         except Exception:
             log.exception("Не удалось нарисовать матч %s — отвечаем текстом", match_id)
@@ -502,5 +515,5 @@ async def render_hero_board(
         return f"Герой «{html.escape(query)}» не найден. Пишите по-английски, например: /heroes Axe"  # уйдёт как HTML
     await refresh_for("hero", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
-    entries = await asyncio.to_thread(build_hero_view, storage, chat_id, hero_id, since)
+    entries = await _build(build_hero_view, storage, chat_id, hero_id, since)
     return _with_stale(storage, chat_id, render_hero_detail(hero_id, period, entries), od)
