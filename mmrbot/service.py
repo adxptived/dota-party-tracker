@@ -334,6 +334,18 @@ async def stats_board(
     return board
 
 
+async def warm_chat(storage: Storage, od: OpenDota, chat_id: int, stratz=None, timeout: float = 20.0) -> None:
+    """Прогрев после новых игр (B4): собрать и нарисовать рейтинг чата заранее, ничего не отправляя.
+
+    Кэш истории (B3) уже тёплый, а аватары и иконки героев подтягиваются на диск — следующий /stats
+    не ждёт загрузок. Любая ошибка глушится: прогрев не должен ломать оповещения.
+    """
+    try:
+        await asyncio.wait_for(stats_board(storage, od, chat_id, "stats", stratz, image=True), timeout)
+    except Exception:
+        log.debug("Прогрев чата %s не удался", chat_id, exc_info=True)
+
+
 async def render_period_board(
     storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None
 ) -> str:

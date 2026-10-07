@@ -350,3 +350,37 @@ def test_digest_sends_card_photo_and_idle_day_skips_rendering(tmp_path, monkeypa
     monkeypatch.setattr(sched, "stats_board", forbidden)
     asyncio.run(sched.send_digest(_PhotoBot(), idle_storage, _Provider(down=True), idle_chat, "2026-10-07"))
     assert idle_storage.get_or_create_chat(6).last_digest_date == "2026-10-07"
+
+
+# --- B4: прогрев после новых игр -------------------------------------------------------------------
+
+def test_game_watch_warms_chat_after_delivered_match(tmp_path, monkeypatch):
+    warmed = []
+
+    async def spy(storage, od, chat_id, stratz=None, **kw):
+        warmed.append(chat_id)
+
+    monkeypatch.setattr(sched, "warm_chat", spy)
+    _run_game_watch(tmp_path, monkeypatch, _AlertBot())
+    assert warmed == [5]
+
+
+def test_game_watch_does_not_warm_when_nothing_delivered(tmp_path, monkeypatch):
+    warmed = []
+
+    async def spy(*a, **kw):
+        warmed.append(1)
+
+    monkeypatch.setattr(sched, "warm_chat", spy)
+    _run_game_watch(tmp_path, monkeypatch, _AlertBot(photo_exc=RuntimeError("сеть")))
+    assert warmed == []
+
+
+def test_warm_chat_swallows_errors(tmp_path, monkeypatch):
+    import mmrbot.service as service
+
+    async def boom(*a, **kw):
+        raise RuntimeError("упало")
+
+    monkeypatch.setattr(service, "stats_board", boom)
+    asyncio.run(service.warm_chat(Storage(str(tmp_path / "w.db")), _Provider(), 5))  # не бросает

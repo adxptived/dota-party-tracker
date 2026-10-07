@@ -31,7 +31,7 @@ from mmrbot.formatting import (
     render_steam_change,
 )
 from mmrbot.status import write_heartbeat
-from mmrbot.service import _chat_lock, alert_board, refresh_only, split_message, stats_board, weekly_board
+from mmrbot.service import _chat_lock, alert_board, refresh_only, split_message, stats_board, warm_chat, weekly_board
 from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
 from mmrbot.tracker import (
@@ -272,6 +272,7 @@ def setup_scheduler(
                 log_network_error(log, f"Проверка новых игр в чате {chat.chat_id} не удалась", exc,
                                   health=getattr(od, "health", None))
                 continue
+            warm = False
             for event in events:
                 if event["kind"] == "match":
                     board = await alert_board(event, chat.tz, image=not chat.prefer_text)
@@ -291,6 +292,9 @@ def setup_scheduler(
                     log.warning("Не удалось отправить оповещение в чат %s", chat.chat_id, exc_info=True)
                 if delivered:
                     storage.mark_notified_matches(event.get("pending") or [])
+                    warm = warm or event["kind"] == "match"
+            if warm:  # пользователь, открывший /stats после оповещения, получает готовое
+                await warm_chat(storage, od, chat.chat_id, stratz)
 
     async def presence_watch() -> None:
         """Оповещения «зашёл в Dota 2» (Steam Web API); без ключа задача не регистрируется."""
