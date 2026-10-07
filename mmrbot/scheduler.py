@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from functools import partial
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -19,6 +20,7 @@ from aiogram.types import BufferedInputFile
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from mmrbot.boards import ImageBoard
+from mmrbot.delivery import send_with_retry
 from mmrbot.health import log_network_error, provider_down
 from mmrbot.keyboards import alert_buttons
 from mmrbot.opendota import OpenDota
@@ -50,14 +52,16 @@ async def send_board(bot: Bot, chat_id: int, board: ImageBoard, markup=None) -> 
     """
     if board.png is not None:
         try:
-            await bot.send_photo(chat_id, BufferedInputFile(board.png, filename="card.png"), caption=board.caption,
-                                 parse_mode="HTML", reply_markup=markup)
+            photo = BufferedInputFile(board.png, filename="card.png")
+            await send_with_retry(partial(bot.send_photo, chat_id, photo, caption=board.caption, parse_mode="HTML",
+                                          reply_markup=markup))
             return
         except TelegramBadRequest:  # фото не принято (формат, размер, подпись) — текстом; «чат не найден» повторится и уйдёт наверх
             log.warning("Telegram не принял картинку для чата %s — шлём текстом", chat_id, exc_info=True)
     chunks = split_message(board.text)
     for i, chunk in enumerate(chunks):  # без картинки длинный отчёт (много игроков) идёт несколькими сообщениями
-        await bot.send_message(chat_id, chunk, parse_mode="HTML", reply_markup=markup if i == len(chunks) - 1 else None)
+        last = markup if i == len(chunks) - 1 else None
+        await send_with_retry(partial(bot.send_message, chat_id, chunk, parse_mode="HTML", reply_markup=last))
 
 
 def due_local_date(chat: Chat, now_utc: datetime) -> Optional[str]:
@@ -225,9 +229,9 @@ def setup_scheduler(
             avatar = event["profile"].get("avatarfull")
             try:
                 if event["changes"].get("avatar") and avatar:
-                    await bot.send_photo(event["chat_id"], avatar, caption=text, parse_mode="HTML")
+                    await send_with_retry(partial(bot.send_photo, event["chat_id"], avatar, caption=text, parse_mode="HTML"))
                 else:
-                    await bot.send_message(event["chat_id"], text, parse_mode="HTML")
+                    await send_with_retry(partial(bot.send_message, event["chat_id"], text, parse_mode="HTML"))
             except Exception as exc:
                 if not chat_gone(storage, event["chat_id"], exc):
                     log.warning("Не удалось отправить оповещение Steam в чат %s", event["chat_id"], exc_info=True)
@@ -297,7 +301,8 @@ def setup_scheduler(
             return
         for event in events:
             try:
-                await bot.send_message(event["chat_id"], render_start_alert(event), parse_mode="HTML")
+                start_text = render_start_alert(event)
+                await send_with_retry(partial(bot.send_message, event["chat_id"], start_text, parse_mode="HTML"))
             except Exception as exc:
                 if not chat_gone(storage, event["chat_id"], exc):
                     log.warning("Не удалось отправить оповещение о заходе в Dota в чат %s", event["chat_id"], exc_info=True)
