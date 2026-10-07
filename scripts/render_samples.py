@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mmrbot.alert_image import render_alert_image  # noqa: E402
+from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image  # noqa: E402
 from mmrbot.match_image import render_match_image  # noqa: E402
 from mmrbot.player_image import render_player_image  # noqa: E402
 from mmrbot.stats_image import render_stats_image  # noqa: E402
@@ -120,7 +121,37 @@ def build() -> dict[str, bytes]:
     card.update(warnings=[], steam_name=None, perf=None, streak=None, series=[], split=[], hours=None, skills=[],
                 heroes=[], best_game=None, lobby_rank=None, standing=None)
     out["player_sparse.png"] = render_player_image(card)
+    out.update(sample_heroes(icons, avatars))
     return out
+
+
+def sample_heroes(icons: dict, avatars: dict) -> dict[str, bytes]:
+    names = {12: "Phantom Lancer", 1: "Anti-Mage", 26: "Lion", 35: "Sniper", 44: "Phantom Assassin", 74: "Invoker"}
+
+    def hero(hid, games, wins, kda, imp, gpm):
+        return {"hero_id": hid, "name": names[hid], "games": games, "wins": wins, "losses": games - wins,
+                "winrate": wins / games, "kda": kda, "imp": imp, "gpm": gpm}
+    rows = [hero(12, 12, 8, 4.1, 12, 610), hero(1, 9, 4, 2.8, -3, 540), hero(26, 5, 1, 2.1, -11, 380),
+            hero(35, 4, 3, 3.9, 8, 520), hero(44, 3, 2, 3.3, None, None), hero(74, 2, 0, 1.4, -20, 410)]
+    roles = [{"position": 1, "label": "Керри", "games": 20, "wins": 12, "losses": 8, "winrate": 0.6, "kda": 3.4},
+             {"position": 2, "label": "Мид", "games": 9, "wins": 4, "losses": 5, "winrate": 4 / 9, "kda": 2.9},
+             {"position": 5, "label": "Фулл-саппорт", "games": 3, "wins": 1, "losses": 2, "winrate": 1 / 3, "kda": 2.2}]
+    party = [{"name": "Вася", "avatar": "https://avatars.steamstatic.com/a.jpg",
+              "heroes": [{k: rows[i][k] for k in ("hero_id", "name", "games", "winrate")} for i in range(3)]},
+             {"name": "Оооочень длинный ник игрока", "avatar": None,
+              "heroes": [{k: rows[i][k] for k in ("hero_id", "name", "games", "winrate")} for i in range(2)]},
+             {"name": "Новичок", "avatar": None, "heroes": []}]
+    players = [dict(row, name=nm, avatar=av) for row, nm, av in zip(
+        rows, ("Вася", "Петя", "Оооочень длинный ник игрока"), ("https://avatars.steamstatic.com/a.jpg", None, None))]
+    return {
+        "heroes_player.png": render_player_heroes_image("Герои · Вася", None, ("ЗА НЕДЕЛЮ", "#3987e5"), rows, roles, icons,
+                                                         note="данные обновлены 12:30"),
+        "heroes_player_empty.png": render_player_heroes_image("Герои · Вася", None, ("ЗА СУТКИ", "#3987e5"), []),
+        "roles_player.png": render_player_heroes_image("Позиции · Вася", None, ("ВСЁ ВРЕМЯ", "#3987e5"), [], roles),
+        "heroes_party.png": render_party_heroes_image(party, icons, avatars),
+        "hero.png": render_hero_image(12, "Phantom Lancer", "за месяц", players, icons, avatars),
+        "hero_empty.png": render_hero_image(12, "Phantom Lancer", "за сутки", [], icons),
+    }
 
 
 def sample_player() -> dict:

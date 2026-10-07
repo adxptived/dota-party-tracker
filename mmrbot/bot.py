@@ -18,7 +18,7 @@ from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, may_manage
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
-from mmrbot.heroes import find_hero
+from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
 from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
@@ -27,12 +27,15 @@ from mmrbot.service import (
     STATS_MODES,
     stats_board,
     render_compare_board,
+    hero_board,
     render_hero_board,
     render_graph_board,
     render_records_board,
+    heroes_board,
     render_heroes_board,
     match_board,
     player_board,
+    player_heroes_board,
     render_match_board,
     render_player_board,
     render_player_heroes_board,
@@ -48,6 +51,8 @@ from mmrbot.tracker import build_leaderboard, check_achievements, list_achieveme
 
 router = Router()
 log = logging.getLogger(__name__)
+
+PERIODS_KEYS = {"day", "week", "month", "year", "all"}
 
 MAX_PLAYERS = 16  # игроков на чат (переопределяется из конфига при старте): каждый тратит общий лимит OpenDota
 
@@ -600,52 +605,65 @@ async def do_compare(message: Message, storage: Storage, od: OpenDota, stratz=No
 
 
 async def do_heroes_board(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
+    """Любимые герои пати картинкой (под ней «📝 Текстом»); не вышло с картинкой — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
-    await _reply_board(message, render_heroes_board(storage, od, message.chat.id, stratz), status)
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await heroes_board(storage, od, message.chat.id, stratz)
+    except Exception:
+        log.exception("Ошибка сборки героев пати для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    await _reply_image(message, board, with_text_button(nav_menu(), "heroes"), status)
 
 
-async def _reply_with_period(message: Message, make_coro, prefix: str, storage: Storage, name: str,
-                             period: str, edit: bool) -> None:
-    """Борд игрока + ряд кнопок периода (edit=True — правим сообщение с нажатой кнопкой)."""
+async def do_hero(message: Message, storage: Storage, od: OpenDota, query: str, period: str, stratz=None) -> None:
+    """Герой и кто из пати на нём играл — картинкой; нет такого героя — подсказка текстом."""
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await hero_board(storage, od, message.chat.id, query, period, stratz)
+    except Exception:
+        log.exception("Ошибка сборки героя для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    markup = with_text_button(nav_menu(), "hero", board.hero_id, period) if board.hero_id else nav_menu()
+    await _reply_image(message, board, markup, status)
+
+
+async def _reply_with_period(message: Message, kind: str, prefix: str, storage: Storage, od: OpenDota, name: str,
+                             period: str, stratz, edit: bool) -> None:
+    """Герои/позиции игрока картинкой + ряд кнопок периода и «📝 Текстом» (edit=True — правим сообщение с кнопкой)."""
     player = storage.get_player(message.chat.id, name)
     if player is None:
         await message.answer(NOT_FOUND_TEXT)
         return
-    status = None if edit else await _progress(message, WAIT)
+    status = await _progress(message, WAIT, "upload_photo")
     try:
-        text = await make_coro()
+        board = await player_heroes_board(storage, od, message.chat.id, name, period, stratz, kind=kind)
     except Exception:
-        logging.getLogger(__name__).exception("Ошибка сборки борда для чата %s", message.chat.id)
+        log.exception("Ошибка сборки борда для чата %s", message.chat.id)
         await _delete(status)
         await message.answer(FAILED, reply_markup=nav_menu())
         return
-    await _delete(status)
-    markup = period_buttons(prefix, player.account_id, period)
-    if edit:
-        try:
-            await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
-            return
-        except Exception:
-            pass  # «message is not modified» и т.п. — шлём новым сообщением
-    await _send_chunks(message, text, markup)
+    if board is None:
+        await _delete(status)
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    markup = with_text_button(period_buttons(prefix, player.account_id, period), prefix, player.account_id, period)
+    await _reply_image(message, board, markup, status, edit=edit)
 
 
 async def do_player_heroes(message: Message, storage: Storage, od: OpenDota, name: str, period: str,
                            stratz=None, edit: bool = False) -> None:
-    await _reply_with_period(
-        message, lambda: render_player_heroes_board(storage, od, message.chat.id, name, period, stratz),
-        "hp", storage, name, period, edit,
-    )
+    await _reply_with_period(message, "heroes", "hp", storage, od, name, period, stratz, edit)
 
 
 async def do_roles(message: Message, storage: Storage, od: OpenDota, name: str, period: str,
                    stratz=None, edit: bool = False) -> None:
-    await _reply_with_period(
-        message, lambda: render_roles_board(storage, od, message.chat.id, name, period, stratz),
-        "rp", storage, name, period, edit,
-    )
+    await _reply_with_period(message, "roles", "rp", storage, od, name, period, stratz, edit)
 
 
 async def do_match(message: Message, storage: Storage, od: OpenDota, name, match_id, stratz=None) -> None:
@@ -685,7 +703,38 @@ async def _text_player(storage: Storage, od: OpenDota, chat_id: int, args: list[
     return await render_player_board(storage, od, chat_id, args[0], stratz) if args else None
 
 
-TEXT_VIEWS = {"match": _text_match, "stats": _text_stats, "player": _text_player}
+async def _text_player_heroes(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:hp:<account_id>:<period> — герои (и позиции) игрока текстом."""
+    if len(args) != 2 or args[1] not in PERIODS_KEYS:
+        return None
+    return await render_player_heroes_board(storage, od, chat_id, args[0], args[1], stratz)
+
+
+async def _text_roles(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:rp:<account_id>:<period> — позиции игрока текстом."""
+    if len(args) != 2 or args[1] not in PERIODS_KEYS:
+        return None
+    return await render_roles_board(storage, od, chat_id, args[0], args[1], stratz)
+
+
+async def _text_party_heroes(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:heroes — любимые герои пати текстом."""
+    return await render_heroes_board(storage, od, chat_id, stratz)
+
+
+async def _text_hero(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:hero:<hero_id>:<period> — герой и пати на нём текстом."""
+    try:
+        hero_id = int(args[0])
+    except (IndexError, ValueError):
+        return None
+    if len(args) != 2 or args[1] not in PERIODS_KEYS:
+        return None
+    return await render_hero_board(storage, od, chat_id, hero_name(hero_id), args[1], stratz)
+
+
+TEXT_VIEWS = {"match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
+              "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero}
 
 
 async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
@@ -869,8 +918,7 @@ async def cmd_heroes(message: Message, command: CommandObject, storage: Storage,
     elif storage.get_player(message.chat.id, name) is not None:
         await do_player_heroes(message, storage, od, name, period, stratz)  # герои + позиции игрока
     elif find_hero(name) is not None:
-        status = await _progress(message, WAIT)
-        await _reply_board(message, render_hero_board(storage, od, message.chat.id, name, period, stratz), status)
+        await do_hero(message, storage, od, name, period, stratz)
     else:
         await message.answer(f"🔍 Не нашёл ни игрока, ни героя «{name}». Список: /list. Героя пишите по-английски: /heroes Axe")
 
@@ -949,9 +997,7 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
         await do_add(message, storage, od, message.text or "", stratz)
         return
     if prompt.startswith(HERO_PROMPT):
-        query = (message.text or "").strip()
-        status = await _progress(message, WAIT)
-        await _reply_board(message, render_hero_board(storage, od, message.chat.id, query, "all", stratz), status)
+        await do_hero(message, storage, od, (message.text or "").strip(), "all", stratz)
         return
     if prompt.startswith(MATCHID_PROMPT):
         match_id, name = cmd.parse_match_args(message.text or "")

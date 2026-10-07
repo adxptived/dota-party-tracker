@@ -175,14 +175,16 @@ def test_compare_and_together(env):
 def test_heroes_party_board(env):
     msg = call(botmod.cmd_heroes, "heroes", None, env)
     assert_ok(msg)
-    assert "Kez" in msg.texts
+    assert len(msg.photos) == 1 and "Любимые герои" in msg.photos[0][0]  # картинкой, текст — по кнопке
+    assert "Kez" in _text_button(msg, env).texts
 
 
 @pytest.mark.parametrize("args", ["shinoame", "@shinoame", "@Shinoame месяц", "shinoame неделя", "день shinoame"])
 def test_heroes_player_with_positions(env, args):
     msg = call(botmod.cmd_heroes, "heroes", args, env)
     assert_ok(msg)
-    text = msg.texts
+    assert len(msg.photos) == 1 and "Герои: shinoame" in msg.photos[0][0]
+    text = _text_button(msg, env).texts
     assert "Герои: shinoame" in text
     assert "Позиции: shinoame" in text and "Pos 1" in text
     if "неделя" not in args and "день" not in args:
@@ -190,8 +192,21 @@ def test_heroes_player_with_positions(env, args):
 
 
 def test_heroes_player_period_filters(env):
-    day = call(botmod.cmd_heroes, "heroes", "shinoame день", env).texts
+    msg = call(botmod.cmd_heroes, "heroes", "shinoame день", env)
+    assert len(msg.photos) == 1
+    day = _text_button(msg, env).texts
     assert "Phantom Lancer" in day and "Terrorblade" not in day  # TB — 26 часов назад
+
+
+def test_roles_card_is_photo_with_period_and_text_buttons(env):
+    msg = call(botmod.cmd_roles, "roles", "shinoame", env)
+    assert_ok(msg)
+    caption, kw = msg.photos[0]
+    assert "Позиции: shinoame" in caption
+    data = {b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row}
+    assert {"rp:1105542592:day", "rp:1105542592:all", "hp:1105542592:all", f"tx:rp:{ACC}:all"} <= data
+    text = _text_button(msg, env).texts
+    assert "Позиции: shinoame" in text and "Pos 1" in text
 
 
 @pytest.mark.parametrize("args", ["Kez", "kez месяц", "Anti-Mage", "am"])
@@ -199,6 +214,30 @@ def test_heroes_hero_view(env, args):
     msg = call(botmod.cmd_heroes, "heroes", args, env)
     assert_ok(msg)
     assert "shinoame" in msg.texts
+
+
+def test_hero_card_text_button_gives_text_report(env):
+    msg = call(botmod.cmd_heroes, "heroes", "kez месяц", env)
+    caption, kw = msg.photos[0]
+    assert "Герой: Kez" in caption and "за месяц" in caption
+    data = {b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row}
+    assert any(d.startswith("tx:hero:") and d.endswith(":month") for d in data)
+    text = _text_button(msg, env).texts
+    assert "Герой: Kez" in text and "shinoame" in text
+
+
+def test_hero_card_image_failure_falls_back_to_text(env, monkeypatch):
+    import mmrbot.service as service
+
+    def broken(*a, **k):
+        raise RuntimeError("рендер упал")
+
+    for name in ("render_hero_image", "render_player_heroes_image", "render_party_heroes_image"):
+        monkeypatch.setattr(service, name, broken)
+    for args in ("kez", "shinoame", None):
+        msg = call(botmod.cmd_heroes, "heroes", args, env)
+        assert_ok(msg)
+        assert not msg.photos and "Kez" in msg.texts
 
 
 def test_heroes_unknown_name(env):
@@ -372,13 +411,44 @@ def test_menu_week_button_shows_period_card_and_text_on_demand(env):
     assert "Статистика за неделю" in text_cb.message.texts  # прежний текстовый отчёт
 
 
-def test_period_buttons_edit_message_in_place(env):
+class DeletableMessage(FakeMessage):
+    def __init__(self):
+        super().__init__()
+        self.deleted = False
+        self.statuses = []
+
+    async def answer(self, text, **kwargs):
+        self.sent.append((text, kwargs))
+        sent = DeletableMessage()
+        self.statuses.append(sent)
+        return sent
+
+    async def delete(self):
+        self.deleted = True
+
+
+class PhotoCallbackMessage(DeletableMessage):
+    """Сообщение-фото, под которым нажата кнопка периода: картинка должна смениться через edit_media."""
+
+    def __init__(self):
+        super().__init__()
+        self.photo = [object()]
+        self.media_edits = []
+
+    async def edit_media(self, media, reply_markup=None, **kw):
+        self.media_edits.append((media, reply_markup))
+
+
+@pytest.mark.parametrize("data", ["hp:1105542592:week", "rp:1105542592:week"])
+def test_period_buttons_edit_photo_in_place(env, data):
     storage, od, sz = env
-    cb = FakeCallback("hp:1105542592:week")
+    cb = FakeCallback(data)
+    cb.message = PhotoCallbackMessage()
     run(botmod.on_callback(cb, storage, od, sz))
-    assert "за неделю" in cb.message.texts
-    markup = cb.message.sent[-1][1]["reply_markup"]
+    (media, markup), = cb.message.media_edits
+    assert "за неделю" in media.caption
     assert any(b.text.startswith("• Неделя") for row in markup.inline_keyboard for b in row)
+    assert not cb.message.deleted and not cb.message.sent  # ни нового сообщения, ни удаления
 
 
 def test_all_menu_buttons_have_handlers():
@@ -399,31 +469,18 @@ def test_hidden_match_data_gives_clear_hint(tmp_path):
     storage = Storage(str(tmp_path / "hidden.db"))
     storage.get_or_create_chat(100)
     storage.add_player(100, ACC, "shinoame", 5000, 0, 0)
-    for handler, args in ((botmod.cmd_match, None), (botmod.cmd_heroes, "shinoame")):
-        msg = FakeMessage()
-        run(handler(msg, cmdobj("x", args), storage, HiddenOD(), FakeStratz()))
-        assert "Выставлять публичные данные" in msg.texts
+    msg = FakeMessage()
+    run(botmod.cmd_match(msg, cmdobj("x", None), storage, HiddenOD(), FakeStratz()))
+    assert "Выставлять публичные данные" in msg.texts
+    msg = FakeMessage()  # герои: на картинке пометка, полная подсказка — в тексте по кнопке
+    env = (storage, HiddenOD(), FakeStratz())
+    run(botmod.cmd_heroes(msg, cmdobj("x", "shinoame"), *env))
+    assert msg.photos and "Выставлять публичные данные" in _text_button(msg, env).texts
     # /stats и /player при этом не падают
     for handler in (botmod.cmd_stats, botmod.cmd_player):
         msg = FakeMessage()
         run(handler(msg, cmdobj("x", "shinoame"), storage, HiddenOD(), FakeStratz()))
         assert msg.sent and "Traceback" not in msg.texts
-
-
-class DeletableMessage(FakeMessage):
-    def __init__(self):
-        super().__init__()
-        self.deleted = False
-        self.statuses = []
-
-    async def answer(self, text, **kwargs):
-        self.sent.append((text, kwargs))
-        sent = DeletableMessage()
-        self.statuses.append(sent)
-        return sent
-
-    async def delete(self):
-        self.deleted = True
 
 
 def test_menu_button_replaces_menu_message_with_report_card(env):
@@ -456,9 +513,3 @@ def test_close_button_deletes_message(env):
     assert cb.message.deleted and not cb.message.sent
 
 
-def test_period_switch_does_not_delete_message(env):
-    storage, od, sz = env
-    cb = FakeCallback("hp:1105542592:week")
-    cb.message = DeletableMessage()
-    run(botmod.on_callback(cb, storage, od, sz))
-    assert not cb.message.deleted

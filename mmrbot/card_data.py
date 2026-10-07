@@ -8,7 +8,8 @@ import html
 from typing import Optional
 
 from mmrbot.cards import GOLD, MUTED, clean, delta_color, signed
-from mmrbot.formatting import PULSE_RECORDS, plural_games
+from mmrbot.formatting import PERIOD_LABELS, POSITION_NAMES, PULSE_RECORDS, plural_games, plural_heroes
+from mmrbot.heroes import hero_name
 
 
 def _esc(text) -> str:
@@ -234,3 +235,65 @@ def player_caption(s) -> str:
     else:
         head += "\n💤 ранкед-игр пока нет"
     return head
+
+
+# --- герои, позиции, герой и пати --------------------------------------------------------------------
+
+def hero_rows(rows: list[dict]) -> list[dict]:
+    """Строки `stats.hero_stats` → строки таблицы героев (имя героя, IMP/GPM под короткими ключами)."""
+    return [{"hero_id": r["hero_id"], "name": hero_name(r["hero_id"]), "games": r["games"], "wins": r["wins"],
+             "losses": r["losses"], "winrate": r["winrate"], "kda": r["kda"], "imp": r.get("avg_imp"),
+             "gpm": r.get("avg_gpm")} for r in rows]
+
+
+def role_rows(rows: list[dict]) -> list[dict]:
+    """Строки `stats.role_stats` → позиции с короткой подписью («Керри», без «Pos 1 ·»)."""
+    out = []
+    for r in rows:
+        full = POSITION_NAMES.get(r["position"], f"Pos {r['position']}")
+        out.append({"position": r["position"], "label": full.split("·")[-1].strip(), "games": r["games"],
+                    "wins": r["wins"], "losses": r["losses"], "winrate": r["winrate"], "kda": r["kda"]})
+    return out
+
+
+def party_hero_rows(summaries: list) -> list[dict]:
+    """Любимые герои пати: по игроку — аватар и топ-3 героя."""
+    return [{"name": s.display_name, "avatar": s.avatar,
+             "heroes": [{"hero_id": h["hero_id"], "name": hero_name(h["hero_id"]), "games": h["games"],
+                         "winrate": h["winrate"]} for h in (s.top_heroes or [])[:3]]} for s in summaries]
+
+
+def hero_detail_rows(entries: list, avatars_by_account: Optional[dict] = None) -> list[dict]:
+    """Кто из пати играл на герое: [(игрок, статистика)] → строки с аватаром игрока."""
+    avatars_by_account = avatars_by_account or {}
+    out = []
+    for player, s in entries:
+        out.append({"name": player.display_name, "avatar": avatars_by_account.get(player.account_id) or getattr(player, "steam_avatar", None),
+                    "games": s["games"], "wins": s["wins"], "losses": s["losses"], "winrate": s["winrate"],
+                    "kda": s["kda"], "imp": s.get("avg_imp"), "gpm": s.get("avg_gpm")})
+    return out
+
+
+def heroes_caption(name: str, period: str, rows: list[dict], roles: Optional[list[dict]] = None) -> str:
+    """Подпись под картинкой «Герои игрока»: сколько героев и лучший по играм."""
+    head = f"🦸 <b>Герои: {_esc(name)}</b> · <i>{PERIOD_LABELS.get(period, '')}</i>"
+    if not rows:
+        return head + " · игр нет"
+    top = rows[0]
+    return head + f"\n{len(rows)} {plural_heroes(len(rows))} · чаще всего <b>{_esc(top['name'])}</b> ({plural_games(top['games'])})"
+
+
+def roles_caption(name: str, period: str, roles: list[dict]) -> str:
+    head = f"🧭 <b>Позиции: {_esc(name)}</b> · <i>{PERIOD_LABELS.get(period, '')}</i>"
+    if not roles:
+        return head + " · данных нет"
+    top = max(roles, key=lambda r: r["games"])
+    return head + f"\nчаще всего P{top['position']} {_esc(top['label'])} ({plural_games(top['games'])})"
+
+
+def hero_caption(hero: str, period: str, entries: list) -> str:
+    head = f"🦸 <b>Герой: {_esc(hero)}</b> · <i>{PERIOD_LABELS.get(period, '')}</i>"
+    if not entries:
+        return head + " · никто из пати не играл"
+    player, s = entries[0]
+    return head + f"\nчаще всех: <b>{_esc(player.display_name)}</b> ({plural_games(s['games'])}, {round(s['winrate'] * 100)}%)"

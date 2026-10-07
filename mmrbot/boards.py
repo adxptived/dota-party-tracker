@@ -29,6 +29,12 @@ class MatchBoard(ImageBoard):
     focus: Optional[int] = None
 
 
+@dataclass
+class HeroBoard(ImageBoard):
+    """Герой и пати на нём: hero_id нужен кнопкам («Текстом»); None — героя с таким именем нет."""
+    hero_id: Optional[int] = None
+
+
 def build_png(label: str, render: Callable[[], bytes]) -> Optional[bytes]:
     """Нарисовать картинку; любая ошибка рендера → None (отчёт уйдёт текстом), а не падение команды."""
     try:

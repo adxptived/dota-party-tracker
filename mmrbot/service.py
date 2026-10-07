@@ -15,9 +15,10 @@ from typing import Optional
 
 from mmrbot import avatars, hero_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
-from mmrbot.boards import CAPTION_LIMIT, ImageBoard, MatchBoard, build_png, fit_caption
+from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
 from mmrbot.card_data import (
-    award_items, leader_caption, party_tiles, period_caption, period_rows, player_caption, player_card, record_items,
+    award_items, hero_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
+    party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
     summary_rows,
 )
 from mmrbot.cards import ACCENT
@@ -45,7 +46,9 @@ from mmrbot.formatting import (
 )
 from mmrbot.texts import HIDDEN_HINT, NO_PLAYERS, NOT_FOUND, STRATZ_OFF
 from mmrbot.charts import _games_word as games_word, render_mmr_chart, series_stats
-from mmrbot.heroes import find_hero
+from mmrbot.heroes import find_hero, hero_name
+from mmrbot.heroes_image import LIMIT as HEROES_LIMIT
+from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image
 from mmrbot.match_image import render_match_image
 from mmrbot.opendota import OpenDota
 from mmrbot.ranks import rank_label
@@ -378,9 +381,30 @@ async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, per
     return _with_stale(storage, chat_id, render_records(data, period, storage.get_or_create_chat(chat_id).tz), od)
 
 
-async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
+def _party_heroes_png(rows: list) -> bytes:
+    """В потоке: иконки героев и аватары (кэш/CDN) + рендер «Любимых героев пати»."""
+    icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
+    hero_ids = [h["hero_id"] for r in rows for h in r["heroes"]]
+    icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
+    found = avatar_loader.get_many(r.get("avatar") for r in rows) if avatar_loader is not None else {}
+    return render_party_heroes_image(rows, icons, found)
+
+
+async def heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: bool = True) -> ImageBoard:
+    """Любимые герои пати: текст всегда, картинка с короткой подписью — если нарисовалась."""
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="heroes")
-    return _with_stale(storage, chat_id, render_heroes(summaries), od)
+    board = ImageBoard(_with_stale(storage, chat_id, render_heroes(summaries), od))
+    if image and summaries:
+        rows = party_hero_rows(summaries)
+        board.png = await _render_png("любимых героев", _party_heroes_png, rows)
+        if board.png is not None:
+            note = _stale_line(storage, chat_id, od)
+            board.caption = fit_caption("🦸 <b>Любимые герои</b> · топ-3 каждого игрока" + (f"\n{note}" if note else ""))
+    return board
+
+
+async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
+    return (await heroes_board(storage, od, chat_id, stratz, image=False)).text
 
 
 async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
@@ -488,34 +512,78 @@ def _empty_players(storage: Storage, chat_id: int, name: Optional[str]) -> list[
     return [p.display_name for p in players if p is not None and not storage.has_matches(p.id)]
 
 
-async def render_player_heroes_board(
-    storage: Storage, od: OpenDota, chat_id: int, name: str, period: str, stratz=None
-) -> str:
-    await refresh_for("player_heroes", storage, od, chat_id, stratz)
+def _plain(note: str) -> Optional[str]:
+    return re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
+
+
+def _player_heroes_png(title: str, badge, rows: list, roles: list, hidden: Optional[str], extra: int, note) -> bytes:
+    """В потоке: иконки героев (кэш/CDN) + рендер «Героев игрока» (и позиций под ними)."""
+    icon_loader = hero_icons.shared()
+    icons = icon_loader.get_many(r["hero_id"] for r in rows[:HEROES_LIMIT]) if icon_loader is not None else {}
+    return render_player_heroes_image(title, None, badge, rows, roles, icons, hidden, extra, note)
+
+
+async def _render_png(what: str, fn, *args) -> Optional[bytes]:
+    """Рисование в потоке с перехватом ошибок (build_png): None — картинки не будет, останется текст."""
+    with perf.phase("render"):
+        return await asyncio.to_thread(build_png, what, lambda: fn(*args))
+
+
+PERIOD_BADGES = {"day": "ЗА СУТКИ", "week": "ЗА НЕДЕЛЮ", "month": "ЗА МЕСЯЦ", "year": "ЗА ГОД", "all": "ВСЁ ВРЕМЯ"}
+
+
+async def player_heroes_board(
+    storage: Storage, od: OpenDota, chat_id: int, name: str, period: str, stratz=None, image: bool = True,
+    kind: str = "heroes",
+) -> Optional[ImageBoard]:
+    """Герои игрока (kind="heroes": герои + позиции) или только позиции (kind="roles"); None — игрока нет."""
+    await refresh_for("player_heroes" if kind == "heroes" else "roles", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     result = await _build(build_player_heroes, storage, chat_id, name, since)
     if result is None:
-        return NOT_FOUND
-    player, rows = result
-    text = render_player_heroes(player.display_name, period, rows)
-    if not rows and not storage.has_matches(player.id):
-        text += "\n" + HIDDEN_HINT
-    roles = await _build(build_player_roles, storage, chat_id, name, since)
-    if roles is not None and roles[1]:
-        text += "\n\n" + render_roles(player.display_name, roles[1], period)
-    return _with_stale(storage, chat_id, text, od)
+        return None
+    player, heroes = result
+    roles_result = await _build(build_player_roles, storage, chat_id, name, since)
+    roles = roles_result[1] if roles_result is not None else []
+    if kind == "roles":
+        text = render_roles(player.display_name, roles, period)
+    else:
+        text = render_player_heroes(player.display_name, period, heroes)
+        if not heroes and not storage.has_matches(player.id):
+            text += "\n" + HIDDEN_HINT
+        if roles:
+            text += "\n\n" + render_roles(player.display_name, roles, period)
+    board = ImageBoard(_with_stale(storage, chat_id, text, od))
+    if image:
+        note = _stale_line(storage, chat_id, od)
+        shown = hero_rows(heroes) if kind == "heroes" else []
+        title = (f"Герои · {player.display_name}" if kind == "heroes" else f"Позиции · {player.display_name}")
+        hidden = HIDDEN_NOTE if kind == "heroes" and not heroes and not storage.has_matches(player.id) else None
+        extra = max(len(heroes) - HEROES_LIMIT, 0)
+        badge = (PERIOD_BADGES.get(period, ""), ACCENT)
+        rr = role_rows(roles)
+        board.png = await _render_png("героев игрока", _player_heroes_png, title, badge, shown, rr, hidden, extra, _plain(note))
+        if board.png is not None:
+            caption = heroes_caption(player.display_name, period, shown) if kind == "heroes" else roles_caption(player.display_name, period, rr)
+            board.caption = fit_caption(caption + (f"\n{note}" if note else ""))
+    return board
+
+
+HIDDEN_NOTE = "История матчей закрыта у OpenDota — игры могли не загрузиться."
+
+
+async def render_player_heroes_board(
+    storage: Storage, od: OpenDota, chat_id: int, name: str, period: str, stratz=None
+) -> str:
+    board = await player_heroes_board(storage, od, chat_id, name, period, stratz, image=False)
+    return NOT_FOUND if board is None else board.text
 
 
 async def render_roles_board(
     storage: Storage, od: OpenDota, chat_id: int, name: str, period: str = "all", stratz=None
 ) -> str:
-    await refresh_for("roles", storage, od, chat_id, stratz)
-    since = period_since(period, int(time.time()))
-    result = await _build(build_player_roles, storage, chat_id, name, since)
-    if result is None:
-        return NOT_FOUND
-    player, rows = result
-    return _with_stale(storage, chat_id, render_roles(player.display_name, rows, period), od)
+    board = await player_heroes_board(storage, od, chat_id, name, period, stratz, image=False, kind="roles")
+    return NOT_FOUND if board is None else board.text
 
 
 def _alert_png(event: dict, tz: str) -> bytes:
@@ -634,13 +702,40 @@ async def render_match_board(
     return (await match_board(storage, od, chat_id, name, match_id, stratz, image=False)).text
 
 
-async def render_hero_board(
-    storage: Storage, od: OpenDota, chat_id: int, query: str, period: str, stratz=None
-) -> str:
+def _hero_png(hero_id: int, title: str, label: str, rows: list, note) -> bytes:
+    """В потоке: иконка героя и аватары игроков (кэш/CDN) + рендер «Героя и пати на нём»."""
+    icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
+    icons = icon_loader.get_many([hero_id]) if icon_loader is not None else {}
+    found = avatar_loader.get_many(r.get("avatar") for r in rows) if avatar_loader is not None else {}
+    return render_hero_image(hero_id, title, label, rows, icons, found, note)
+
+
+def hero_not_found(query: str) -> str:
+    return f"Герой «{html.escape(query)}» не найден. Пишите по-английски, например: /heroes Axe"  # уйдёт как HTML
+
+
+async def hero_board(
+    storage: Storage, od: OpenDota, chat_id: int, query: str, period: str, stratz=None, image: bool = True,
+) -> HeroBoard:
+    """Герой и кто из пати на нём играл: текст всегда, картинка — если нарисовалась. `board.hero_id` — для кнопок."""
     hero_id = find_hero(query)
     if hero_id is None:
-        return f"Герой «{html.escape(query)}» не найден. Пишите по-английски, например: /heroes Axe"  # уйдёт как HTML
+        return HeroBoard(hero_not_found(query))
     await refresh_for("hero", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     entries = await _build(build_hero_view, storage, chat_id, hero_id, since)
-    return _with_stale(storage, chat_id, render_hero_detail(hero_id, period, entries), od)
+    board = HeroBoard(_with_stale(storage, chat_id, render_hero_detail(hero_id, period, entries), od), hero_id=hero_id)
+    if image:
+        note = _stale_line(storage, chat_id, od)
+        rows = hero_detail_rows(entries)
+        label = {"day": "за сутки", "week": "за неделю", "month": "за месяц", "year": "за год", "all": "всё время"}.get(period, "")
+        board.png = await _render_png("героя", _hero_png, hero_id, hero_name(hero_id), label, rows, _plain(note))
+        if board.png is not None:
+            board.caption = fit_caption(hero_caption(hero_name(hero_id), period, entries) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def render_hero_board(
+    storage: Storage, od: OpenDota, chat_id: int, query: str, period: str, stratz=None
+) -> str:
+    return (await hero_board(storage, od, chat_id, query, period, stratz, image=False)).text
