@@ -179,6 +179,15 @@ class ProviderHealth:
             return False
 
 
+def provider_down(client) -> bool:
+    """Лежит ли сервис клиента (предохранитель закрыт) — тогда в сеть не ходим.
+
+    У клиентов без health (фейки в тестах, None) — «живой». Пробную попытку не занимает: решает, начинать ли работу.
+    """
+    health = getattr(client, "health", None)
+    return health is not None and not health.available()
+
+
 def _duration(seconds: float) -> str:
     seconds = max(int(seconds), 0)
     if seconds >= 3600:

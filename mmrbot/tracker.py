@@ -16,6 +16,7 @@ from typing import Optional, Protocol
 from mmrbot import achievements, party, records, stats
 from mmrbot.presence import advance
 from mmrbot.awards import compute_period_awards
+from mmrbot.health import provider_down as _provider_down
 from mmrbot.ranks import mmr_rank_mismatch, rank_emoji, rank_label
 from mmrbot.storage import Chat, Player, Storage
 
@@ -147,7 +148,7 @@ def _enrich_from_stratz(
     """
     now = int(time.time()) if now is None else now
     pending = storage.get_match_ids_without_stratz(player.id, 0, STRATZ_CAP, now=now)
-    if not pending:
+    if not pending or _provider_down(stratz):  # Stratz лежит: попытку не жжём, дозаполним после восстановления
         return
     try:
         data = stratz.get_matches(player.account_id, pending, hints=storage.get_match_hints(player.id, pending))
@@ -170,6 +171,8 @@ def backfill_stratz(storage: Storage, stratz: StratzClient, rounds: int = 6) -> 
             if player.account_id in seen:
                 continue
             seen.add(player.account_id)
+            if _provider_down(stratz):
+                return done
             for _ in range(rounds):
                 before = len(storage.get_match_ids_without_stratz(player.id, 0, STRATZ_CAP, now=int(time.time())))
                 if not before:
@@ -211,6 +214,8 @@ def _enrich_from_opendota(
     for match_id in ids:
         if background and not _background_allowed(client):
             break
+        if _provider_down(client):
+            break
         done += 1
         try:
             details = client.get_match_player_stats(
@@ -240,7 +245,7 @@ def backfill_opendota(
     since = _enrich_since(now, days)
     for chat in storage.list_chats():
         for player in storage.list_players(chat.chat_id):
-            if not _background_allowed(client):
+            if not _background_allowed(client) or _provider_down(client):
                 return done
             done += _enrich_from_opendota(storage, client, player, per_player, since, background=True)
     return done
@@ -267,6 +272,8 @@ def finish_refresh(
     """
     done = 0
     for player in storage.list_players(chat_id):
+        if _provider_down(client):
+            break
         try:
             client.refresh(player.account_id)
         except Exception:
@@ -294,6 +301,9 @@ def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional
     for chat in storage.list_chats():
         for player in storage.list_players(chat.chat_id):
             if player.account_id not in profiles:
+                if _provider_down(client):  # OpenDota лежит — профили не опрашиваем (и не пишем про каждого в лог)
+                    profiles[player.account_id] = None
+                    continue
                 try:
                     profiles[player.account_id] = client.get_profile(player.account_id)
                 except Exception:
@@ -560,6 +570,12 @@ def refresh_player(
     игры) — один-два запроса на игрока; позиции Stratz — одной пачкой. Медленное (пинок OpenDota,
     средние/линии, детали матчей) помечается и доделывается в finish_refresh фоном, уже после ответа.
     """
+    if _provider_down(client):
+        # OpenDota лежит: сверки матчей не было, «обновлён» не ставим. Позиции Stratz для уже сохранённых матчей — можно.
+        if stratz is not None:
+            _enrich_from_stratz(storage, stratz, player, now)
+        return 0
+
     if not fast:
         # Пнуть OpenDota перечитать историю — свежие игры доедут быстрее (best-effort).
         try:
@@ -726,6 +742,8 @@ def refresh_chat(
     fast=True — матчи, ранг и позиции Stratz (быстрый ответ на команду); остальное догоняет finish_refresh.
     """
     players = players if players is not None else storage.list_players(chat_id)
+    if _provider_down(client):  # OpenDota лежит — отвечаем из БД, не создавая пул потоков и не ловя таймауты
+        return players
     # Кулдаун: если обновляли недавно — берём кэш из БД, не дёргаем OpenDota (скорость).
     stale = [p for p in players if p.updated_ts is None or (now - p.updated_ts) >= REFRESH_COOLDOWN]
     if not stale:

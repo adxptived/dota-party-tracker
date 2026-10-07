@@ -17,6 +17,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from mmrbot.health import provider_down
 from mmrbot.opendota import OpenDota
 from mmrbot.backup import backup_db
 from mmrbot.formatting import (
@@ -154,19 +155,36 @@ def setup_scheduler(
     async def stratz_backfill() -> None:
         if stratz is None:
             return
+        if provider_down(stratz):
+            log.debug("Stratz недоступен — дозаполнение пропущено до следующего тика")
+            return
         try:
             await asyncio.to_thread(backfill_stratz, storage, stratz)
         except Exception:
             log.exception("Фоновое дозаполнение Stratz не удалось")
 
     async def opendota_backfill() -> None:
+        if provider_down(od):
+            log.debug("OpenDota недоступен — обогащение матчей пропущено до следующего тика")
+            return
         try:
             await asyncio.to_thread(backfill_opendota, storage, od)
         except Exception:
             log.exception("Фоновое обогащение матчей OpenDota не удалось")
 
+    def retry_heroes_in_an_hour() -> None:
+        """OpenDota недоступен — справочник героев догоним через час, а не ждём следующих суток."""
+        scheduler.add_job(
+            heroes_refresh, "date", run_date=datetime.now(timezone.utc) + timedelta(hours=1),
+            id="heroes_retry", replace_existing=True,
+        )
+
     async def heroes_refresh() -> None:
-        """Справочник героев: раз в сутки и вскоре после старта."""
+        """Справочник героев: раз в сутки и вскоре после старта; при недоступном OpenDota — повтор через час."""
+        if provider_down(od):
+            log.debug("OpenDota недоступен — обновление справочника героев перенесено на +1 ч")
+            retry_heroes_in_an_hour()
+            return
         try:
             added = await asyncio.to_thread(refresh_heroes, od)
             if added:
@@ -176,6 +194,9 @@ def setup_scheduler(
 
     async def steam_watch() -> None:
         """Оповещения о смене ника/аватарки Steam (профили берём из OpenDota)."""
+        if provider_down(od):
+            log.debug("OpenDota недоступен — проверка Steam-профилей пропущена до следующего тика")
+            return
         try:
             events = await asyncio.to_thread(detect_steam_changes, storage, od)
         except Exception:

@@ -229,3 +229,25 @@ def test_log_network_error_covers_requests_family(exc, caplog):
     with caplog.at_level(logging.DEBUG, logger="test.netlog"):
         log_network_error(log, "msg", exc)
     assert caplog.records[0].levelno == logging.WARNING
+
+
+def test_provider_down_helper_tolerates_clients_without_health():
+    from mmrbot.health import provider_down
+
+    class Plain:
+        pass
+
+    class WithHealth:
+        def __init__(self, health):
+            self.health = health
+
+    assert provider_down(Plain()) is False and provider_down(None) is False
+    health, clock = make()
+    client = WithHealth(health)
+    assert provider_down(client) is False
+    health.failure(RuntimeError("x"))
+    assert provider_down(client) is True
+    clock.advance(61)
+    assert provider_down(client) is False   # пауза кончилась — пробную попытку пропустим
+    health.allow()
+    assert provider_down(client) is True    # проба в полёте — остальным лучше не соваться

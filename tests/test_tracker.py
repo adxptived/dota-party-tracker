@@ -1126,3 +1126,87 @@ def test_idle_poll_does_not_spend_reserve_on_old_backlog(store):
     asked.clear()
     refresh_player(store, client, store.get_player(100, "Вася"), now=T0 + 600)
     assert asked == []  # новых игр нет — бэклог подождёт
+
+
+# --- A2: провайдер лежит — в сеть не ходим (команды и фон) -------------------------------
+
+def _down(name="OpenDota"):
+    from mmrbot.health import ProviderHealth
+    health = ProviderHealth(name)
+    health.failure(RuntimeError("down"))
+    return health
+
+
+def _down_od():
+    client = FakeOpenDota(matches=[od_match(500, 5000)])
+    client.health = _down()
+    return client
+
+
+def test_refresh_chat_does_not_touch_client_when_opendota_is_down(store):
+    from mmrbot.tracker import refresh_chat
+    store.add_player(1, 11, "Вася", None, 0, 0)
+    store.add_player(1, 22, "Петя", None, 0, 0)
+    client = _down_od()
+    players = refresh_chat(store, client, 1, 1_000_000)
+    assert {p.display_name for p in players} == {"Вася", "Петя"}  # игроки из БД
+    assert (client.profile_calls, client.match_calls, client.refresh_calls) == (0, 0, 0)
+
+
+def test_refresh_player_skips_opendota_but_still_enriches_from_stratz(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [{**od_match(100, 1000)}])
+    client = _down_od()
+    stratz = FakeStratz({100: {"position": 3, "role": "CORE", "lane": "OFF_LANE", "imp": 7, "party_size": 1}})
+    assert refresh_player(store, client, player, 2000, stratz=stratz) == 0
+    assert (client.profile_calls, client.match_calls, client.refresh_calls) == (0, 0, 0)
+    assert store.get_matches(player.id)[0]["position"] == 3  # Stratz жив — дозаполнение идёт без OpenDota
+    assert store.get_player_by_account_id(1, 42).updated_ts is None  # «обновлён» не ставим — сверки не было
+
+
+def test_stratz_enrichment_is_skipped_when_stratz_is_down(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    od = FakeOpenDota(matches=[od_match(100, 1000)])
+    stratz = FakeStratz({100: {"position": 3}})
+    stratz.health = _down("Stratz")
+    assert refresh_player(store, od, player, 2000, stratz=stratz) == 1  # матчи OpenDota сохранены
+    assert stratz.calls == 0
+    assert store.get_match_ids_without_stratz(player.id, 0, 10) == [100]  # попытка не сожжена
+
+
+def test_background_jobs_do_nothing_when_providers_are_down(store):
+    from mmrbot.tracker import backfill_opendota, backfill_stratz, detect_steam_changes, finish_refresh
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [od_match(1, 1000)])
+
+    class Calls(FakeOpenDota):
+        extra = 0
+
+        def get_match_player_stats(self, match_id, account_id, player_slot=None):
+            self.extra += 1
+            return {}
+
+    client = Calls()
+    client.health = _down()
+    stratz = FakeStratz({1: {"position": 1}})
+    stratz.health = _down("Stratz")
+
+    assert backfill_opendota(store, client, days=0) == 0
+    assert finish_refresh(store, client, 100, days=0) == 0
+    assert detect_steam_changes(store, client) == []
+    assert backfill_stratz(store, stratz) == 0
+    assert (client.profile_calls, client.match_calls, client.refresh_calls, client.extra) == (0, 0, 0, 0)
+    assert stratz.calls == 0
+
+
+def test_detect_new_games_announces_db_matches_without_network_when_opendota_is_down(store):
+    from mmrbot.tracker import detect_new_games
+    now = 1_000_000
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", 5000, 0, 0)
+    store.add_matches(player.id, [{**od_match(7, now - 600), "duration": 1800}])
+    client = _down_od()
+    events = detect_new_games(store, client, store.get_or_create_chat(100), now, mark=False)
+    assert [e["match_id"] for e in events if e["kind"] == "match"] == [7]  # матч уже в БД — оповещение не теряем
+    assert client.match_calls == 0 and client.profile_calls == 0

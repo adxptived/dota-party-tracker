@@ -94,3 +94,65 @@ def test_digest_chat_not_found_marks_day_done(tmp_path, monkeypatch):
 
 def test_digest_other_error_is_retried_next_hour(tmp_path, monkeypatch):
     assert _run_digest(tmp_path, monkeypatch, RuntimeError("boom")) is None
+
+
+# --- A2: фоновые задачи не ходят в сеть, пока провайдер лежит ---------------------------
+
+class _Provider:
+    """Фейковый клиент с предохранителем (health) и счётчиком обращений."""
+
+    def __init__(self, down=False):
+        from mmrbot.health import ProviderHealth
+        self.health = ProviderHealth("OpenDota")
+        if down:
+            self.health.failure(RuntimeError("down"))
+        self.api_key = "K"
+        self.calls = []
+
+    def get_heroes(self):
+        self.calls.append("get_heroes")
+        return []
+
+
+def _jobs(tmp_path, od, stratz=None):
+    storage = Storage(str(tmp_path / "t.db"))
+    scheduler = sched.setup_scheduler(None, storage, od, stratz=stratz)
+    return scheduler, {job.func.__name__: job.func for job in scheduler.get_jobs()}
+
+
+def test_heroes_refresh_reschedules_itself_in_an_hour_when_opendota_is_down(tmp_path):
+    od = _Provider(down=True)
+    scheduler, jobs = _jobs(tmp_path, od)
+    asyncio.run(jobs["heroes_refresh"]())
+    assert od.calls == []                                           # в сеть не ходили
+    retry = next(j for j in scheduler.get_jobs() if j.id == "heroes_retry")
+    delta = (retry.trigger.run_date - datetime.now(timezone.utc)).total_seconds()
+    assert 3500 < delta <= 3600                                      # перенос на +1 ч
+
+
+def test_heroes_refresh_retry_does_not_pile_up(tmp_path):
+    od = _Provider(down=True)
+    scheduler, jobs = _jobs(tmp_path, od)
+    for _ in range(3):
+        asyncio.run(jobs["heroes_refresh"]())
+    assert [j.id for j in scheduler.get_jobs()].count("heroes_retry") == 1
+
+
+def test_background_jobs_skip_the_tick_when_provider_is_down(tmp_path, monkeypatch):
+    called = []
+    for name in ("backfill_opendota", "backfill_stratz", "detect_steam_changes"):
+        monkeypatch.setattr(sched, name, lambda *a, _n=name, **kw: called.append(_n) or [])
+    _, jobs = _jobs(tmp_path, _Provider(down=True), stratz=_Provider(down=True))
+    for name in ("opendota_backfill", "stratz_backfill", "steam_watch"):
+        asyncio.run(jobs[name]())          # тик тихо пропущен, без исключений
+    assert called == []                    # и без обращений к задачам, которые ходят в сеть
+
+
+def test_background_jobs_run_when_provider_is_up(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(sched, "backfill_opendota", lambda storage, od: called.append("od") or 0)
+    monkeypatch.setattr(sched, "backfill_stratz", lambda storage, st: called.append("stratz") or 0)
+    _, jobs = _jobs(tmp_path, _Provider(), stratz=_Provider())
+    asyncio.run(jobs["opendota_backfill"]())
+    asyncio.run(jobs["stratz_backfill"]())
+    assert called == ["od", "stratz"]
