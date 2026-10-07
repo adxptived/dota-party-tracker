@@ -16,6 +16,7 @@ from typing import Optional
 from mmrbot import hero_icons
 from mmrbot.health import log_network_error
 from mmrbot.formatting import (
+    outage_note,
     render_awards,
     render_party_pulse,
     render_compare_table,
@@ -61,6 +62,7 @@ from mmrbot.tracker import (
 log = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4096
+CAPTION_LIMIT = 1024  # лимит подписи к фото в Telegram
 
 
 # Блокировки по чату (на каждый event loop): одновременные команды в одном чате не обновляют
@@ -153,9 +155,17 @@ async def refresh_only(storage: Storage, od: OpenDota, chat_id: int, stratz=None
     _kick_finish(storage, od, chat_id)
 
 
-def _with_stale(storage: Storage, chat_id: int, text: str) -> str:
-    """Дописать предупреждение, если кого-то не удалось обновить и показаны сохранённые данные."""
-    note = stale_note(storage.list_players(chat_id), int(time.time()), REFRESH_COOLDOWN)
+def _with_stale(storage: Storage, chat_id: int, text: str, od=None) -> str:
+    """Дописать, почему данные устарели: «OpenDota недоступен с … — показаны данные на …».
+
+    Пока OpenDota недоступен (od.health), причина названа явно; иначе — прежнее предупреждение о тех игроках,
+    которых не удалось обновить. Одна строка, а не две. Когда всё свежо и OpenDota жив — ничего не добавляется.
+    """
+    players = storage.list_players(chat_id)
+    now = int(time.time())
+    health = getattr(od, "health", None)
+    note = outage_note(health.status() if health is not None else None, players, now, storage.get_or_create_chat(chat_id).tz)
+    note = note or stale_note(players, now, REFRESH_COOLDOWN)
     return f"{text}\n\n{note}" if note else text
 
 
@@ -188,7 +198,7 @@ async def render_board(
             block = render_awards(awards, "за сутки" if day else "за неделю")
             if block:
                 text += "\n\n" + block
-    return _with_stale(storage, chat_id, text) if refresh else text
+    return _with_stale(storage, chat_id, text, od) if refresh else text
 
 
 async def render_period_board(
@@ -197,7 +207,7 @@ async def render_period_board(
     await refresh_with_budget(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
-    return _with_stale(storage, chat_id, render_period_leaderboard(rows, period))
+    return _with_stale(storage, chat_id, render_period_leaderboard(rows, period), od)
 
 
 GRAPH_CACHE_TTL = 60  # сек: повторный график того же периода (переключение кнопок туда-обратно) — мгновенно
@@ -242,7 +252,7 @@ async def render_graph_board(
         lines.append(f"{medals[i] if i < 3 else '▫️'} <b>{html.escape(name)}</b> {total:+d} · {games_word(games)} · {round(wins * 100 / games)}%")
     caption = f"📈 <b>Динамика MMR {label}</b> · <i>оценка: ±{chat.mmr_step} за игру</i>\n" + "\n".join(lines)
     if refresh:
-        caption = _with_stale(storage, chat_id, caption)
+        caption = _with_stale(storage, chat_id, caption, od)
     result = (png, caption)
     _graph_cache[cache_key] = (time.monotonic(), result)
     return result
@@ -252,19 +262,19 @@ async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, per
     await refresh_with_budget(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     data = await asyncio.to_thread(build_records, storage, chat_id, since)
-    return _with_stale(storage, chat_id, render_records(data, period, storage.get_or_create_chat(chat_id).tz))
+    return _with_stale(storage, chat_id, render_records(data, period, storage.get_or_create_chat(chat_id).tz), od)
 
 
 async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz)
-    return _with_stale(storage, chat_id, render_heroes(summaries))
+    return _with_stale(storage, chat_id, render_heroes(summaries), od)
 
 
 async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
     # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
     await refresh_with_budget(storage, od, chat_id, stratz)
     result = await asyncio.to_thread(build_together, storage, chat_id)
-    return _with_stale(storage, chat_id, render_together(result))
+    return _with_stale(storage, chat_id, render_together(result), od)
 
 
 async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None) -> Optional[str]:
@@ -274,7 +284,7 @@ async def render_player_board(storage: Storage, od: OpenDota, chat_id: int, name
     for summary in summaries:
         if summary.display_name.lower() == name_lower or str(summary.account_id) == name.strip():
             standing = standing_line(comparison, summary.display_name)
-            return _with_stale(storage, chat_id, render_player_card(summary, standing=standing))
+            return _with_stale(storage, chat_id, render_player_card(summary, standing=standing), od)
     return None
 
 
@@ -283,7 +293,7 @@ async def render_compare_board(storage: Storage, od: OpenDota, chat_id: int, str
     if not summaries:
         return NO_PLAYERS
     comparison = build_chat_comparison(summaries)
-    return _with_stale(storage, chat_id, render_compare_table(comparison, summaries))
+    return _with_stale(storage, chat_id, render_compare_table(comparison, summaries), od)
 
 
 def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
@@ -402,6 +412,7 @@ async def match_board(
     tracked = {p.account_id: p.display_name for p in storage.list_players(chat_id)}
     focus = None
     cached = None
+    latest = match_id is None  # «последний матч» зависит от свежести данных — там уместна пометка об устаревании
     if match_id is None:
         await refresh_with_budget(storage, od, chat_id, stratz, budget=MATCH_REFRESH_WAIT)
         view = await asyncio.to_thread(build_match_view, storage, chat_id, name, None)
@@ -446,6 +457,14 @@ async def match_board(
         except Exception:
             log.exception("Не удалось нарисовать матч %s — отвечаем текстом", match_id)
             board.png = board.caption = None
+    if latest:
+        health = getattr(od, "health", None)
+        note = outage_note(health.status() if health is not None else None,
+                           storage.list_players(chat_id), int(time.time()), tz)
+        if note:
+            board.text += "\n\n" + note
+            if board.caption is not None and len(board.caption) + len(note) + 2 <= CAPTION_LIMIT:
+                board.caption += "\n" + note
     return board
 
 

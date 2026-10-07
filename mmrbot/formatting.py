@@ -180,6 +180,30 @@ def stale_note(players: list, now: int, cooldown: int) -> str:
     return f"⚠️ <i>OpenDota не ответил — показаны сохранённые данные{who}: {when}.</i>"
 
 
+def outage_note(
+    status: Optional[dict], players: list, now: int, tz_name: str = "UTC", provider: str = "OpenDota"
+) -> str:
+    """Единая строка под отчётом и в подписи картинки: почему данные устарели и на какой момент они показаны.
+
+    status — снимок ProviderHealth.status(); пока сервис жив (up) или предохранителя нет (None) — пустая строка.
+    Время — в часовом поясе чата; другие сутки — с датой. Данные — по самому свежему обновлению игроков чата.
+    """
+    state = (status or {}).get("state")
+    if state in (None, "up"):
+        return ""
+
+    def when(ts: int) -> str:
+        same_day = fmt_local(ts, tz_name, "%Y-%m-%d") == fmt_local(now, tz_name, "%Y-%m-%d")
+        return fmt_local(ts, tz_name, "%H:%M" if same_day else "%d.%m %H:%M")
+
+    since = status.get("since")
+    since_part = f" с {when(since)}" if since else ""
+    loaded = [p.updated_ts for p in players if p.updated_ts is not None]
+    data = f"показаны данные на {when(max(loaded))}" if loaded else "данные ещё не загружены"
+    what = "ограничил запросы" if state == "limited" else "недоступен"
+    return f"⚠️ <i>{provider} {what}{since_part} — {data}.</i>"
+
+
 def render_leaderboard(summaries: list[PlayerSummary], today_only: bool = False) -> str:
     if not summaries:
         return NO_PLAYERS
