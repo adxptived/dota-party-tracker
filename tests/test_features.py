@@ -124,6 +124,7 @@ def test_migration_marks_existing_matches_as_notified(tmp_path):
     p = st.add_player(100, 1, "Вася", None, 0, 0)
     st.add_matches(p.id, [m(1, 100)])
     with sqlite3.connect(path) as conn:  # имитируем БД старой схемы: без колонки notified
+        conn.execute("DROP TRIGGER matches_bump_upd")  # у реальной старой базы триггеров ещё нет
         conn.execute("ALTER TABLE matches DROP COLUMN notified")
     st2 = Storage(path)  # миграция
     assert st2.get_unnotified_matches(p.id, 0) == []

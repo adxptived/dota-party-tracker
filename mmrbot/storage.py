@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from bisect import bisect_left
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -171,6 +174,8 @@ class _Connection(sqlite3.Connection):
 
 
 class Storage:
+    MATCH_CACHE_ROWS = 30_000  # строк матчей в памяти суммарно (≈ 60–70 МБ): хватает пати на 16 игроков по ~1800 игр
+
     def __init__(
         self, db_path: str, default_digest_hour: int = DEFAULT_DIGEST_HOUR,
         default_mmr_step: int = DEFAULT_MMR_STEP, default_tz: str = DEFAULT_TZ,
@@ -180,6 +185,9 @@ class Storage:
         self.default_digest_hour = default_digest_hour
         self.default_mmr_step = default_mmr_step
         self.default_tz = default_tz
+        # B3: история матчей игрока в памяти по «версии данных» players.data_ver (её двигают триггеры на matches).
+        self._matches_cache: OrderedDict = OrderedDict()
+        self._matches_cache_lock = threading.Lock()
         with self._conn() as conn:
             conn.execute("PRAGMA journal_mode = WAL")  # режим хранится в файле БД — достаточно один раз
             version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -225,6 +233,7 @@ class Storage:
             "fh_unavailable": "INTEGER NOT NULL DEFAULT 0",
             "ingame_since": "INTEGER", "ingame_misses": "INTEGER NOT NULL DEFAULT 0",
             "tg_user_id": "INTEGER", "last_tag": "TEXT",
+            "data_ver": "INTEGER NOT NULL DEFAULT 0",
         })
         add_missing("matches", {
             "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
@@ -239,6 +248,16 @@ class Storage:
             "stratz_next_ts": "INTEGER NOT NULL DEFAULT 0",
             "leaver_status": "INTEGER",
         })
+        # «Версия данных» игрока: любое изменение его матчей (кроме служебных счётчиков) двигает players.data_ver.
+        bump = "UPDATE players SET data_ver = data_ver + 1 WHERE id = {}.player_id"
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_ins AFTER INSERT ON matches BEGIN {bump.format('NEW')}; END")
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_del AFTER DELETE ON matches BEGIN {bump.format('OLD')}; END")
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS matches_bump_upd AFTER UPDATE ON matches "
+            "WHEN OLD.notified IS NEW.notified AND OLD.enrich_tries IS NEW.enrich_tries "
+            "AND OLD.stratz_tries IS NEW.stratz_tries AND OLD.stratz_next_ts IS NEW.stratz_next_ts "
+            f"BEGIN {bump.format('NEW')}; END"
+        )
 
     def _conn(self) -> sqlite3.Connection:
         # timeout: фоновые джобы и хендлеры пишут из разных потоков — ждём блокировку, а не падаем.
@@ -604,6 +623,8 @@ class Storage:
         columns = ("player_id", "match_id", "start_time", "player_slot", "radiant_win", "lobby_type",
                    "kills", "deaths", "assists") + self._FILL_FIELDS
         fill = ", ".join(f"{f} = COALESCE({f}, excluded.{f})" for f in self._FILL_FIELDS)
+        # Уже известный матч трогаем, только если пришло что-то новое для пустого поля: пустая запись не двигает data_ver.
+        fills_something = " OR ".join(f"({f} IS NULL AND excluded.{f} IS NOT NULL)" for f in self._FILL_FIELDS)
         rows = [
             (
                 player_id,
@@ -623,7 +644,7 @@ class Storage:
             before = conn.execute(count, (player_id,)).fetchone()[0]
             conn.executemany(
                 f"INSERT INTO matches ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))}) "
-                f"ON CONFLICT(player_id, match_id) DO UPDATE SET {fill}",
+                f"ON CONFLICT(player_id, match_id) DO UPDATE SET {fill} WHERE {fills_something}",
                 rows,
             )
             return conn.execute(count, (player_id,)).fetchone()[0] - before
@@ -894,12 +915,35 @@ class Storage:
         return [dict(r) for r in rows]
 
     def get_matches(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
-        query = "SELECT * FROM matches WHERE player_id = ?"
-        params: list = [player_id]
-        if since_ts is not None:
-            query += " AND start_time >= ?"
-            params.append(since_ts)
-        query += " ORDER BY start_time"
+        """Ранкед-история игрока по времени. Строки берутся из кэша, пока players.data_ver не изменился.
+
+        Словари общие с кэшем — их нельзя менять; список — копия, его можно резать и сортировать.
+        """
         with self._conn() as conn:
-            rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+            row = conn.execute("SELECT data_ver FROM players WHERE id = ?", (player_id,)).fetchone()
+            if row is None:
+                return []
+            version = row[0]  # версию читаем до строк: гонка с записью даст лишь лишнюю перезагрузку
+            with self._matches_cache_lock:
+                cached = self._matches_cache.get(player_id)
+                if cached is not None and cached[0] == version:
+                    self._matches_cache.move_to_end(player_id)
+                else:
+                    cached = None
+            if cached is None:
+                rows = [dict(r) for r in conn.execute(
+                    "SELECT * FROM matches WHERE player_id = ? ORDER BY start_time", (player_id,)
+                ).fetchall()]
+                cached = (version, rows, [r["start_time"] for r in rows])
+                self._remember_matches(player_id, cached)
+        _, rows, starts = cached
+        return list(rows) if since_ts is None else rows[bisect_left(starts, since_ts):]
+
+    def _remember_matches(self, player_id: int, entry: tuple) -> None:
+        with self._matches_cache_lock:
+            self._matches_cache[player_id] = entry
+            self._matches_cache.move_to_end(player_id)
+            total = sum(len(v[1]) for v in self._matches_cache.values())
+            while total > self.MATCH_CACHE_ROWS and len(self._matches_cache) > 1:
+                _, dropped = self._matches_cache.popitem(last=False)
+                total -= len(dropped[1])
