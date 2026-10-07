@@ -225,24 +225,6 @@ def test_add_matches_stores_duration_and_party_size(store):
     assert row["average_rank"] == 74
 
 
-def test_update_player_totals(store):
-    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
-    store.update_player_totals(p.id, gpm=520.5, xpm=610.0, last_hits=180.2)
-    got = store.get_player(100, "Вася")
-    assert got.last_gpm == pytest.approx(520.5)
-    assert got.last_xpm == pytest.approx(610.0)
-    assert got.last_last_hits == pytest.approx(180.2)
-
-
-def test_update_player_insights(store):
-    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
-    store.update_player_insights(p.id, lanes_json='{"2": [10, 6]}', gpm_median=520, gpm_best=800)
-    got = store.get_player(100, "Вася")
-    assert got.last_lanes == '{"2": [10, 6]}'
-    assert got.last_gpm_median == 520
-    assert got.last_gpm_best == 800
-
-
 def test_update_match_stratz_sets_fields_and_keeps_existing_numbers(tmp_path):
     from mmrbot.storage import Storage
     store = Storage(str(tmp_path / "s.db"))

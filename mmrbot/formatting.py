@@ -779,12 +779,15 @@ def render_settings(chat) -> str:
     return (
         "⚙️ <b>Настройки чата</b>\n\n"
         f"🎯 Шаг оценки MMR: <b>±{chat.mmr_step}</b> за ранкед-игру\n"
-        f"⏰ Ежедневная сводка: <b>{chat.digest_hour:02d}:00</b>\n"
+        f"⏰ Ежедневная сводка: <b>{chat.digest_hour:02d}:00</b> — "
+        f"<b>{state(chat.notify_digest, 'включена', 'выключена')}</b> <i>(в дни без игр не приходит)</i>\n"
         f"🌍 Часовой пояс: <b>{_esc(tz_label(chat.tz))}</b>\n"
         f"🔔 Оповещения о смене ника/аватарки Steam: <b>{state(chat.notify_steam)}</b>\n"
         f"🎮 Оповещения о конце матча и достижениях: <b>{state(chat.notify_games)}</b>\n"
         f"📅 Недельная сводка (понедельник): <b>{state(chat.notify_weekly, 'включена', 'выключена')}</b>\n"
-        f"🏷️ Теги участников с MMR: <b>{state(chat.tag_mmr)}</b> <i>(привязка: Пати → «Это я»)</i>\n\n"
+        f"🏷️ Теги участников с MMR: <b>{state(chat.tag_mmr)}</b> <i>(привязка: Пати → «Это я»)</i>\n"
+        f"🔒 Менять настройки и удалять игроков в группе: "
+        f"<b>{'только админы' if chat.admin_only else 'все участники'}</b>\n\n"
         "<i>Часовой пояс влияет на «сегодня» и время сводки.</i>"
     )
 
@@ -930,7 +933,6 @@ def render_full_match(match: dict, tracked: dict, focus=None, tz: str = "UTC") -
 
     focus — account_id игрока, чья подробная карточка (GPM, урон…) идёт сверху; без него — только шапка.
     """
-    from datetime import datetime, timezone
     from types import SimpleNamespace
     players = match.get("players") or []
     radiant = [p for p in players if p["is_radiant"]]

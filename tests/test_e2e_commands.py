@@ -277,11 +277,15 @@ def test_setmmr_setstep_settime_remove(env):
         (botmod.cmd_setmmr, "shinoame 5300", "5300"),
         (botmod.cmd_setstep, "30", "30"),
         (botmod.cmd_settime, "11", "11:00"),
-        (botmod.cmd_remove, "shinoame", "удалён"),
+        (botmod.cmd_remove, "shinoame", "Удалить игрока shinoame?"),  # удаление — только через подтверждение
     ):
         msg = FakeMessage()
         run(handler(msg, cmdobj("x", args), storage))
         assert needle in msg.texts
+    assert storage.get_player(100, "shinoame") is not None
+    confirm = FakeCallback(f"pp:rmyes:{ACC}")
+    run(botmod.on_callback(confirm, storage, od, sz))
+    assert "удалён" in confirm.message.texts and storage.get_player(100, "shinoame") is None
 
 
 # --- кнопки -------------------------------------------------------------

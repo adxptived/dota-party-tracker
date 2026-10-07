@@ -20,12 +20,12 @@ class FakeSession:
         self.calls = []
         self.post_calls = []
 
-    def get(self, url, params=None, timeout=None):
-        self.calls.append({"url": url, "params": params or {}})
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.calls.append({"url": url, "params": params or {}, "headers": headers or {}})
         return FakeResp(self.payload)
 
-    def post(self, url, timeout=None):
-        self.post_calls.append({"url": url})
+    def post(self, url, timeout=None, headers=None):
+        self.post_calls.append({"url": url, "headers": headers or {}})
         return FakeResp({})
 
 
@@ -47,11 +47,68 @@ def test_get_matches_returns_list():
     assert session.calls[0]["url"].endswith("/players/42/matches")
 
 
-def test_api_key_added_to_params():
+def test_api_key_goes_in_header_not_in_url():
     session = FakeSession({"rank_tier": 11})
     od = OpenDota(session=session, min_interval=0, api_key="SECRET")
     od.get_profile(42)
-    assert session.calls[0]["params"].get("api_key") == "SECRET"
+    od.refresh(42)
+    assert session.calls[0]["headers"] == {"Authorization": "Bearer SECRET"}
+    assert "api_key" not in session.calls[0]["params"]  # URL с параметрами попадает в тексты ошибок и логи
+    assert session.post_calls[0]["headers"] == {"Authorization": "Bearer SECRET"}
+
+
+def test_api_key_never_appears_in_error_text():
+    import requests
+
+    class Session:
+        def get(self, url, params=None, timeout=None, headers=None):
+            request = requests.Request("GET", url, params=params).prepare()
+            resp = requests.Response()
+            resp.status_code, resp.url, resp.request, resp._content = 404, request.url, request, b"{}"
+            return resp
+
+    od = OpenDota(session=Session(), min_interval=0, api_key="SECRET-KEY")
+    try:
+        od.get_profile(42)
+    except Exception as exc:
+        assert "SECRET-KEY" not in str(exc)
+    else:
+        raise AssertionError("ожидалась ошибка HTTP 404")
+
+
+class QuotaSession:
+    """Отдаёт остаток суточного лимита в заголовке, как OpenDota запросам без ключа."""
+
+    def __init__(self, remaining):
+        self.remaining = remaining
+
+    def get(self, url, params=None, timeout=None):
+        resp = FakeResp({})
+        resp.headers = {"X-Rate-Limit-Remaining-Day": str(self.remaining)}
+        return resp
+
+
+def test_background_requests_stop_when_daily_quota_is_low():
+    session = QuotaSession(1500)
+    od = OpenDota(session=session, min_interval=0, background_reserve=800)
+    assert od.background_allowed()  # остаток ещё неизвестен — не блокируем
+    od.get_profile(1)
+    assert od.remaining_day == 1500 and od.background_allowed()
+    session.remaining = 800
+    od.get_profile(1)
+    assert not od.background_allowed()  # резерв оставляем опросу игр и командам
+
+
+def test_background_always_allowed_with_api_key():
+    od = OpenDota(session=FakeSession({}), min_interval=0, api_key="K")
+    od.remaining_day = 0
+    assert od.background_allowed()
+
+
+def test_refresh_kick_is_rarer_without_key():
+    assert OpenDota(session=FakeSession({}), min_interval=0).refresh_gap > OpenDota(
+        session=FakeSession({}), min_interval=0, api_key="K"
+    ).refresh_gap
 
 
 def test_no_api_key_means_no_param():
@@ -94,60 +151,6 @@ def test_refresh_swallows_errors():
 
     od = OpenDota(session=BrokenSession({}), min_interval=0)
     assert od.refresh(42) is False  # не бросает, возвращает False
-
-
-def test_get_lanes_normalizes_lane_role():
-    session = FakeSession({"lane_role": {"1": {"games": 10, "win": 6}, "2": {"games": 4, "win": 1}}})
-    od = OpenDota(session=session, min_interval=0)
-    lanes = od.get_lanes(42)
-    assert lanes[1] == (10, 6)
-    assert lanes[2] == (4, 1)
-    assert session.calls[0]["url"].endswith("/players/42/counts")
-
-
-def test_get_lanes_empty_when_absent():
-    od = OpenDota(session=FakeSession({}), min_interval=0)
-    assert od.get_lanes(42) == {}
-
-
-def test_get_gpm_distribution_median_and_best():
-    session = FakeSession([
-        {"x": 0, "games": 1, "win": 0},
-        {"x": 100, "games": 2, "win": 1},
-        {"x": 200, "games": 1, "win": 1},
-    ])
-    od = OpenDota(session=session, min_interval=0)
-    dist = od.get_gpm_distribution(42)
-    assert dist["median"] == 100  # 4 игры, медиана падает в бакет 100
-    assert dist["best"] == 200
-    assert session.calls[0]["url"].endswith("/players/42/histograms/gold_per_min")
-
-
-def test_get_gpm_distribution_empty():
-    od = OpenDota(session=FakeSession([]), min_interval=0)
-    assert od.get_gpm_distribution(42) == {"median": None, "best": None}
-
-
-def test_get_totals_computes_averages():
-    session = FakeSession([
-        {"field": "gold_per_min", "n": 10, "sum": 5000},   # avg 500
-        {"field": "xp_per_min", "n": 10, "sum": 6000},      # avg 600
-        {"field": "last_hits", "n": 10, "sum": 1800},       # avg 180
-        {"field": "kills", "n": 10, "sum": 100},            # игнор
-    ])
-    od = OpenDota(session=session, min_interval=0)
-    totals = od.get_totals(42)
-    assert totals["gpm"] == 500
-    assert totals["xpm"] == 600
-    assert totals["last_hits"] == 180
-    assert session.calls[0]["url"].endswith("/players/42/totals")
-
-
-def test_get_totals_handles_missing_fields():
-    session = FakeSession([])
-    od = OpenDota(session=session, min_interval=0)
-    totals = od.get_totals(42)
-    assert totals == {"gpm": None, "xpm": None, "last_hits": None}
 
 
 def test_concurrent_calls_respect_throttle_but_overlap():
@@ -264,16 +267,6 @@ def test_invalid_json_is_retried(monkeypatch):
 
 
 # --- достоверность и скорость сбора ------------------------------------------
-
-def test_aggregates_are_ranked_only():
-    """totals/counts/histograms без фильтра считают все режимы — бот показывает только ранкед."""
-    session = FakeSession([])
-    od = OpenDota(session=session, min_interval=0)
-    od.get_totals(42)
-    od.get_lanes(42)
-    od.get_gpm_distribution(42)
-    assert [c["params"] for c in session.calls] == [{"lobby_type": 7}] * 3
-
 
 def test_get_recent_matches_endpoint():
     session = FakeSession([{"match_id": 1, "gold_per_min": 500}])

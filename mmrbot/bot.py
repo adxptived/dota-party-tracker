@@ -6,12 +6,14 @@ import logging
 import time
 
 import re
+from typing import Optional
 
 from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InputMediaPhoto, Message
 
 from mmrbot import commands as cmd
+from mmrbot.access import DENIED, may_manage
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
@@ -39,6 +41,19 @@ from mmrbot.ranks import rank_label
 from mmrbot.tracker import build_leaderboard, check_achievements, list_achievements, refresh_player
 
 router = Router()
+log = logging.getLogger(__name__)
+
+MAX_PLAYERS = 16  # игроков на чат (переопределяется из конфига при старте): каждый тратит общий лимит OpenDota
+
+
+async def _can_manage(message, storage: Storage, user=None, bot=None) -> bool:
+    """Право менять настройки/удалять игроков; при отказе отвечает сам. user — кто нажал кнопку (у команды — автор)."""
+    actor = user if user is not None else getattr(message, "from_user", None)
+    sender_chat = None if user is not None else getattr(message, "sender_chat", None)
+    if await may_manage(bot or getattr(message, "bot", None), storage, message.chat, actor, sender_chat):
+        return True
+    await message.answer(DENIED)
+    return False
 
 
 class DeleteCommandMiddleware(BaseMiddleware):
@@ -278,6 +293,9 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
 
     storage.get_or_create_chat(message.chat.id)
     now = int(time.time())
+    if storage.count_players(message.chat.id) >= MAX_PLAYERS:
+        await message.answer(f"⚠️ В чате уже {MAX_PLAYERS} игроков — это предел. Удалите кого-нибудь: /remove")
+        return
 
     if not name:
         try:
@@ -285,8 +303,9 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
             name = profile.get("personaname") or f"id{account_id}"
         except Exception:
             name = f"id{account_id}"
+        name = name[:cmd.NAME_MAX]
         if storage.nick_taken(message.chat.id, name):  # автоник совпал с чужим — делаем уникальным
-            name = f"{name}#{account_id % 10000}"
+            name = f"{name[:cmd.NAME_MAX - 5]}#{account_id % 10000}"
 
     try:
         player = storage.add_player(message.chat.id, account_id, name, mmr, now, now)
@@ -299,8 +318,8 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
 
     try:
         await asyncio.to_thread(refresh_player, storage, od, player, now, stratz)
-    except Exception:
-        pass  # первичная подгрузка не критична — досчитается в /stats
+    except Exception:  # первичная подгрузка не критична — досчитается в /stats
+        log.warning("Первая загрузка истории игрока %s не удалась", account_id, exc_info=True)
 
     try:  # история при добавлении — не «новые игры»: помечаем оповещённой и запоминаем достижения молча
         storage.mark_notified(player.id)
@@ -324,14 +343,32 @@ async def cmd_list(message: Message, storage: Storage) -> None:
 
 
 @router.message(Command("remove"))
-async def cmd_remove(message: Message, command: CommandObject, storage: Storage) -> None:
-    name = (command.args or "").strip()
+async def cmd_remove(message: Message, command: CommandObject, storage: Storage, bot: Optional[Bot] = None) -> None:
+    name = (command.args or "").strip().lstrip("@").strip()
     if not name:
         if await _has_players(message, storage):
             await _ask_player(message, storage, "remove", "Кого удалить?")
         return
-    ok = storage.remove_player(message.chat.id, name)
-    await message.answer("🗑️ Игрок удалён." if ok else NOT_FOUND_TEXT)
+    player = storage.get_player(message.chat.id, name)
+    if player is None:
+        await message.answer(NOT_FOUND_TEXT)
+        return
+    await _confirm_remove(message, player)
+
+
+async def _confirm_remove(message, player) -> None:
+    """Удаление стирает историю — всегда через подтверждение (права проверяются при нажатии «Да»)."""
+    await message.answer(
+        f"🗑️ Удалить игрока {player.display_name}? История его матчей и достижения будут стёрты.",
+        reply_markup=confirm_remove(player.account_id),
+    )
+
+
+async def _may_remove(message, storage: Storage, player, user, bot) -> bool:
+    """Себя (привязанного через «Это я») может удалить сам игрок, остальных — тот, кто управляет чатом."""
+    if user is not None and player.tg_user_id is not None and player.tg_user_id == getattr(user, "id", None):
+        return True
+    return await _can_manage(message, storage, user, bot)
 
 
 @router.message(Command("setmmr"))
@@ -354,22 +391,26 @@ async def cmd_setmmr(message: Message, command: CommandObject, storage: Storage)
 
 
 @router.message(Command("setstep"))
-async def cmd_setstep(message: Message, command: CommandObject, storage: Storage) -> None:
+async def cmd_setstep(message: Message, command: CommandObject, storage: Storage, bot: Optional[Bot] = None) -> None:
     try:
         step = cmd.parse_step(command.args or "")
     except ValueError as exc:
         await message.answer(f"⚠️ {exc}")
+        return
+    if not await _can_manage(message, storage, bot=bot):
         return
     storage.set_chat_step(message.chat.id, step)
     await message.answer(f"✅ Шаг: ±{step} MMR за игру")
 
 
 @router.message(Command("settime"))
-async def cmd_settime(message: Message, command: CommandObject, storage: Storage) -> None:
+async def cmd_settime(message: Message, command: CommandObject, storage: Storage, bot: Optional[Bot] = None) -> None:
     try:
         hour = cmd.parse_hour(command.args or "")
     except ValueError as exc:
         await message.answer(f"⚠️ {exc}")
+        return
+    if not await _can_manage(message, storage, bot=bot):
         return
     storage.set_chat_digest_hour(message.chat.id, hour)
     tz = storage.get_or_create_chat(message.chat.id).tz
@@ -435,6 +476,8 @@ async def cmd_tags(message: Message, command: CommandObject, storage: Storage, b
         enabled = cmd.parse_on_off(args)
     except ValueError as exc:
         await message.answer(f"⚠️ {exc}")
+        return
+    if not await _can_manage(message, storage, bot=bot):
         return
     storage.set_chat_tag_mmr(message.chat.id, enabled)
     if enabled:
@@ -810,12 +853,14 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
 
 # --- кнопки -------------------------------------------------------------
 
-async def _on_settings(message: Message, storage: Storage, args: list[str], bot=None) -> None:
+async def _on_settings(message: Message, storage: Storage, args: list[str], bot=None, user=None) -> None:
     """Кнопки настроек (`s:<что>:<значение>`): меняем значение и правим сообщение на месте."""
     chat_id = message.chat.id
     chat = storage.get_or_create_chat(chat_id)
     what = args[0] if args else ""
     value = args[1] if len(args) > 1 else ""
+    if what != "noop" and not await _can_manage(message, storage, user, bot):
+        return
     try:
         if what == "step" and int(value) in STEPS:
             storage.set_chat_step(chat_id, int(value))
@@ -831,6 +876,10 @@ async def _on_settings(message: Message, storage: Storage, args: list[str], bot=
             storage.set_chat_notify_games(chat_id, not chat.notify_games)
         elif what == "weekly":
             storage.set_chat_notify_weekly(chat_id, not chat.notify_weekly)
+        elif what == "digest":
+            storage.set_chat_notify_digest(chat_id, not chat.notify_digest)
+        elif what == "admins":
+            storage.set_chat_admin_only(chat_id, not chat.admin_only)
         elif what == "tags":
             storage.set_chat_tag_mmr(chat_id, not chat.tag_mmr)
             if not chat.tag_mmr and bot is not None:  # только что включили — ставим теги сразу
@@ -865,7 +914,7 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         return
 
     if kind == "s":
-        await _on_settings(message, storage, args, getattr(query, "bot", None))
+        await _on_settings(message, storage, args, getattr(query, "bot", None), getattr(query, "from_user", None))
         return
 
     if kind == "r":
@@ -968,10 +1017,7 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             if player is None:
                 await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
             else:
-                await message.answer(
-                    f"🗑️ Удалить игрока {player.display_name}? История его матчей и достижения будут стёрты.",
-                    reply_markup=confirm_remove(player.account_id),
-                )
+                await _confirm_remove(message, player)
         elif pick == "achv":
             await do_achievements(message, storage, account)
         elif pick in {"me", "meoff"}:
@@ -989,8 +1035,14 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             player = None if account == "last" else storage.get_player(message.chat.id, account)
             await do_match(message, storage, od, player.display_name if player else None, None, stratz)
         elif pick == "rmyes":
-            ok = storage.remove_player(message.chat.id, account)
-            await message.answer("🗑️ Игрок удалён." if ok else NOT_FOUND_TEXT, reply_markup=nav_menu())
+            player = storage.get_player(message.chat.id, account)
+            if player is None:
+                await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+            elif await _may_remove(
+                message, storage, player, getattr(query, "from_user", None), getattr(query, "bot", None)
+            ):
+                storage.remove_player(message.chat.id, str(player.account_id))
+                await message.answer(f"🗑️ {player.display_name} удалён.", reply_markup=nav_menu())
         elif pick == "setmmr":
             player = storage.get_player(message.chat.id, account)
             if player is None:

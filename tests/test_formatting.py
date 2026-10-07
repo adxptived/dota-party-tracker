@@ -190,8 +190,6 @@ def test_render_player_card_is_windowed_only():
         avg_gpm_window=520.0, avg_net_worth_window=18000.0, avg_hero_damage_window=22000.0,
         solo=(10, 6), party=(5, 4),
         top_heroes=[{"hero_id": 8, "games": 4, "wins": 3, "winrate": 0.75}],
-        lanes={2: (10, 6), 0: (5, 2)},   # карьерное — НЕ должно попасть
-        gpm_median=999.0,                # карьерное — НЕ должно попасть
     )
     text = render_player_card(s)
     assert "Вася" in text

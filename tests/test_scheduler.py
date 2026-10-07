@@ -71,8 +71,12 @@ def _run_digest(tmp_path, monkeypatch, exc):
         return "доска"
 
     monkeypatch.setattr(sched, "render_board", fake_board)
+    import time
     storage = Storage(str(tmp_path / "t.db"))
     c = storage.get_or_create_chat(5)
+    player = storage.add_player(5, 1, "Вася", None, 0, 0)  # вчера играли — сводка есть о чём
+    storage.add_matches(player.id, [{"match_id": 1, "start_time": int(time.time()) - 3600, "player_slot": 0,
+                                     "radiant_win": True, "lobby_type": 7}])
     bot = _FailingBot(exc)
     asyncio.run(sched.send_digest(bot, storage, None, c, "2026-09-29"))
     return storage.get_or_create_chat(5).last_digest_date

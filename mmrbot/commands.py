@@ -5,6 +5,7 @@ from typing import Optional
 
 MMR_MIN = 0
 MMR_MAX = 20000
+NAME_MAX = 32  # длиннее ник не помещается в кнопки и таблицы
 
 
 def _is_int(token: str) -> bool:
@@ -40,6 +41,8 @@ def parse_add_args(args: str) -> tuple[str, Optional[str], Optional[int]]:
         rest = rest[:-1]
 
     name = " ".join(rest) if rest else None
+    if name is not None and len(name) > NAME_MAX:
+        raise ValueError(f"Имя слишком длинное — до {NAME_MAX} символов.")
     return identifier, name, mmr
 
 
