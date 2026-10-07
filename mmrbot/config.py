@@ -28,6 +28,7 @@ class Config:
     default_tz: str = DEFAULT_TZ
     allowed_chats: frozenset = field(default_factory=frozenset)  # пусто — бот отвечает всем
     max_players: int = 16  # игроков на чат: каждый — это запросы к OpenDota из общего лимита
+    command_refresh_wait: float = 4.0  # сек: команда ждёт обновление игроков не дольше, дальше — ответ из БД
 
 
 def _chat_ids(raw: str) -> frozenset:
@@ -56,6 +57,13 @@ def _tz_env(name: str, default: str) -> str:
 def _int_env(name: str, default: int) -> int:
     try:
         return max(0, int(os.getenv(name, default)))
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.getenv(name, default)))
     except ValueError:
         return default
 
@@ -91,4 +99,5 @@ def load_config() -> Config:
         default_tz=_tz_env("DEFAULT_TZ", DEFAULT_TZ),
         allowed_chats=_chat_ids(os.getenv("ALLOWED_CHATS", "")),
         max_players=max(1, _int_env("MAX_PLAYERS", 16)),
+        command_refresh_wait=_float_env("COMMAND_REFRESH_WAIT", 4.0),
     )

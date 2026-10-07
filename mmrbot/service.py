@@ -102,20 +102,48 @@ def _kick_finish(storage: Storage, od: OpenDota, chat_id: int) -> None:
     task.add_done_callback(_finish_tasks.discard)
 
 
+COMMAND_REFRESH_WAIT = 4.0  # сек: команда ждёт обновление игроков не дольше (настройка COMMAND_REFRESH_WAIT)
+_background_refreshes: set = set()
+
+
+async def refresh_with_budget(
+    storage: Storage, od: OpenDota, chat_id: int, stratz=None, budget: Optional[float] = None
+) -> bool:
+    """Обновить игроков чата, но ждать не дольше budget (по умолчанию COMMAND_REFRESH_WAIT).
+
+    Уложились — True. Нет (OpenDota тормозит) — False: вызывающий отвечает из БД, а обновление, не
+    отменяясь, доходит фоном. Ошибка обновления в пределах бюджета поднимается наверх, как раньше.
+    """
+    wait = COMMAND_REFRESH_WAIT if budget is None else budget
+    task = asyncio.ensure_future(refresh_only(storage, od, chat_id, stratz))
+    done, _ = await asyncio.wait({task}, timeout=wait)
+    if task in done:
+        task.result()
+        return True
+    log.info("Обновление чата %s дольше %.1f с — отвечаем из БД, обновление идёт фоном", chat_id, wait)
+    _background_refreshes.add(task)  # держим ссылку: иначе задачу может собрать GC
+    task.add_done_callback(_background_refreshes.discard)
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())  # без «exception was never retrieved»
+    return False
+
+
 async def gather_summaries(
     storage: Storage, od: OpenDota, chat_id: int, refresh: bool = True, stratz=None, complete: bool = False
 ):
     """Обновить игроков и собрать сводки.
 
-    complete=False (команды): ждём матчи, ранг и позиции Stratz — один-два запроса OpenDota на игрока;
-    детали матчей и средние/линии догоняются фоном сразу после ответа. True (ежедневная сводка): ждём всё.
+    complete=False (команды): сначала обновление в пределах бюджета (refresh_with_budget: матчи, ранг и
+    позиции Stratz; детали матчей и средние/линии догоняются фоном), затем сводки — всегда из БД, без лока
+    чата (не ждут медленное обновление). True (ежедневная сводка): ждём всё, без бюджета.
     """
+    if not complete:
+        if refresh:
+            await refresh_with_budget(storage, od, chat_id, stratz)
+        # Сводки — из БД: обновление уже сделано или доходит фоном (лок чата им не нужен).
+        return await asyncio.to_thread(build_leaderboard, storage, od, chat_id, int(time.time()), False, stratz, True)
     async with _chat_lock(chat_id):
         now = int(time.time())  # момент берём уже под локом — кулдаун считается от актуального времени
-        result = await asyncio.to_thread(build_leaderboard, storage, od, chat_id, now, refresh, stratz, not complete)
-    if refresh and not complete:
-        _kick_finish(storage, od, chat_id)
-    return result
+        return await asyncio.to_thread(build_leaderboard, storage, od, chat_id, now, refresh, stratz, not complete)
 
 
 async def refresh_only(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> None:
@@ -166,7 +194,7 @@ async def render_board(
 async def render_period_board(
     storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None
 ) -> str:
-    await refresh_only(storage, od, chat_id, stratz)
+    await refresh_with_budget(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     rows = await asyncio.to_thread(build_period_leaderboard, storage, chat_id, since)
     return _with_stale(storage, chat_id, render_period_leaderboard(rows, period))
@@ -185,7 +213,7 @@ async def render_graph_board(
     refresh=False — без запроса в OpenDota (смена периода под уже показанным графиком: данные только что обновлены).
     """
     if refresh:  # для графика нужны только свежие матчи — сводки игроков не собираем (кулдаун внутри)
-        await refresh_only(storage, od, chat_id, stratz)
+        await refresh_with_budget(storage, od, chat_id, stratz)
     chat = storage.get_or_create_chat(chat_id)
     # В ключе — отпечаток данных: пришла новая игра — старая картинка не отдаётся (как и при смене шага/пояса).
     version = await asyncio.to_thread(storage.data_version, chat_id)
@@ -221,7 +249,7 @@ async def render_graph_board(
 
 
 async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None) -> str:
-    await refresh_only(storage, od, chat_id, stratz)
+    await refresh_with_budget(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     data = await asyncio.to_thread(build_records, storage, chat_id, since)
     return _with_stale(storage, chat_id, render_records(data, period, storage.get_or_create_chat(chat_id).tz))
@@ -234,7 +262,7 @@ async def render_heroes_board(storage: Storage, od: OpenDota, chat_id: int, stra
 
 async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> str:
     # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
-    await refresh_only(storage, od, chat_id, stratz)
+    await refresh_with_budget(storage, od, chat_id, stratz)
     result = await asyncio.to_thread(build_together, storage, chat_id)
     return _with_stale(storage, chat_id, render_together(result))
 
@@ -303,7 +331,7 @@ def _empty_players(storage: Storage, chat_id: int, name: Optional[str]) -> list[
 async def render_player_heroes_board(
     storage: Storage, od: OpenDota, chat_id: int, name: str, period: str, stratz=None
 ) -> str:
-    await refresh_only(storage, od, chat_id, stratz)
+    await refresh_with_budget(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     result = await asyncio.to_thread(build_player_heroes, storage, chat_id, name, since)
     if result is None:
@@ -321,7 +349,7 @@ async def render_player_heroes_board(
 async def render_roles_board(
     storage: Storage, od: OpenDota, chat_id: int, name: str, period: str = "all", stratz=None
 ) -> str:
-    await refresh_only(storage, od, chat_id, stratz)
+    await refresh_with_budget(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     result = await asyncio.to_thread(build_player_roles, storage, chat_id, name, since)
     if result is None:
@@ -352,21 +380,7 @@ def _cached_as_match(view: dict) -> dict:
             "radiant_win": bool(row["radiant_win"]), "players": [me]}
 
 
-MATCH_REFRESH_WAIT = 6.0  # сек: дольше обновления не ждём — показываем матч из БД, обновление доходит фоном
-_background_refreshes: set = set()
-
-
-async def _refresh_capped(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> None:
-    """Обновить игроков, но ждать не дольше MATCH_REFRESH_WAIT (OpenDota тормозит/лежит — отвечаем из кэша)."""
-    task = asyncio.ensure_future(refresh_only(storage, od, chat_id, stratz))
-    done, _ = await asyncio.wait({task}, timeout=MATCH_REFRESH_WAIT)
-    if task in done:
-        task.result()  # ошибку обновления — наверх, как раньше
-        return
-    log.info("Обновление чата %s дольше %.0f с — матч из кэша, обновление идёт фоном", chat_id, MATCH_REFRESH_WAIT)
-    _background_refreshes.add(task)  # держим ссылку: иначе задачу может собрать GC
-    task.add_done_callback(_background_refreshes.discard)
-    task.add_done_callback(lambda t: t.cancelled() or t.exception())  # без «exception was never retrieved»
+MATCH_REFRESH_WAIT = 6.0  # сек: «последний матч» ждёт обновление дольше обычных команд — он про свежую игру
 
 
 def _render_match_png(match: dict, tracked: dict, focus, tz: str, icons) -> bytes:
@@ -389,7 +403,7 @@ async def match_board(
     focus = None
     cached = None
     if match_id is None:
-        await _refresh_capped(storage, od, chat_id, stratz)
+        await refresh_with_budget(storage, od, chat_id, stratz, budget=MATCH_REFRESH_WAIT)
         view = await asyncio.to_thread(build_match_view, storage, chat_id, name, None)
         if view is None:
             empty = _empty_players(storage, chat_id, name)
@@ -448,7 +462,7 @@ async def render_hero_board(
     hero_id = find_hero(query)
     if hero_id is None:
         return f"Герой «{html.escape(query)}» не найден. Пишите по-английски, например: /heroes Axe"  # уйдёт как HTML
-    await refresh_only(storage, od, chat_id, stratz)
+    await refresh_with_budget(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     entries = await asyncio.to_thread(build_hero_view, storage, chat_id, hero_id, since)
     return render_hero_detail(hero_id, period, entries)
