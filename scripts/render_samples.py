@@ -15,6 +15,7 @@ from mmrbot.alert_image import render_alert_image  # noqa: E402
 from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image  # noqa: E402
 from mmrbot.match_image import render_match_image  # noqa: E402
 from mmrbot.player_image import render_player_image  # noqa: E402
+from mmrbot.records_image import render_records_image  # noqa: E402
 from mmrbot.stats_image import render_stats_image  # noqa: E402
 
 NOW = 1_760_000_000
@@ -122,7 +123,22 @@ def build() -> dict[str, bytes]:
                 heroes=[], best_game=None, lobby_rank=None, standing=None)
     out["player_sparse.png"] = render_player_image(card)
     out.update(sample_heroes(icons, avatars))
+    out.update(sample_records(icons))
     return out
+
+
+def sample_records(icons: dict) -> dict[str, bytes]:
+    items = [("Макс. GPM", "812 GPM", "Вася", 12, "11.09.25", False), ("Больше всего убийств", "24 убийства", "Петя", 1, "02.10.25", False),
+             ("Больше всего ассистов", "31 ассист", "Оооочень длинный ник игрока", 26, "28.09.25", False),
+             ("Лучший KDA", "KDA 18.5", "Вася", 35, "05.10.25", False), ("Макс. урон по героям", "58.2k урона", "Петя", 44, "01.10.25", False),
+             ("Макс. урон по строениям", "21.4k урона", "Вася", 74, "30.09.25", False), ("Макс. лечение", "14.9k лечения", "Новичок", 26, "29.09.25", False),
+             ("Больше всего добиваний", "612 добиваний", "Вася", 12, "03.10.25", False), ("Макс. нетворт", "41.0k золота", "Вася", 12, "03.10.25", False),
+             ("Лучший IMP", "IMP +54", "Петя", 1, "06.10.25", False), ("Самая долгая игра", "74 мин", "Вася", 35, "20.09.25", False),
+             ("Больше всего смертей", "19 смертей", "Новичок", 74, "07.10.25", True)]
+    recs = [{"label": a, "value": b, "player": c, "hero_id": d, "date": e, "anti": f} for a, b, c, d, e, f in items]
+    return {"records.png": render_records_image("за неделю", recs, ("Вася", 7), icons, "данные обновлены 12:30"),
+            "records_few.png": render_records_image("за сутки", recs[:3], None, icons),
+            "records_empty.png": render_records_image("за сутки", [], None)}
 
 
 def sample_heroes(icons: dict, avatars: dict) -> dict[str, bytes]:

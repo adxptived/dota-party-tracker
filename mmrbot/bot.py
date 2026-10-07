@@ -30,6 +30,7 @@ from mmrbot.service import (
     hero_board,
     render_hero_board,
     render_graph_board,
+    records_board,
     render_records_board,
     heroes_board,
     render_heroes_board,
@@ -733,7 +734,14 @@ async def _text_hero(storage: Storage, od: OpenDota, chat_id: int, args: list[st
     return await render_hero_board(storage, od, chat_id, hero_name(hero_id), args[1], stratz)
 
 
-TEXT_VIEWS = {"match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
+async def _text_records(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:records:<period> — рекорды пати текстом."""
+    if len(args) != 1 or args[0] not in PERIODS_KEYS:
+        return None
+    return await render_records_board(storage, od, chat_id, args[0], stratz)
+
+
+TEXT_VIEWS = {"records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
               "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero}
 
 
@@ -770,26 +778,16 @@ async def do_player_card(message: Message, storage: Storage, od: OpenDota, name:
 
 async def do_records(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None,
                      edit: bool = False) -> None:
-    """Рекорды пати за период; edit=True — правим сообщение с нажатой кнопкой периода."""
-    status = None if edit else await _progress(message, WAIT)
+    """Рекорды пати картинкой (периоды меняют её на месте, «📝 Текстом» — текстом); не вышло — текстом."""
+    status = await _progress(message, WAIT, "upload_photo")
     try:
-        text = await render_records_board(storage, od, message.chat.id, period, stratz)
+        board = await records_board(storage, od, message.chat.id, period, stratz)
     except Exception:
-        logging.getLogger(__name__).exception("Ошибка сборки рекордов для чата %s", message.chat.id)
+        log.exception("Ошибка сборки рекордов для чата %s", message.chat.id)
         await _delete(status)
-        if not edit:
-            await message.answer(FAILED, reply_markup=nav_menu())
+        await message.answer(FAILED, reply_markup=nav_menu())
         return
-    await _delete(status)
-    markup = records_buttons(period)
-    if edit:
-        try:
-            await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
-        except Exception as exc:
-            if "not modified" not in str(exc):
-                logging.getLogger(__name__).exception("Не удалось сменить период рекордов")
-        return
-    await _send_chunks(message, text, markup)
+    await _reply_image(message, board, with_text_button(records_buttons(period), "records", period), status, edit=edit)
 
 
 async def do_graph(

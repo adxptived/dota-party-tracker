@@ -8,7 +8,7 @@ import html
 from typing import Optional
 
 from mmrbot.cards import GOLD, MUTED, clean, delta_color, signed
-from mmrbot.formatting import PERIOD_LABELS, POSITION_NAMES, PULSE_RECORDS, plural_games, plural_heroes
+from mmrbot.formatting import PERIOD_LABELS, fmt_local, POSITION_NAMES, PULSE_RECORDS, plural_games, plural_heroes
 from mmrbot.heroes import hero_name
 
 
@@ -297,3 +297,21 @@ def hero_caption(hero: str, period: str, entries: list) -> str:
         return head + " · никто из пати не играл"
     player, s = entries[0]
     return head + f"\nчаще всех: <b>{_esc(player.display_name)}</b> ({plural_games(s['games'])}, {round(s['winrate'] * 100)}%)"
+
+
+# --- рекорды -----------------------------------------------------------------------------------------
+
+def record_tiles(data: dict, tz: str = "UTC") -> list[dict]:
+    """Рекорды периода (`records.compute_records`) → плитки: показатель, значение, игрок, герой, дата матча."""
+    return [{"label": r["title"], "value": r["text"], "player": r["player"], "hero_id": r["match"].get("hero_id"),
+             "date": fmt_local(r["match"]["start_time"], tz, "%d.%m.%y"), "anti": bool(r.get("anti"))}
+            for r in data.get("records") or []]
+
+
+def records_caption(data: dict, period: str) -> str:
+    head = f"🌟 <b>Рекорды пати</b> · <i>{PERIOD_LABELS.get(period, '')}</i>"
+    records = data.get("records") or []
+    if not records:
+        return head + " · данных нет"
+    best = next((r for r in records if r["key"] == "kills"), records[0])
+    return head + f"\n{len(records)} рекордов · {best['title'].lower()}: <b>{_esc(best['player'])}</b> — {_esc(best['text'])}"

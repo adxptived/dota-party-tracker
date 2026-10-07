@@ -17,7 +17,7 @@ from mmrbot import avatars, hero_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
 from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
 from mmrbot.card_data import (
-    award_items, hero_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
+    award_items, hero_caption, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
     summary_rows,
 )
@@ -54,6 +54,7 @@ from mmrbot.opendota import OpenDota
 from mmrbot.ranks import rank_label
 from mmrbot import stats
 from mmrbot.player_image import render_player_image
+from mmrbot.records_image import render_records_image
 from mmrbot.stats import period_since
 from mmrbot.stats_image import render_stats_image
 from mmrbot.storage import Storage
@@ -77,6 +78,7 @@ from mmrbot.tracker import (
 log = logging.getLogger(__name__)
 
 TELEGRAM_LIMIT = 4096
+PERIOD_BADGES = {"day": "ЗА СУТКИ", "week": "ЗА НЕДЕЛЮ", "month": "ЗА МЕСЯЦ", "year": "ЗА ГОД", "all": "ВСЁ ВРЕМЯ"}
 
 
 async def _build(fn, *args):
@@ -374,11 +376,33 @@ async def render_graph_board(
     return result
 
 
-async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None) -> str:
+def _records_png(period: str, tiles: list, streak, note) -> bytes:
+    """В потоке: иконки героев (кэш/CDN) + рендер рекордов."""
+    icon_loader = hero_icons.shared()
+    icons = icon_loader.get_many(t["hero_id"] for t in tiles) if icon_loader is not None else {}
+    return render_records_image(PERIOD_BADGES.get(period, ""), tiles, streak, icons, note)
+
+
+async def records_board(
+    storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None, image: bool = True,
+) -> ImageBoard:
+    """Рекорды пати: текст всегда, картинка с короткой подписью — если нарисовалась."""
     await refresh_for("records", storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     data = await _build(build_records, storage, chat_id, since)
-    return _with_stale(storage, chat_id, render_records(data, period, storage.get_or_create_chat(chat_id).tz), od)
+    tz = storage.get_or_create_chat(chat_id).tz
+    board = ImageBoard(_with_stale(storage, chat_id, render_records(data, period, tz), od))
+    if image:
+        note = _stale_line(storage, chat_id, od)
+        tiles = record_tiles(data, tz)
+        board.png = await _render_png("рекорды", _records_png, period, tiles, data.get("streak"), _plain(note))
+        if board.png is not None:
+            board.caption = fit_caption(records_caption(data, period) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None) -> str:
+    return (await records_board(storage, od, chat_id, period, stratz, image=False)).text
 
 
 def _party_heroes_png(rows: list) -> bytes:
@@ -527,9 +551,6 @@ async def _render_png(what: str, fn, *args) -> Optional[bytes]:
     """Рисование в потоке с перехватом ошибок (build_png): None — картинки не будет, останется текст."""
     with perf.phase("render"):
         return await asyncio.to_thread(build_png, what, lambda: fn(*args))
-
-
-PERIOD_BADGES = {"day": "ЗА СУТКИ", "week": "ЗА НЕДЕЛЮ", "month": "ЗА МЕСЯЦ", "year": "ЗА ГОД", "all": "ВСЁ ВРЕМЯ"}
 
 
 async def player_heroes_board(

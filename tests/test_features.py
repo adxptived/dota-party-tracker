@@ -512,12 +512,26 @@ def test_cmd_records_and_period_buttons_edit_in_place(store):
     put(store, p, 5, now - 3600, gpm=700)
     msg = Msg()
     asyncio.run(botmod.cmd_records(msg, CommandObject(command="records", args="месяц"), store, FakeOD()))
-    assert any("Рекорды пати за месяц" in t for t, _ in msg.sent)
+    (_, kw), = msg.photos  # рекорды — картинкой, текст по кнопке
+    assert "Рекорды пати" in kw["caption"] and "за месяц" in kw["caption"]
+    data = {b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row}
+    assert {"r:year", "tx:records:month"} <= data
     cb = CB("r:year")
+    cb.message = PhotoMsg()
     asyncio.run(botmod.on_callback(cb, store, FakeOD()))
-    assert "за год" in cb.message.edited[0][0] and not cb.message.sent
-    marked = [b for row in cb.message.edited[0][1]["reply_markup"].inline_keyboard for b in row if b.text.startswith("•")]
+    (media, mkw), = cb.message.media  # период сменился на месте: то же сообщение, новая картинка
+    assert "за год" in media.caption and not cb.message.sent and not cb.message.deleted
+    marked = [b for row in mkw["reply_markup"].inline_keyboard for b in row if b.text.startswith("•")]
     assert marked[0].callback_data == "r:year"
+
+
+def test_records_text_button_gives_text_report(store):
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    put(store, p, 5, now - 3600, gpm=700)
+    cb = CB("tx:records:month")
+    asyncio.run(botmod.on_callback(cb, store, FakeOD()))
+    assert any("Рекорды пати за месяц" in t and "700 GPM" in t for t, _ in cb.message.sent)
 
 
 # --- «Стата пати» вместо «Отличий» -------------------------------------
