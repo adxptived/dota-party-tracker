@@ -351,6 +351,23 @@ def _cached_as_match(view: dict) -> dict:
             "radiant_win": bool(row["radiant_win"]), "players": [me]}
 
 
+MATCH_REFRESH_WAIT = 6.0  # сек: дольше обновления не ждём — показываем матч из БД, обновление доходит фоном
+_background_refreshes: set = set()
+
+
+async def _refresh_capped(storage: Storage, od: OpenDota, chat_id: int, stratz=None) -> None:
+    """Обновить игроков, но ждать не дольше MATCH_REFRESH_WAIT (OpenDota тормозит/лежит — отвечаем из кэша)."""
+    task = asyncio.ensure_future(refresh_only(storage, od, chat_id, stratz))
+    done, _ = await asyncio.wait({task}, timeout=MATCH_REFRESH_WAIT)
+    if task in done:
+        task.result()  # ошибку обновления — наверх, как раньше
+        return
+    log.info("Обновление чата %s дольше %.0f с — матч из кэша, обновление идёт фоном", chat_id, MATCH_REFRESH_WAIT)
+    _background_refreshes.add(task)  # держим ссылку: иначе задачу может собрать GC
+    task.add_done_callback(_background_refreshes.discard)
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())  # без «exception was never retrieved»
+
+
 def _render_match_png(match: dict, tracked: dict, focus, tz: str, icons) -> bytes:
     """В потоке: иконки (кэш/CDN) + рендер картинки."""
     source = icons if icons is not None else hero_icons.shared()
@@ -371,7 +388,7 @@ async def match_board(
     focus = None
     cached = None
     if match_id is None:
-        await refresh_only(storage, od, chat_id, stratz)
+        await _refresh_capped(storage, od, chat_id, stratz)
         view = await asyncio.to_thread(build_match_view, storage, chat_id, name, None)
         if view is None:
             empty = _empty_players(storage, chat_id, name)

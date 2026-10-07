@@ -51,5 +51,35 @@ def test_match_board_escapes_names_in_empty_message(tmp_path):
     assert "<b>Вася" not in text and "&lt;b&gt;Вася" in text
 
 
+def test_latest_match_does_not_wait_for_slow_refresh(tmp_path, monkeypatch):
+    """OpenDota тормозит — «последний матч» отвечает из БД через MATCH_REFRESH_WAIT, обновление идёт фоном."""
+    from mmrbot.storage import Storage
+
+    store = Storage(str(tmp_path / "s.db"))
+    player = store.add_player(100, 1, "Вася", 5000, 0, 0)
+    store.add_matches(player.id, [{"match_id": 77, "start_time": 1_700_000_000, "player_slot": 0,
+                                      "radiant_win": True, "lobby_type": 7, "kills": 9, "deaths": 2,
+                                      "assists": 4, "hero_id": 2, "duration": 1800}])
+    finished = []
+
+    async def slow_refresh(*a, **k):
+        await asyncio.sleep(0.5)
+        finished.append(True)
+
+    monkeypatch.setattr(service, "refresh_only", slow_refresh)
+    monkeypatch.setattr(service, "MATCH_REFRESH_WAIT", 0.05)
+
+    async def go():
+        started = time.monotonic()
+        board = await service.match_board(store, None, 100, None, None, image=False)
+        elapsed = time.monotonic() - started
+        await asyncio.sleep(0.6)  # фоновое обновление не отменено — доходит до конца
+        return board, elapsed
+
+    board, elapsed = asyncio.run(go())
+    assert elapsed < 0.4 and "9/2/4" in board.text
+    assert finished == [True]
+
+
 class _NoRefresh:
     pass
