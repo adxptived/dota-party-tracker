@@ -750,6 +750,7 @@ async def do_match(message: Message, storage: Storage, od: OpenDota, name, match
     await _reply_image(message, board, match_photo_buttons(board.match_id, board.focus), status)
 
 
+# Текстовые версии карточек для кнопки «📝 Текстом»: вид → корутина (storage, od, chat_id, args, stratz) → текст.
 async def _text_match(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
     """tx:match:<match_id>:<account_id|0> — тот же матч текстом."""
     try:
@@ -760,7 +761,6 @@ async def _text_match(storage: Storage, od: OpenDota, chat_id: int, args: list[s
     return await render_match_board(storage, od, chat_id, player.display_name if player else None, match_id, stratz)
 
 
-# Текстовые версии карточек для кнопки «📝 Текстом»: вид → корутина (storage, od, chat_id, args, stratz) → текст.
 async def _text_stats(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
     """tx:stats:<stats|today|week|month> — тот же рейтинг текстом."""
     mode = args[0] if args else ""

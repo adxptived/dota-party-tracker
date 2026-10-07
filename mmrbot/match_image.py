@@ -13,7 +13,7 @@ from mmrbot.cards import (
     DIRE, FG, GOLD, ICON_H, ICON_W, LOSS, MINE_PANEL, MUTED, PAD, PANEL, RADIANT, WIDTH, WIN, clean, draw_text,
 )
 from mmrbot.charts import BG
-from mmrbot.formatting import _imp, _k, fmt_local
+from mmrbot.formatting import _k, fmt_local
 from mmrbot.heroes import hero_name
 
 TRACKED_PANEL, TRACKED_MARK = MINE_PANEL, GOLD  # строка своего игрока: светлее фон + золотая полоса
@@ -121,4 +121,4 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict) -> None:
     draw_text(draw, (cols["dmg"], mid), _k(p.get("hero_damage")), 24, FG, anchor="mm")
     imp = p.get("imp")
     imp_color = MUTED if imp is None or round(imp) == 0 else (WIN if imp > 0 else LOSS)
-    draw_text(draw, (cols["imp"], mid), _imp(imp), 26, imp_color, bold=True, anchor="mm")
+    draw_text(draw, (cols["imp"], mid), cards.signed(imp), 26, imp_color, bold=True, anchor="mm")
