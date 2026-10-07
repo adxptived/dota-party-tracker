@@ -9,10 +9,11 @@ dependencies = [
     "requests==2.32.3",
     "python-dotenv==1.0.1",
     "pytz==2024.2",
+    "matplotlib==3.11.2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==8.3.3"]
+dev = ["pytest==8.3.3", "ruff==0.16.8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -21,3 +22,16 @@ addopts = "-q"
 [tool.black]
 line-length = 120
 target-version = ["py312"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# Ошибки и вероятные баги. E501 выключен: длинные строки с русскими текстами сообщений — норма проекта.
+select = ["E", "F", "W", "B"]
+ignore = ["E501", "B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# В тестах неиспользуемые переменные (игрок создан ради побочного эффекта) и assert False — обычное дело.
+"tests/*" = ["F841", "B011", "E731"]

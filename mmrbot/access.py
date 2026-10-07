@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramAPIError

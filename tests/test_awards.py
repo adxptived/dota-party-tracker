@@ -41,7 +41,8 @@ def test_climb_not_awarded_when_everyone_lost():
 
 
 def test_board_and_weekly_use_period_awards(tmp_path):
-    import asyncio, time
+    import asyncio
+    import time
     import mmrbot.service as service
     from mmrbot.storage import Storage
     from mmrbot.tracker import build_weekly_report

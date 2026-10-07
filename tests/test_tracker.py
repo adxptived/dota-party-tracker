@@ -851,7 +851,6 @@ def test_best_worst_hour_needs_two_distinct_hours():
 
 def test_lobby_rank_is_a_real_rank_tier(store):
     """Медиана 45 и 52 — не «Archon 8»: берём реальное значение из набора."""
-    import statistics
     from mmrbot.ranks import rank_label
     from mmrbot.tracker import median_rank_tier
     assert median_rank_tier([45, 52]) in (45, 52)
@@ -1112,3 +1111,18 @@ def test_unsent_alert_is_retried_until_marked(store):
     assert [e["match_id"] for e in first] == [e["match_id"] for e in again] == [200]  # Telegram не принял — повторяем
     store.mark_notified_matches(again[0]["pending"])
     assert [e for e in detect_new_games(store, client, chat, T0 + 480, mark=False) if e["kind"] == "match"] == []
+
+
+def test_idle_poll_does_not_spend_reserve_on_old_backlog(store):
+    """Опрос без новых игр не тратит запросы на старые детали, когда клиент бережёт остаток лимита."""
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    client = FakeOpenDota(matches=[od_match(i, T0 - i * 3600) for i in range(1, 6)],
+                          match_stats={"gpm": 500, "benchmarks": {}})
+    asked = []
+    client.get_match_player_stats = lambda mid, acc, slot=None: asked.append(mid) or {"gpm": 500, "benchmarks": {}}
+    client.background_allowed = lambda: False
+    assert refresh_player(store, client, player, now=T0) == 5
+    assert len(asked) == 3  # новые игры — обогащаем сразу, даже на исходе лимита
+    asked.clear()
+    refresh_player(store, client, store.get_player(100, "Вася"), now=T0 + 600)
+    assert asked == []  # новых игр нет — бэклог подождёт

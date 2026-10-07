@@ -76,7 +76,7 @@ def resolve_account_id(text: str, session=None, timeout: int = 15) -> int:
         import requests
         session = requests
     match = None
-    for attempt in range(3):  # Steam иногда рвёт соединение — пробуем ещё
+    for _ in range(3):  # Steam иногда рвёт соединение — пробуем ещё
         try:
             resp = session.get(f"https://steamcommunity.com/id/{vanity}/?xml=1", timeout=timeout)
         except Exception:

@@ -271,7 +271,7 @@ def finish_refresh(
             client.refresh(player.account_id)
         except Exception:
             pass
-        done += _enrich_from_opendota(storage, client, player, per_player, _enrich_since(now, days))
+        done += _enrich_from_opendota(storage, client, player, per_player, _enrich_since(now, days), background=True)
     return done
 
 
@@ -584,7 +584,8 @@ def refresh_player(
             log.debug("Не удалось получить профиль игрока %s", player.account_id, exc_info=True)
 
     if not fast and enrich_cap > 0:
-        _enrich_from_opendota(storage, client, player, enrich_cap, _enrich_since(now))
+        # Свежесыгранные матчи обогащаем сразу; без новых игр это разбор старого бэклога — он ждёт, если лимит на исходе.
+        _enrich_from_opendota(storage, client, player, enrich_cap, _enrich_since(now), background=not inserted)
 
     if stratz is not None:
         _enrich_from_stratz(storage, stratz, player, now)

@@ -933,7 +933,6 @@ def render_full_match(match: dict, tracked: dict, focus=None, tz: str = "UTC") -
 
     focus — account_id игрока, чья подробная карточка (GPM, урон…) идёт сверху; без него — только шапка.
     """
-    from datetime import datetime, timezone
     from types import SimpleNamespace
     players = match.get("players") or []
     radiant = [p for p in players if p["is_radiant"]]

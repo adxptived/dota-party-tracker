@@ -8,6 +8,11 @@ services:
       DB_PATH: /data/mmrbot.db
     volumes:
       - bot_data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"  # иначе лог контейнера растёт без предела
+        max-file: "3"
 
 volumes:
   bot_data:
