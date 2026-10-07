@@ -248,6 +248,10 @@ class Storage:
             "stratz_next_ts": "INTEGER NOT NULL DEFAULT 0",
             "leaver_status": "INTEGER",
         })
+        # Кандидатов на оповещение ищут на каждом тике game_watch: частичный индекс по notified = 0 вместо скана истории.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_matches_unnotified ON matches(player_id, start_time) WHERE notified = 0"
+        )
         # «Версия данных» игрока: любое изменение его матчей (кроме служебных счётчиков) двигает players.data_ver.
         bump = "UPDATE players SET data_ver = data_ver + 1 WHERE id = {}.player_id"
         conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_ins AFTER INSERT ON matches BEGIN {bump.format('NEW')}; END")

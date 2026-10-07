@@ -149,3 +149,13 @@ def test_cache_is_bounded(tmp_path):
         ids.append(p.id)
         storage.get_matches(p.id)
     assert sum(len(v[1]) for v in storage._matches_cache.values()) <= 10
+
+
+def test_unnotified_query_uses_partial_index(env):
+    """B9: поиск кандидатов на оповещение не сканирует всю историю игрока."""
+    storage, player, _ = env
+    with storage._conn() as conn:
+        plan = " ".join(r[3] for r in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM matches WHERE player_id = ? AND notified = 0 "
+            "AND start_time + COALESCE(duration, 0) >= ? ORDER BY start_time", (player.id, 0)))
+    assert "idx_matches_unnotified" in plan
