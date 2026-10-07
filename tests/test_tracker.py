@@ -519,11 +519,11 @@ def test_backfill_opendota_enriches_backlog_across_players(store):
     player = store.add_player(100, 42, "Вася", None, 0, 0)
     _seed_matches(store, player, 10)
     client = FakeOpenDota(match_stats={"gpm": 500, "benchmarks": {"gold_per_min": 0.5}})
-    assert backfill_opendota(store, client, per_player=6) == 6
+    assert backfill_opendota(store, client, per_player=6, days=0) == 6
     assert sum(1 for m in store.get_matches(player.id) if m["enriched"]) == 6
-    backfill_opendota(store, client, per_player=6)
+    backfill_opendota(store, client, per_player=6, days=0)
     assert all(m["enriched"] for m in store.get_matches(player.id))
-    assert backfill_opendota(store, client, per_player=6) == 0   # всё готово — запросов нет
+    assert backfill_opendota(store, client, per_player=6, days=0) == 0   # всё готово — запросов нет
 
 
 def test_empty_match_details_do_not_block_queue(store):
@@ -534,7 +534,7 @@ def test_empty_match_details_do_not_block_queue(store):
     _seed_matches(store, player, 2)
     client = FakeOpenDota(match_stats=None)               # нет данных ни по одному матчу
     for _ in range(6):
-        backfill_opendota(store, client, per_player=5)
+        backfill_opendota(store, client, per_player=5, days=0)
     assert store.get_unenriched_match_ids(player.id, 0, 10) == []
 
 
@@ -798,11 +798,11 @@ def test_fast_refresh_fetches_only_matches_and_background_finishes_the_rest(stor
     new = next(m for m in store.get_matches(player.id) if m["match_id"] == 99)
     assert new["position"] == 2 and stratz.calls == 1     # новая игра и её позиция (Stratz, пачкой) — сразу
 
-    assert finish_refresh(store, client, 100, per_player=3) == 3   # остальное догоняет фон
+    assert finish_refresh(store, client, 100, per_player=3, days=0) == 3   # остальное догоняет фон
     assert (client.refresh_calls, client.extra_calls, len(calls)) == (1, 0, 3)
 
     client.extra_calls = 0
-    finish_refresh(store, client, 100, per_player=0)
+    finish_refresh(store, client, 100, per_player=0, days=0)
     assert client.extra_calls == 0                        # всё актуально — лишних запросов нет
 
 
@@ -880,7 +880,7 @@ def test_enrich_failure_does_not_burn_attempts(store):
 
     client.get_match_player_stats = boom
     for _ in range(6):
-        backfill_opendota(store, client, per_player=5)
+        backfill_opendota(store, client, per_player=5, days=0)
     assert len(store.get_unenriched_match_ids(player.id, 0, 10)) == 3   # все ещё в очереди
     assert len(calls) == 6                                              # по одному запросу за прогон, не по матчу
 
@@ -962,3 +962,158 @@ def test_comparison_ignores_perf_built_on_too_few_games(store):
     comp = build_chat_comparison([a, b])
     assert "perf" not in comp["players"]["A"]["ranks"] and "gpm" not in comp["players"]["A"]["ranks"]
     assert comp["players"]["B"]["ranks"]["perf"] == 1
+
+
+# --- бережём лимит OpenDota ---------------------------------------------
+
+DAY = 86_400
+T0 = 1_780_000_000
+
+
+def test_backfill_enriches_only_recent_window(store):
+    """Детали догружаются только за последние дни: вся история ветерана стоила бы тысяч запросов."""
+    from mmrbot.tracker import ENRICH_DAYS, backfill_opendota
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [
+        {"match_id": 1, "start_time": T0 - (ENRICH_DAYS + 5) * DAY, "player_slot": 0, "radiant_win": True, "lobby_type": 7},
+        {"match_id": 2, "start_time": T0 - DAY, "player_slot": 0, "radiant_win": True, "lobby_type": 7},
+    ])
+    client = FakeOpenDota(match_stats={"gpm": 500, "benchmarks": {"gold_per_min": 0.5}})
+    asked = []
+    original = client.get_match_player_stats
+    client.get_match_player_stats = lambda mid, acc, slot=None: asked.append(mid) or original(mid, acc, slot)
+    assert backfill_opendota(store, client, now=T0) == 1
+    assert asked == [2]
+
+
+def test_backfill_stops_when_client_forbids_background(store):
+    from mmrbot.tracker import backfill_opendota
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    _seed_matches(store, player, 5)
+    client = FakeOpenDota(match_stats={"gpm": 500, "benchmarks": {}})
+    budget = {"left": 2}
+
+    def stats(match_id, account_id, player_slot=None):
+        budget["left"] -= 1
+        return {"gpm": 500, "benchmarks": {}}
+
+    client.get_match_player_stats = stats
+    client.background_allowed = lambda: budget["left"] > 0
+    assert backfill_opendota(store, client, days=0) == 2  # остаток лимита кончился — остальное в другой раз
+    assert len(store.get_unenriched_match_ids(player.id, 0, 10)) == 3
+
+
+class RecentClient(FakeOpenDota):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.recent = []
+        self.recent_calls = 0
+        self.limits = []
+
+    def get_matches(self, account_id, limit=200):
+        self.limits.append(limit)
+        return super().get_matches(account_id, limit)
+
+    def get_recent_matches(self, account_id):
+        self.recent_calls += 1
+        return list(self.recent)
+
+
+def test_player_without_matches_is_not_fully_refetched_every_poll(store):
+    """Закрытый профиль: полную историю спрашиваем раз в несколько часов, между — лёгкий список."""
+    from mmrbot.tracker import EMPTY_RECHECK_SEC
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    client = RecentClient()
+    refresh_player(store, client, player, now=T0, fast=True)
+    assert client.limits == [None]  # первая загрузка — вся история
+    player = store.get_player(100, "Вася")
+    refresh_player(store, client, player, now=T0 + 300, fast=True)
+    assert client.limits == [None] and client.recent_calls == 1  # дальше — один лёгкий запрос
+    player = store.get_player(100, "Вася")
+    refresh_player(store, client, player, now=T0 + EMPTY_RECHECK_SEC + 1, fast=True)
+    assert client.limits == [None, None]  # время вышло — перепроверяем полностью
+
+
+def test_player_without_matches_gets_full_history_once_ranked_game_appears(store):
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    client = RecentClient()
+    refresh_player(store, client, player, now=T0, fast=True)
+    client.recent = [od_match(7, T0 + 100)]
+    client.matches = [od_match(7, T0 + 100), od_match(6, T0 - 500)]
+    player = store.get_player(100, "Вася")
+    assert refresh_player(store, client, player, now=T0 + 300, fast=True) == 2  # открыл профиль — тянем всё
+
+
+def test_keyless_idle_cooldown_applies_to_player_without_matches(store):
+    from mmrbot.tracker import GAME_IDLE_COOLDOWN, GAME_REFRESH_COOLDOWN, detect_new_games
+    chat = store.get_or_create_chat(100)
+    store.add_player(100, 42, "Вася", None, 0, 0)
+    client = RecentClient()
+    client.api_key = None
+    detect_new_games(store, client, chat, T0)
+    calls = client.match_calls + client.recent_calls
+    detect_new_games(store, client, chat, T0 + GAME_REFRESH_COOLDOWN + 1)
+    assert client.match_calls + client.recent_calls == calls  # пустого игрока часто не дёргаем
+    detect_new_games(store, client, chat, T0 + GAME_IDLE_COOLDOWN + 1)
+    assert client.match_calls + client.recent_calls == calls + 1
+
+
+# --- оповещения о матчах -------------------------------------------------
+
+class PerAccountClient(FakeOpenDota):
+    api_key = "k"
+
+    def __init__(self):
+        super().__init__(profile={"rank_tier": 55, "personaname": "x"})
+        self.visible = {}
+
+    def get_matches(self, account_id, limit=200):
+        return list(self.visible.get(account_id, []))
+
+
+def _party_of_two(store, client):
+    chat = store.get_or_create_chat(100)
+    for account in (1, 2):
+        client.visible[account] = [dict(od_match(100, T0 - DAY, slot=account), duration=1800)]
+        player = store.add_player(100, account, f"P{account}", 4000, T0 - 2 * DAY, T0 - 2 * DAY)
+        refresh_player(store, client, player, T0 - DAY + 3600)
+        store.mark_notified(player.id)
+    return chat
+
+
+def test_shared_match_arriving_late_for_teammate_is_not_announced_twice(store):
+    from mmrbot.tracker import detect_new_games
+    client = PerAccountClient()
+    chat = _party_of_two(store, client)
+    game = dict(od_match(200, T0 - 2000), duration=1800)
+    client.visible[1].insert(0, dict(game, player_slot=1))
+    first = [e for e in detect_new_games(store, client, chat, T0) if e["kind"] == "match"]
+    client.visible[2].insert(0, dict(game, player_slot=2))  # OpenDota отдал матч напарнику опросом позже
+    second = [e for e in detect_new_games(store, client, chat, T0 + 240) if e["kind"] == "match"]
+    assert [e["match_id"] for e in first] == [200] and second == []
+
+
+def test_shared_match_seen_in_one_poll_is_one_event_with_both_players(store):
+    from mmrbot.tracker import detect_new_games
+    client = PerAccountClient()
+    chat = _party_of_two(store, client)
+    game = dict(od_match(200, T0 - 2000), duration=1800)
+    client.visible[1].insert(0, dict(game, player_slot=1))
+    client.visible[2].insert(0, dict(game, player_slot=2))
+    events = [e for e in detect_new_games(store, client, chat, T0) if e["kind"] == "match"]
+    assert len(events) == 1 and [r["name"] for r in events[0]["rows"]] == ["P1", "P2"]
+
+
+def test_unsent_alert_is_retried_until_marked(store):
+    """mark=False: матч остаётся неоповещённым, пока отправка не подтверждена."""
+    from mmrbot.tracker import detect_new_games
+    client = PerAccountClient()
+    chat = _party_of_two(store, client)
+    client.visible[1].insert(0, dict(od_match(200, T0 - 2000, slot=1), duration=1800))
+    first = [e for e in detect_new_games(store, client, chat, T0, mark=False) if e["kind"] == "match"]
+    again = [e for e in detect_new_games(store, client, chat, T0 + 240, mark=False) if e["kind"] == "match"]
+    assert [e["match_id"] for e in first] == [e["match_id"] for e in again] == [200]  # Telegram не принял — повторяем
+    store.mark_notified_matches(again[0]["pending"])
+    assert [e for e in detect_new_games(store, client, chat, T0 + 480, mark=False) if e["kind"] == "match"] == []

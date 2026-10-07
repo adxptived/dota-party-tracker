@@ -20,12 +20,12 @@ class FakeSession:
         self.calls = []
         self.post_calls = []
 
-    def get(self, url, params=None, timeout=None):
-        self.calls.append({"url": url, "params": params or {}})
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.calls.append({"url": url, "params": params or {}, "headers": headers or {}})
         return FakeResp(self.payload)
 
-    def post(self, url, timeout=None):
-        self.post_calls.append({"url": url})
+    def post(self, url, timeout=None, headers=None):
+        self.post_calls.append({"url": url, "headers": headers or {}})
         return FakeResp({})
 
 
@@ -47,11 +47,68 @@ def test_get_matches_returns_list():
     assert session.calls[0]["url"].endswith("/players/42/matches")
 
 
-def test_api_key_added_to_params():
+def test_api_key_goes_in_header_not_in_url():
     session = FakeSession({"rank_tier": 11})
     od = OpenDota(session=session, min_interval=0, api_key="SECRET")
     od.get_profile(42)
-    assert session.calls[0]["params"].get("api_key") == "SECRET"
+    od.refresh(42)
+    assert session.calls[0]["headers"] == {"Authorization": "Bearer SECRET"}
+    assert "api_key" not in session.calls[0]["params"]  # URL с параметрами попадает в тексты ошибок и логи
+    assert session.post_calls[0]["headers"] == {"Authorization": "Bearer SECRET"}
+
+
+def test_api_key_never_appears_in_error_text():
+    import requests
+
+    class Session:
+        def get(self, url, params=None, timeout=None, headers=None):
+            request = requests.Request("GET", url, params=params).prepare()
+            resp = requests.Response()
+            resp.status_code, resp.url, resp.request, resp._content = 404, request.url, request, b"{}"
+            return resp
+
+    od = OpenDota(session=Session(), min_interval=0, api_key="SECRET-KEY")
+    try:
+        od.get_profile(42)
+    except Exception as exc:
+        assert "SECRET-KEY" not in str(exc)
+    else:
+        raise AssertionError("ожидалась ошибка HTTP 404")
+
+
+class QuotaSession:
+    """Отдаёт остаток суточного лимита в заголовке, как OpenDota запросам без ключа."""
+
+    def __init__(self, remaining):
+        self.remaining = remaining
+
+    def get(self, url, params=None, timeout=None):
+        resp = FakeResp({})
+        resp.headers = {"X-Rate-Limit-Remaining-Day": str(self.remaining)}
+        return resp
+
+
+def test_background_requests_stop_when_daily_quota_is_low():
+    session = QuotaSession(1500)
+    od = OpenDota(session=session, min_interval=0, background_reserve=800)
+    assert od.background_allowed()  # остаток ещё неизвестен — не блокируем
+    od.get_profile(1)
+    assert od.remaining_day == 1500 and od.background_allowed()
+    session.remaining = 800
+    od.get_profile(1)
+    assert not od.background_allowed()  # резерв оставляем опросу игр и командам
+
+
+def test_background_always_allowed_with_api_key():
+    od = OpenDota(session=FakeSession({}), min_interval=0, api_key="K")
+    od.remaining_day = 0
+    assert od.background_allowed()
+
+
+def test_refresh_kick_is_rarer_without_key():
+    assert OpenDota(session=FakeSession({}), min_interval=0).refresh_gap > OpenDota(
+        session=FakeSession({}), min_interval=0, api_key="K"
+    ).refresh_gap
 
 
 def test_no_api_key_means_no_param():

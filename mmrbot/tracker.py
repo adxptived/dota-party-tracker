@@ -22,6 +22,8 @@ from mmrbot.storage import Chat, Player, Storage
 log = logging.getLogger(__name__)
 
 
+ENRICH_DAYS = 90  # детали (perf/benchmarks) догружаем только за столько последних дней: по запросу на матч
+EMPTY_RECHECK_SEC = 6 * 3600  # сек: игроку без единого матча всю историю перезапрашиваем не чаще
 ENRICH_CAP = 3  # матчей на refresh в запросе пользователя (~1с на матч); остальное — фоном, backfill_opendota
 RECENT_GAME_SEC = 3 * 3600  # о матче старше этого окна не оповещаем (история при /add, простой бота)
 GAME_REFRESH_COOLDOWN = 120  # сек: фоновая проверка новых игр не дёргает OpenDota чаще
@@ -183,10 +185,39 @@ def backfill_stratz(storage: Storage, stratz: StratzClient, rounds: int = 6) -> 
     return done
 
 
-def _enrich_from_opendota(storage: Storage, client: OpenDotaClient, player: Player, cap: int) -> int:
-    """Пер-матч поля + role-normalized perf из benchmarks (по 1 GET на матч). Вернуть число запросов."""
-    ids = storage.get_unenriched_match_ids(player.id, 0, cap)
+def _background_allowed(client) -> bool:
+    """Разрешает ли клиент необязательные запросы (у фейковых клиентов метода нет — можно)."""
+    check = getattr(client, "background_allowed", None)
+    return True if check is None else bool(check())
+
+
+def _enrich_since(now: Optional[int] = None, days: Optional[int] = None) -> int:
+    """Граница start_time для догрузки деталей: глубже ENRICH_DAYS историю не обогащаем.
+
+    Вся ранкед-история — это тысячи матчей, а детали стоят запроса на каждый: без границы бэкфилл
+    одного игрока-ветерана съедал суточный лимит OpenDota. days=0 — без границы.
+    """
+    days = ENRICH_DAYS if days is None else days
+    if days <= 0:
+        return 0
+    return (int(time.time()) if now is None else now) - days * 86_400
+
+
+def _enrich_from_opendota(
+    storage: Storage, client: OpenDotaClient, player: Player, cap: int, since_ts: Optional[int] = None,
+    background: bool = False,
+) -> int:
+    """Пер-матч поля + role-normalized perf из benchmarks (по 1 GET на матч). Вернуть число запросов.
+
+    background=True — необязательная фоновая догрузка: перед каждым запросом сверяемся с остатком
+    суточного лимита клиента и останавливаемся, когда пора беречь его для опроса игр и команд.
+    """
+    ids = storage.get_unenriched_match_ids(player.id, _enrich_since() if since_ts is None else since_ts, cap)
+    done = 0
     for match_id in ids:
+        if background and not _background_allowed(client):
+            break
+        done += 1
         try:
             details = client.get_match_player_stats(
                 match_id, player.account_id, storage.get_match_slot(player.id, match_id)
@@ -199,19 +230,25 @@ def _enrich_from_opendota(storage: Storage, client: OpenDotaClient, player: Play
             continue
         ps = stats.perf_score(details.get("benchmarks") or {})
         storage.update_match_details(player.id, match_id, details, ps)
-    return len(ids)
+    return done
 
 
-def backfill_opendota(storage: Storage, client: OpenDotaClient, per_player: int = 30) -> int:
-    """Фоновое обогащение бэклога матчей (perf/benchmarks) — не в пути пользовательской команды."""
+def backfill_opendota(
+    storage: Storage, client: OpenDotaClient, per_player: int = 30, now: Optional[int] = None,
+    days: Optional[int] = None,
+) -> int:
+    """Фоновое обогащение бэклога матчей (perf/benchmarks) — не в пути пользовательской команды.
+
+    Берём только матчи за последние `days` дней (по умолчанию ENRICH_DAYS) и только пока клиент
+    разрешает фоновые запросы (остаток суточного лимита OpenDota выше резерва).
+    """
     done = 0
-    seen: set[int] = set()
+    since = _enrich_since(now, days)
     for chat in storage.list_chats():
         for player in storage.list_players(chat.chat_id):
-            if player.account_id in seen:
-                continue
-            seen.add(player.account_id)
-            done += _enrich_from_opendota(storage, client, player, per_player)
+            if not _background_allowed(client):
+                return done
+            done += _enrich_from_opendota(storage, client, player, per_player, since, background=True)
     return done
 
 
@@ -224,7 +261,10 @@ def _store_profile(storage: Storage, player: Player, profile: dict, now: int) ->
     storage.set_player_rank(player.id, tier, board, now, None if closed is None else bool(closed))
 
 
-def finish_refresh(storage: Storage, client: OpenDotaClient, chat_id: int, per_player: int = ENRICH_CAP) -> int:
+def finish_refresh(
+    storage: Storage, client: OpenDotaClient, chat_id: int, per_player: int = ENRICH_CAP,
+    now: Optional[int] = None, days: Optional[int] = None,
+) -> int:
     """Вторая, необязательная для ответа половина обновления чата — выполняется фоном после команды.
 
     Быстрое обновление (refresh_player(fast=True)) забирает матчи, ранг и позиции Stratz. Здесь
@@ -237,7 +277,7 @@ def finish_refresh(storage: Storage, client: OpenDotaClient, chat_id: int, per_p
             client.refresh(player.account_id)
         except Exception:
             pass
-        done += _enrich_from_opendota(storage, client, player, per_player)
+        done += _enrich_from_opendota(storage, client, player, per_player, _enrich_since(now, days))
     return done
 
 
@@ -314,24 +354,32 @@ def shared_games_since(storage: Storage, chat_id: int, since_ts: int) -> dict:
 
 def detect_new_games(
     storage: Storage, client: OpenDotaClient, chat: Chat, now: int, stratz: Optional[StratzClient] = None,
+    mark: bool = True,
 ) -> list[dict]:
     """Фоновая проверка чата: события «новая игра» (по матчам, вместе игравшие — одним) и «достижение».
 
     Оповещаем только о матчах не старше RECENT_GAME_SEC; всё остальное молча помечается обработанным.
+
+    mark=False — матчи из событий остаются неоповещёнными, а событие несёт их список в `pending`
+    ([(player_id, match_id)]): вызывающий код помечает их (storage.mark_notified_matches) после
+    успешной отправки, и сбой Telegram не теряет оповещение — оно уйдёт в следующем опросе.
     """
     if not chat.notify_games:
         return []
     by_match: dict[int, dict] = {}
     events: list[dict] = []
     cooldown = GAME_REFRESH_COOLDOWN
-    if hasattr(client, "api_key") and not client.api_key:
+    keyless = hasattr(client, "api_key") and not client.api_key
+    if keyless:
         # Без ключа лимит запросов OpenDota мал: пока пати не играет, опрашиваем реже —
         # иначе лимит кончается, и данные перестают обновляться совсем.
         last = storage.last_activity(chat.chat_id)
-        if last is not None and now - last >= ACTIVE_WINDOW:
+        if last is None or now - last >= ACTIVE_WINDOW:
             cooldown = GAME_IDLE_COOLDOWN
     for player in storage.list_players(chat.chat_id):
-        stale = player.updated_ts is None or (now - player.updated_ts) >= cooldown
+        # Игрок без единого матча (закрытый профиль) новых игр почти наверняка не даст — тоже опрашиваем реже.
+        wait = GAME_IDLE_COOLDOWN if keyless and player.updated_ts and not storage.has_matches(player.id) else cooldown
+        stale = player.updated_ts is None or (now - player.updated_ts) >= wait
         if stale:
             try:
                 refresh_player(storage, client, player, now, stratz=stratz)
@@ -339,7 +387,10 @@ def detect_new_games(
                 log.warning("Фоновое обновление игрока %s не удалось", player.display_name, exc_info=True)
             player = storage.get_player_by_account_id(chat.chat_id, player.account_id) or player
         fresh = storage.get_unnotified_matches(player.id, now - RECENT_GAME_SEC)
-        storage.mark_notified(player.id)
+        # Матч, о котором чату уже сообщили (OpenDota отдал его напарнику на опрос раньше), второй раз не объявляем.
+        announced = storage.announced_match_ids(chat.chat_id, [m["match_id"] for m in fresh]) - by_match.keys()
+        fresh = [m for m in fresh if m["match_id"] not in announced]
+        storage.mark_notified(player.id, keep=None if mark else [m["match_id"] for m in fresh])
         if not fresh:
             continue
         summary = build_player_summary(storage, chat, player, now)
@@ -347,8 +398,9 @@ def detect_new_games(
             entry = by_match.setdefault(match["match_id"], {
                 "kind": "match", "chat_id": chat.chat_id, "match_id": match["match_id"],
                 "start_time": match["start_time"], "duration": match.get("duration"), "rows": [], "shared": None,
-                "average_rank": match.get("average_rank"),
+                "average_rank": match.get("average_rank"), "pending": [],
             })
+            entry["pending"].append((player.id, match["match_id"]))
             entry["rows"].append({
                 "name": player.display_name, "hero_id": match.get("hero_id"),
                 "kills": match.get("kills") or 0, "deaths": match.get("deaths") or 0,
@@ -471,10 +523,17 @@ def _fetch_matches(storage: Storage, client: OpenDotaClient, player: Player, now
     сразу с GPM/уроном), если он достаёт до нашего последнего матча. Иначе, и раз в DEEP_SYNC_SEC
     для самопроверки, — 200 ранкед-матчей; если и они все новые (бот долго стоял) — вся история.
     """
+    recent_fn = getattr(client, "get_recent_matches", None)
     if not storage.has_matches(player.id):
+        # Матчей нет (профиль закрыт или ранкед не играл). Всю историю уже спрашивали недавно —
+        # хватит лёгкого списка последних игр: полная выгрузка на каждом опросе жгла лимит впустую.
+        checked = player.history_ts is not None and 0 <= now - player.history_ts < EMPTY_RECHECK_SEC
+        if recent_fn is not None and checked:
+            recent = recent_fn(player.account_id)
+            if not any(stats.is_ranked_lobby(m.get("lobby_type")) for m in recent):
+                return recent, False
         return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True
     last = storage.latest_match_time(player.id)
-    recent_fn = getattr(client, "get_recent_matches", None)
     deep_due = player.history_ts is None or now - player.history_ts >= DEEP_SYNC_SEC
     if recent_fn is not None and not deep_due:
         recent = recent_fn(player.account_id)
@@ -531,7 +590,7 @@ def refresh_player(
             log.debug("Не удалось получить профиль игрока %s", player.account_id, exc_info=True)
 
     if not fast and enrich_cap > 0:
-        _enrich_from_opendota(storage, client, player, enrich_cap)
+        _enrich_from_opendota(storage, client, player, enrich_cap, _enrich_since(now))
 
     if stratz is not None:
         _enrich_from_stratz(storage, stratz, player, now)

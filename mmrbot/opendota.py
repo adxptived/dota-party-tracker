@@ -62,6 +62,8 @@ class OpenDota:
     MATCH_CACHE_SIZE = 64  # сколько последних матчей держим в памяти
     MATCH_CACHE_TTL = 600  # сек: свежий матч может дополниться — долго не держим
     REFRESH_GAP = 600  # сек: POST /refresh одного игрока не чаще (обновление у OpenDota всё равно асинхронное)
+    REFRESH_GAP_NO_KEY = 1800  # без ключа каждый запрос на счету — пинаем реже
+    BACKGROUND_RESERVE = 800  # столько запросов из суточного лимита оставляем опросу игр и командам
 
     def __init__(
         self,
@@ -71,8 +73,13 @@ class OpenDota:
         max_retries: int = 3,
         session=None,
         burst: int = 1,
+        background_reserve: Optional[int] = None,
     ):
         self.api_key = api_key
+        self.refresh_gap = self.REFRESH_GAP if api_key else self.REFRESH_GAP_NO_KEY
+        self.background_reserve = self.BACKGROUND_RESERVE if background_reserve is None else background_reserve
+        # Остаток бесплатного суточного лимита — из заголовка ответа OpenDota (без ключа); None — ещё неизвестен.
+        self.remaining_day: Optional[int] = None
         self.min_interval = min_interval
         # Сколько запросов можно отправить подряд без паузы (дальше — по одному в min_interval).
         # Лимит OpenDota считается за минуту, поэтому короткая пачка в него укладывается, а
@@ -111,10 +118,29 @@ class OpenDota:
         if wait > 0:
             time.sleep(wait)
 
+    def _auth(self) -> dict:
+        """Ключ — только в заголовке: URL (а с ним и query-параметры) попадает в тексты ошибок requests и в логи."""
+        return {"headers": {"Authorization": f"Bearer {self.api_key}"}} if self.api_key else {}
+
+    def _note_quota(self, resp) -> None:
+        """Запомнить остаток суточного лимита из заголовка X-Rate-Limit-Remaining-Day (его шлют запросам без ключа)."""
+        try:
+            self.remaining_day = int((getattr(resp, "headers", None) or {}).get("X-Rate-Limit-Remaining-Day"))
+        except (TypeError, ValueError):
+            pass
+
+    def background_allowed(self) -> bool:
+        """Можно ли тратить запросы на необязательную фоновую работу (детали старых матчей).
+
+        С ключом суточного потолка нет. Без ключа останавливаемся, когда до конца лимита осталось меньше
+        резерва: иначе бэкфилл выбирал бы квоту целиком, и до полуночи UTC бот показывал бы старые данные.
+        """
+        if self.api_key or self.remaining_day is None:
+            return True
+        return self.remaining_day > self.background_reserve
+
     def _get(self, path: str, params: Optional[dict] = None):
         params = dict(params or {})
-        if self.api_key:
-            params["api_key"] = self.api_key
         url = f"{BASE_URL}{path}"
 
         last_exc: Optional[Exception] = None
@@ -125,7 +151,8 @@ class OpenDota:
             self._throttle()
             delay = 1.5 * (attempt + 1)
             try:
-                resp = self._session.get(url, params=params, timeout=self.timeout)
+                resp = self._session.get(url, params=params, timeout=self.timeout, **self._auth())
+                self._note_quota(resp)
                 if resp.status_code in _RETRY_STATUSES:
                     last_exc = RuntimeError(f"OpenDota HTTP {resp.status_code}")
                     limited = resp.status_code == 429
@@ -153,20 +180,23 @@ class OpenDota:
 
         Обновление у OpenDota асинхронное: свежие матчи появятся не мгновенно, а
         через некоторое время — зато следующий опрос будет актуальнее. Best-effort.
-        Повторный вызов раньше REFRESH_GAP ничего не шлёт (False): пинок уже в очереди,
+        Повторный вызов раньше refresh_gap ничего не шлёт (False): пинок уже в очереди,
         а слот троттлинга и лимит запросов нужнее самим данным.
         """
         now = time.monotonic()
         with self._lock:
             last = self._refresh_at.get(account_id)
-            if last is not None and now - last < self.REFRESH_GAP:
+            if last is not None and now - last < self.refresh_gap:
                 return False
             self._refresh_at[account_id] = now
         if now < self._blocked_until:
             return False
         self._throttle()
         try:
-            self._session.post(f"{BASE_URL}/players/{account_id}/refresh", timeout=self.timeout)
+            resp = self._session.post(
+                f"{BASE_URL}/players/{account_id}/refresh", timeout=self.timeout, **self._auth()
+            )
+            self._note_quota(resp)
             return True
         except Exception:
             with self._lock:

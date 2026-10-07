@@ -184,16 +184,23 @@ def setup_scheduler(
                 continue
             try:
                 async with _chat_lock(chat.chat_id):
-                    events = await asyncio.to_thread(detect_new_games, storage, od, chat, now, stratz)
+                    events = await asyncio.to_thread(detect_new_games, storage, od, chat, now, stratz, False)
             except Exception:
                 log.exception("Проверка новых игр в чате %s не удалась", chat.chat_id)
                 continue
             for event in events:
                 text = render_game_alert(event) if event["kind"] == "match" else render_achievement_alert(event)
+                delivered = True
                 try:
                     await bot.send_message(chat.chat_id, text, parse_mode="HTML")
-                except Exception:
+                except (TelegramForbiddenError, TelegramBadRequest):
+                    # Чат недоступен или сообщение не принято — повтор не поможет, не зацикливаемся.
+                    log.warning("Оповещение в чат %s отклонено Telegram", chat.chat_id, exc_info=True)
+                except Exception:  # сеть/лимит Telegram: матч остаётся неоповещённым и уйдёт в следующем опросе
+                    delivered = False
                     log.warning("Не удалось отправить оповещение в чат %s", chat.chat_id, exc_info=True)
+                if delivered:
+                    storage.mark_notified_matches(event.get("pending") or [])
 
     async def presence_watch() -> None:
         """Оповещения «зашёл в Dota 2» (Steam Web API); без ключа задача не регистрируется."""

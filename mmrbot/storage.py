@@ -739,10 +739,39 @@ class Storage:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def mark_notified(self, player_id: int) -> None:
-        """Пометить все текущие матчи игрока оповещёнными (в т.ч. старые — их не объявляем)."""
+    def mark_notified(self, player_id: int, keep: Optional[list[int]] = None) -> None:
+        """Пометить матчи игрока оповещёнными (в т.ч. старые — их не объявляем).
+
+        keep — match_id, которые остаются неоповещёнными: о них ещё предстоит сообщить
+        (помечаются через mark_notified_matches после успешной отправки).
+        """
+        query = "UPDATE matches SET notified = 1 WHERE player_id = ? AND notified = 0"
+        params: list = [player_id]
+        if keep:
+            query += f" AND match_id NOT IN ({', '.join('?' * len(keep))})"
+            params += list(keep)
         with self._conn() as conn:
-            conn.execute("UPDATE matches SET notified = 1 WHERE player_id = ? AND notified = 0", (player_id,))
+            conn.execute(query, params)
+
+    def mark_notified_matches(self, pairs: list[tuple[int, int]]) -> None:
+        """Пометить оповещёнными конкретные матчи: [(player_id, match_id)]."""
+        if not pairs:
+            return
+        with self._conn() as conn:
+            conn.executemany("UPDATE matches SET notified = 1 WHERE player_id = ? AND match_id = ?", pairs)
+
+    def announced_match_ids(self, chat_id: int, match_ids: list[int]) -> set[int]:
+        """Какие из match_ids уже объявлены в чате — по строке любого его игрока."""
+        if not match_ids:
+            return set()
+        marks = ", ".join("?" * len(match_ids))
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT m.match_id FROM matches m JOIN players p ON p.id = m.player_id "
+                f"WHERE p.chat_id = ? AND m.notified = 1 AND m.match_id IN ({marks})",
+                [chat_id, *match_ids],
+            ).fetchall()
+        return {r["match_id"] for r in rows}
 
     # --- достижения -------------------------------------------------------
 
