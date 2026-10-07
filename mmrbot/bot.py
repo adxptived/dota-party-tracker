@@ -15,7 +15,7 @@ from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceRep
 from mmrbot import commands as cmd
 from mmrbot import perf
 from mmrbot.boards import ImageBoard
-from mmrbot.access import DENIED, may_manage
+from mmrbot.access import DENIED, is_chat_admin, may_manage
 from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero, hero_name
@@ -46,6 +46,7 @@ from mmrbot.service import (
     render_together_board,
     split_message,
 )
+from mmrbot.status import collect_status, render_status
 from mmrbot.storage import Storage
 from mmrbot.tags import auto_link_user, clear_member_tag, link_adder, sync_member_tags
 from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
@@ -142,6 +143,7 @@ BOT_COMMANDS = [
     BotCommand(command="me", description="🙋 Привязать себя к игроку"),
     BotCommand(command="tags", description="🏷️ Теги с MMR (вкл/выкл)"),
     BotCommand(command="remove", description="🗑️ Удалить игрока"),
+    BotCommand(command="status", description="🩺 Состояние бота (админам)"),
     BotCommand(command="help", description="📖 Справка"),
 ]
 
@@ -1100,6 +1102,18 @@ async def _on_settings(message: Message, storage: Storage, args: list[str], bot=
         await message.edit_text(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
     except Exception:
         pass  # «message is not modified» — значение не изменилось
+
+
+@router.message(Command("status"))
+async def cmd_status(message: Message, storage: Storage, od: OpenDota, stratz=None, bot: Optional[Bot] = None) -> None:
+    """Состояние бота: внешние сервисы, очереди дозагрузки, свежесть данных. Только админам чата."""
+    actor = getattr(message, "from_user", None)
+    sender_chat = getattr(message, "sender_chat", None)
+    if not await is_chat_admin(bot or getattr(message, "bot", None), message.chat, actor, sender_chat):
+        await message.answer(DENIED)
+        return
+    data = await asyncio.to_thread(collect_status, storage, od, stratz)
+    await message.answer(render_status(data), parse_mode="HTML")
 
 
 @router.message(Command("settings"))

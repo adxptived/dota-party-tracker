@@ -773,6 +773,29 @@ class Storage:
             ).fetchone()
         return None if row is None else row["player_slot"]
 
+    def backlog_counts(self, enrich_since: int, enrich_max_tries: int = 3, stratz_max_tries: int = 8) -> dict:
+        """Размер очередей фоновой догрузки по игрокам активных чатов: детали матчей (OpenDota) и данные Stratz."""
+        base = ("FROM matches m JOIN players p ON p.id = m.player_id JOIN chats c ON c.chat_id = p.chat_id "
+                "WHERE c.active = 1 AND ")
+        with self._conn() as conn:
+            details = conn.execute(
+                f"SELECT COUNT(*) {base}m.enriched = 0 AND m.enrich_tries < ? AND m.start_time >= ?",
+                (enrich_max_tries, enrich_since),
+            ).fetchone()[0]
+            stratz = conn.execute(
+                f"SELECT COUNT(*) {base}(m.stratz_done = 0 OR m.party_size IS NULL) AND m.stratz_tries < ?",
+                (stratz_max_tries,),
+            ).fetchone()[0]
+        return {"details": details, "stratz": stratz}
+
+    def player_update_times(self) -> list[Optional[int]]:
+        """updated_ts (последняя успешная сверка матчей) всех игроков активных чатов; None — ещё не обновлялся."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT p.updated_ts FROM players p JOIN chats c ON c.chat_id = p.chat_id WHERE c.active = 1"
+            ).fetchall()
+        return [r["updated_ts"] for r in rows]
+
     def mark_enrich_miss(self, player_id: int, match_id: int) -> None:
         """OpenDota не отдал детали матча — копим попытки, чтобы он не блокировал очередь."""
         with self._conn() as conn:

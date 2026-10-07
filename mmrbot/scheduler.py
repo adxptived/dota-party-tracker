@@ -30,6 +30,7 @@ from mmrbot.formatting import (
     render_start_alert,
     render_steam_change,
 )
+from mmrbot.status import write_heartbeat
 from mmrbot.service import _chat_lock, alert_board, refresh_only, split_message, stats_board, weekly_board
 from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
@@ -153,10 +154,9 @@ def setup_scheduler(
     keyless = not getattr(od, "api_key", None)
 
     async def heartbeat() -> None:
-        """Отметка «жив» для healthcheck контейнера: файл обновляется, пока крутится цикл событий."""
+        """Отметка «жив» для healthcheck контейнера (mtime файла) + JSON со снимком состояния — тот же, что в /status."""
         try:
-            with open(heartbeat_path, "w", encoding="utf-8") as fh:
-                fh.write(str(int(time.time())))
+            await asyncio.to_thread(write_heartbeat, heartbeat_path, storage, od, stratz)
         except OSError:
             log.debug("Не удалось записать heartbeat %s", heartbeat_path, exc_info=True)
 
