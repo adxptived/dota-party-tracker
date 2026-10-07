@@ -353,7 +353,7 @@ async def render_player_heroes_board(
     roles = await asyncio.to_thread(build_player_roles, storage, chat_id, name, since)
     if roles is not None and roles[1]:
         text += "\n\n" + render_roles(player.display_name, roles[1], period)
-    return text
+    return _with_stale(storage, chat_id, text, od)
 
 
 async def render_roles_board(
@@ -365,7 +365,7 @@ async def render_roles_board(
     if result is None:
         return NOT_FOUND
     player, rows = result
-    return render_roles(player.display_name, rows, period)
+    return _with_stale(storage, chat_id, render_roles(player.display_name, rows, period), od)
 
 
 @dataclass
@@ -484,4 +484,4 @@ async def render_hero_board(
     await refresh_with_budget(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     entries = await asyncio.to_thread(build_hero_view, storage, chat_id, hero_id, since)
-    return render_hero_detail(hero_id, period, entries)
+    return _with_stale(storage, chat_id, render_hero_detail(hero_id, period, entries), od)
