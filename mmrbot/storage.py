@@ -15,6 +15,9 @@ from typing import Optional
 DEFAULT_DIGEST_HOUR = 10
 DEFAULT_MMR_STEP = 25
 DEFAULT_TZ = "Europe/Moscow"
+# Номер схемы (PRAGMA user_version). Колонки по-прежнему добавляются в _migrate; номер нужен, чтобы
+# будущая несовместимая миграция могла понять, с какой версии база, и чтобы старый код не открыл новую.
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -30,6 +33,9 @@ class Chat:
     last_weekly: Optional[str] = None  # ключ ISO-недели последней отправленной сводки
     notify_start: bool = True  # оповещать, когда игрок зашёл в Dota 2 (Steam Web API)
     tag_mmr: bool = False  # ставить участникам тег с MMR (нужно право админа «управлять тегами»)
+    notify_digest: bool = True  # ежедневная сводка
+    admin_only: bool = True  # в группе настройки и удаление игроков — только админам чата
+    active: bool = True  # False — бота убрали из чата: не опрашиваем и не пишем, данные храним
 
 
 @dataclass
@@ -44,17 +50,10 @@ class Player:
     last_rank_tier: Optional[int]
     last_leaderboard_rank: Optional[int]
     updated_ts: Optional[int]
-    last_gpm: Optional[float] = None
-    last_xpm: Optional[float] = None
-    last_last_hits: Optional[float] = None
-    last_lanes: Optional[str] = None
-    last_gpm_median: Optional[float] = None
-    last_gpm_best: Optional[float] = None
     steam_name: Optional[str] = None  # последний известный ник в Steam (для оповещений о смене)
     steam_avatar: Optional[str] = None
     profile_ts: Optional[int] = None  # когда последний раз получили профиль (ранг) из OpenDota
     history_ts: Optional[int] = None  # когда последний раз сверяли историю глубоко (список на 200 матчей)
-    insights_dirty: bool = False  # устарело: средние/линии больше не запрашиваются (колонка осталась ради старых баз)
     fh_unavailable: bool = False  # OpenDota: история матчей игрока закрыта — цифры могут быть неполными
     ingame_since: Optional[int] = None  # когда зашёл в Dota 2 (по Steam); None — не в игре
     ingame_misses: int = 0  # опросов подряд без Dota (гасит дребезг статуса)
@@ -74,7 +73,10 @@ CREATE TABLE IF NOT EXISTS chats (
     notify_weekly    INTEGER NOT NULL DEFAULT 1,
     last_weekly      TEXT,
     notify_start     INTEGER NOT NULL DEFAULT 1,
-    tag_mmr          INTEGER NOT NULL DEFAULT 0
+    tag_mmr          INTEGER NOT NULL DEFAULT 0,
+    notify_digest    INTEGER NOT NULL DEFAULT 1,
+    admin_only       INTEGER NOT NULL DEFAULT 1,
+    active           INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS achievements (
     player_id INTEGER NOT NULL,
@@ -83,6 +85,8 @@ CREATE TABLE IF NOT EXISTS achievements (
     detail    TEXT,
     PRIMARY KEY (player_id, code)
 );
+-- last_gpm … last_gpm_best и insights_dirty больше не используются (карьерные средние бот не запрашивает);
+-- колонки оставлены, чтобы старые базы открывались без пересборки таблицы.
 CREATE TABLE IF NOT EXISTS players (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id               INTEGER NOT NULL,
@@ -147,6 +151,7 @@ CREATE TABLE IF NOT EXISTS matches (
     enrich_tries INTEGER NOT NULL DEFAULT 0,
     stratz_next_ts INTEGER NOT NULL DEFAULT 0,
     notified     INTEGER NOT NULL DEFAULT 0,
+    leaver_status INTEGER,
     PRIMARY KEY (player_id, match_id)
 );
 CREATE INDEX IF NOT EXISTS idx_matches_player_time ON matches (player_id, start_time);
@@ -164,12 +169,26 @@ class _Connection(sqlite3.Connection):
 
 
 class Storage:
-    def __init__(self, db_path: str):
+    def __init__(
+        self, db_path: str, default_digest_hour: int = DEFAULT_DIGEST_HOUR,
+        default_mmr_step: int = DEFAULT_MMR_STEP, default_tz: str = DEFAULT_TZ,
+    ):
         self.db_path = db_path
+        # Значения для новых чатов (из .env: DEFAULT_DIGEST_HOUR / DEFAULT_MMR_STEP / DEFAULT_TZ).
+        self.default_digest_hour = default_digest_hour
+        self.default_mmr_step = default_mmr_step
+        self.default_tz = default_tz
         with self._conn() as conn:
             conn.execute("PRAGMA journal_mode = WAL")  # режим хранится в файле БД — достаточно один раз
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"База {db_path} создана более новой версией бота (схема {version}, эта версия знает "
+                    f"{SCHEMA_VERSION}). Обновите бота или восстановите базу из бэкапа."
+                )
             conn.executescript(_SCHEMA)
             self._migrate(conn)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -185,6 +204,9 @@ class Storage:
             "notify_games": "INTEGER NOT NULL DEFAULT 1", "notify_weekly": "INTEGER NOT NULL DEFAULT 1",
             "last_weekly": "TEXT", "notify_start": "INTEGER NOT NULL DEFAULT 1",
             "tag_mmr": "INTEGER NOT NULL DEFAULT 0",
+            "notify_digest": "INTEGER NOT NULL DEFAULT 1",
+            "admin_only": "INTEGER NOT NULL DEFAULT 1",
+            "active": "INTEGER NOT NULL DEFAULT 1",
         })
         # Старая история — уже «оповещённая»: иначе после обновления бот завалил бы чат старыми играми.
         had_notified = "notified" in {r["name"] for r in conn.execute("PRAGMA table_info(matches)").fetchall()}
@@ -231,7 +253,7 @@ class Storage:
             if row is None:
                 conn.execute(
                     "INSERT INTO chats (chat_id, digest_hour, mmr_step, tz) VALUES (?, ?, ?, ?)",
-                    (chat_id, DEFAULT_DIGEST_HOUR, DEFAULT_MMR_STEP, DEFAULT_TZ),
+                    (chat_id, self.default_digest_hour, self.default_mmr_step, self.default_tz),
                 )
                 row = conn.execute("SELECT * FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
             return self._chat_from_row(row)
@@ -250,7 +272,56 @@ class Storage:
             last_weekly=row["last_weekly"],
             notify_start=bool(row["notify_start"]),
             tag_mmr=bool(row["tag_mmr"]),
+            notify_digest=bool(row["notify_digest"]),
+            admin_only=bool(row["admin_only"]),
+            active=bool(row["active"]),
         )
+
+    def _set_chat_flag(self, chat_id: int, column: str, enabled: bool) -> None:
+        assert column in {"notify_digest", "admin_only", "active"}
+        self.get_or_create_chat(chat_id)
+        with self._conn() as conn:
+            conn.execute(f"UPDATE chats SET {column} = ? WHERE chat_id = ?", (1 if enabled else 0, chat_id))
+
+    def set_chat_notify_digest(self, chat_id: int, enabled: bool) -> None:
+        self._set_chat_flag(chat_id, "notify_digest", enabled)
+
+    def set_chat_admin_only(self, chat_id: int, enabled: bool) -> None:
+        self._set_chat_flag(chat_id, "admin_only", enabled)
+
+    def set_chat_active(self, chat_id: int, active: bool) -> None:
+        """Бота убрали из чата (False) или вернули (True). Строку чата без нужды не создаём."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE chats SET active = ? WHERE chat_id = ? AND active != ?",
+                (1 if active else 0, chat_id, 1 if active else 0),
+            )
+
+    def migrate_chat(self, old_chat_id: int, new_chat_id: int) -> bool:
+        """Группа стала супергруппой: Telegram меняет chat_id. Переносим настройки и игроков на новый id.
+
+        Вернуть True, если было что переносить. Если под новым id уже есть чат (пользователи успели
+        что-то написать), его настройки заменяются перенесёнными, а его игроки остаются; игрок с тем же
+        аккаунтом, что у переносимого, уступает место переносимому — у того история.
+        """
+        if old_chat_id == new_chat_id:
+            return False
+        with self._conn() as conn:
+            if conn.execute("SELECT 1 FROM chats WHERE chat_id = ?", (old_chat_id,)).fetchone() is None:
+                return False
+            clash = conn.execute(
+                "SELECT id FROM players WHERE chat_id = ? AND account_id IN "
+                "(SELECT account_id FROM players WHERE chat_id = ?)",
+                (new_chat_id, old_chat_id),
+            ).fetchall()
+            for row in clash:
+                conn.execute("DELETE FROM matches WHERE player_id = ?", (row["id"],))
+                conn.execute("DELETE FROM achievements WHERE player_id = ?", (row["id"],))
+                conn.execute("DELETE FROM players WHERE id = ?", (row["id"],))
+            conn.execute("DELETE FROM chats WHERE chat_id = ?", (new_chat_id,))
+            conn.execute("UPDATE chats SET chat_id = ?, active = 1 WHERE chat_id = ?", (new_chat_id, old_chat_id))
+            conn.execute("UPDATE players SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+        return True
 
     def set_chat_notify_games(self, chat_id: int, enabled: bool) -> None:
         self.get_or_create_chat(chat_id)
@@ -333,10 +404,16 @@ class Storage:
         with self._conn() as conn:
             conn.execute("UPDATE chats SET last_digest_date = ? WHERE chat_id = ?", (date_str, chat_id))
 
-    def list_chats(self) -> list[Chat]:
+    def list_chats(self, include_inactive: bool = False) -> list[Chat]:
+        """Чаты, где бот работает. Чаты, откуда его убрали, — только с include_inactive=True."""
+        query = "SELECT * FROM chats" if include_inactive else "SELECT * FROM chats WHERE active = 1"
         with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM chats").fetchall()
+            rows = conn.execute(query).fetchall()
         return [self._chat_from_row(r) for r in rows]
+
+    def count_players(self, chat_id: int) -> int:
+        with self._conn() as conn:
+            return conn.execute("SELECT COUNT(*) FROM players WHERE chat_id = ?", (chat_id,)).fetchone()[0]
 
     # --- players --------------------------------------------------------
 
@@ -352,17 +429,10 @@ class Storage:
             last_rank_tier=row["last_rank_tier"],
             last_leaderboard_rank=row["last_leaderboard_rank"],
             updated_ts=row["updated_ts"],
-            last_gpm=row["last_gpm"],
-            last_xpm=row["last_xpm"],
-            last_last_hits=row["last_last_hits"],
-            last_lanes=row["last_lanes"],
-            last_gpm_median=row["last_gpm_median"],
-            last_gpm_best=row["last_gpm_best"],
             steam_name=row["steam_name"],
             steam_avatar=row["steam_avatar"],
             profile_ts=row["profile_ts"],
             history_ts=row["history_ts"],
-            insights_dirty=bool(row["insights_dirty"]),
             fh_unavailable=bool(row["fh_unavailable"]),
             ingame_since=row["ingame_since"],
             ingame_misses=row["ingame_misses"] or 0,
@@ -507,28 +577,6 @@ class Storage:
                 )
             else:
                 conn.execute("UPDATE players SET updated_ts = ? WHERE id = ?", (updated_ts, player_id))
-
-    def set_insights_dirty(self, player_id: int, dirty: bool) -> None:
-        with self._conn() as conn:
-            conn.execute("UPDATE players SET insights_dirty = ? WHERE id = ?", (1 if dirty else 0, player_id))
-
-    def update_player_totals(
-        self, player_id: int, gpm: Optional[float], xpm: Optional[float], last_hits: Optional[float]
-    ) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                "UPDATE players SET last_gpm = ?, last_xpm = ?, last_last_hits = ? WHERE id = ?",
-                (gpm, xpm, last_hits, player_id),
-            )
-
-    def update_player_insights(
-        self, player_id: int, lanes_json: Optional[str], gpm_median: Optional[float], gpm_best: Optional[float]
-    ) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                "UPDATE players SET last_lanes = ?, last_gpm_median = ?, last_gpm_best = ? WHERE id = ?",
-                (lanes_json, gpm_median, gpm_best, player_id),
-            )
 
     # --- matches --------------------------------------------------------
 

@@ -14,10 +14,15 @@ import re
 STEAMID64_BASE = 76561197960265728
 
 
+ACCOUNT_ID_MAX = 0xFFFFFFFF  # account_id — 32-битная часть SteamID
+
+
 def _to_account_id(number: int) -> int:
-    """SteamID64 -> account_id; готовый account_id оставляем как есть."""
+    """SteamID64 -> account_id; готовый account_id оставляем как есть. Не-ID (0 или слишком большое) — ошибка."""
     if number > STEAMID64_BASE:
-        return number - STEAMID64_BASE
+        number -= STEAMID64_BASE
+    if not 0 < number <= ACCOUNT_ID_MAX:
+        raise ValueError("Это не похоже на ID игрока. Нужна ссылка Dotabuff/OpenDota, account_id или SteamID64.")
     return number
 
 

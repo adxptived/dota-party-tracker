@@ -73,9 +73,6 @@ class PlayerSummary:
     streak_type: str = ""
     streak_len: int = 0
     top_heroes: list = field(default_factory=list)
-    gpm: Optional[float] = None
-    xpm: Optional[float] = None
-    last_hits: Optional[float] = None
     avg_duration_min: float = 0.0
     max_duration_min: float = 0.0
     solo: tuple = (0, 0)
@@ -83,12 +80,9 @@ class PlayerSummary:
     party_unknown: tuple = (0, 0)  # игры, где размер пати неизвестен
     best_hour: Optional[tuple] = None
     worst_hour: Optional[tuple] = None
-    lanes: dict = field(default_factory=dict)
     recent_form: list = field(default_factory=list)
     best_game: Optional[dict] = None
     longest_win_streak: int = 0
-    gpm_median: Optional[float] = None
-    gpm_best: Optional[float] = None
     avg_perf: Optional[float] = None
     enriched_games: int = 0
     detail_games: int = 0  # игр, по которым известны GPM/нетворт/урон (средние считаются только по ним)
@@ -632,7 +626,6 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
     duration = stats.duration_stats(all_matches)
     split = stats.solo_party_split(all_matches)
     best_hour, worst_hour = _best_worst_hour(stats.winrate_by_hour(all_matches, chat.tz))
-    lanes = _parse_lanes(player.last_lanes)
 
     enriched = [m for m in all_matches if m.get("perf_score") is not None]
     avg_perf = sum(m["perf_score"] for m in enriched) / len(enriched) if enriched else None
@@ -686,9 +679,6 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         streak_type=streak_type,
         streak_len=streak_len,
         top_heroes=top,
-        gpm=player.last_gpm,
-        xpm=player.last_xpm,
-        last_hits=player.last_last_hits,
         avg_duration_min=duration["avg_minutes"],
         max_duration_min=duration["max_minutes"],
         solo=split["solo"],
@@ -696,12 +686,9 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         party_unknown=split["unknown"],
         best_hour=best_hour,
         worst_hour=worst_hour,
-        lanes=lanes,
         recent_form=stats.recent_form(all_matches, 5),
         best_game=stats.best_game(all_matches),
         longest_win_streak=stats.longest_win_streak(all_matches),
-        gpm_median=player.last_gpm_median,
-        gpm_best=player.last_gpm_best,
         avg_perf=avg_perf,
         enriched_games=len(enriched),
         detail_games=sum(1 for m in all_matches if m.get("gpm") is not None),
@@ -849,23 +836,6 @@ def build_hero_view(
             entries.append((player, rows[0]))
     entries.sort(key=lambda e: (e[1]["games"], e[1]["winrate"]), reverse=True)
     return entries
-
-
-def _parse_lanes(lanes_json: Optional[str]) -> dict:
-    """JSON {'2':[games,wins]} → {2: (games, wins)}."""
-    if not lanes_json:
-        return {}
-    try:
-        raw = json.loads(lanes_json)
-    except (ValueError, TypeError):
-        return {}
-    result = {}
-    for key, value in raw.items():
-        try:
-            result[int(key)] = (value[0], value[1])
-        except (ValueError, TypeError, IndexError):
-            continue
-    return result
 
 
 def median_rank_tier(tiers: list[int]) -> Optional[int]:

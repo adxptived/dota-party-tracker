@@ -19,9 +19,14 @@ def store(tmp_path):
 
 
 class FakeBot:
-    def __init__(self, fail_for=()):
+    def __init__(self, fail_for=(), admin=True):
         self.calls = []
         self.fail_for = set(fail_for)
+        self.admin = admin
+
+    async def get_chat_member(self, chat_id, user_id):
+        from types import SimpleNamespace
+        return SimpleNamespace(status="administrator" if self.admin else "member")
 
     async def set_chat_member_tag(self, chat_id, user_id, tag=None):
         if user_id in self.fail_for:

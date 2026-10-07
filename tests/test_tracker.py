@@ -228,10 +228,9 @@ def test_build_chat_comparison_handles_missing_metrics(store):
 
 
 
-def test_summary_includes_form_lanes_and_records(store):
+def test_summary_includes_form_and_records(store):
     now = 100_000
     p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
-    store.update_player_insights(p.id, lanes_json='{"2": [10, 6]}', gpm_median=500, gpm_best=800)
     store.add_matches(p.id, [
         _m(1, 2000, radiant_win=True),
         _m(2, 3000, radiant_win=True),
@@ -243,15 +242,12 @@ def test_summary_includes_form_lanes_and_records(store):
     s = build_player_summary(store, chat, p, now=now)
     assert s.recent_form == [True, True, False, True]
     assert s.longest_win_streak == 2
-    assert s.lanes[2] == (10, 6)
-    assert s.gpm_median == 500
     assert s.best_game is not None
 
 
 def test_summary_includes_solo_party_and_totals(store):
     now = 100_000
     p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
-    store.update_player_totals(p.id, gpm=500.0, xpm=600.0, last_hits=180.0)
     store.add_matches(p.id, [
         _m(1, 2000, party_size=1, radiant_win=True),   # solo win
         _m(2, 3000, party_size=3, radiant_win=False),  # party loss
@@ -259,7 +255,6 @@ def test_summary_includes_solo_party_and_totals(store):
     p = store.get_player(100, "Вася")
     chat = store.get_or_create_chat(100)
     s = build_player_summary(store, chat, p, now=now)
-    assert s.gpm == 500.0
     assert s.solo == (1, 1)
     assert s.party == (1, 0)
     assert s.avg_duration_min > 0

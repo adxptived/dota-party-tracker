@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pytz
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from mmrbot.opendota import OpenDota
@@ -74,6 +75,26 @@ def due_weekly_key(chat: Chat, now_utc: datetime) -> Optional[str]:
     return None if chat.last_weekly == key else key
 
 
+IDLE_DIGEST_SEC = 86_400  # за столько секунд без единой игры сводку не шлём — в ней нечего читать
+
+
+def chat_gone(storage: Storage, chat_id: int, exc: Exception) -> bool:
+    """Разобрать отказ Telegram при отправке в чат; True — чат больше недоступен под этим id.
+
+    Бота выгнали/заблокировали → чат приостанавливается (его игроков перестаём опрашивать).
+    Группа стала супергруппой → данные переезжают на новый id.
+    """
+    if isinstance(exc, TelegramMigrateToChat):
+        storage.migrate_chat(chat_id, exc.migrate_to_chat_id)
+        log.info("Чат %s стал супергруппой %s — данные перенесены", chat_id, exc.migrate_to_chat_id)
+        return True
+    if isinstance(exc, TelegramForbiddenError):
+        storage.set_chat_active(chat_id, False)
+        log.info("Бот потерял доступ к чату %s — чат приостановлен", chat_id)
+        return True
+    return False
+
+
 async def send_digest(bot: Bot, storage: Storage, od: OpenDota, chat: Chat, due_date: str, stratz=None) -> None:
     """Собрать и отправить дайджест в один чат; отметить сутки отправленными.
 
@@ -82,12 +103,16 @@ async def send_digest(bot: Bot, storage: Storage, od: OpenDota, chat: Chat, due_
     """
     try:
         text = await render_board(storage, od, chat.chat_id, today_only=False, refresh=True, stratz=stratz, awards_period="day")
+        last = storage.last_activity(chat.chat_id)  # после обновления — по свежим данным
+        if last is None or time.time() - last > IDLE_DIGEST_SEC:
+            storage.set_last_digest_date(chat.chat_id, due_date)  # никто не играл — не шумим
+            return
         for chunk in split_message("📰 <b>Ежедневная сводка</b>\n\n" + text):
             await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
         storage.set_last_digest_date(chat.chat_id, due_date)
-    except TelegramForbiddenError:
-        log.warning("Бот потерял доступ к чату %s — дайджест пропущен на сегодня", chat.chat_id)
+    except (TelegramForbiddenError, TelegramMigrateToChat) as exc:
         storage.set_last_digest_date(chat.chat_id, due_date)
+        chat_gone(storage, chat.chat_id, exc)
     except TelegramBadRequest as exc:
         if "chat not found" in str(exc).lower():
             log.warning("Чат %s не найден — дайджест пропущен на сегодня", chat.chat_id)
@@ -99,15 +124,28 @@ async def send_digest(bot: Bot, storage: Storage, od: OpenDota, chat: Chat, due_
 
 
 def setup_scheduler(
-    bot: Bot, storage: Storage, od: OpenDota, stratz=None, backup_keep: int = 7, steam=None
+    bot: Bot, storage: Storage, od: OpenDota, stratz=None, backup_keep: int = 7, steam=None,
+    heartbeat_path: Optional[str] = None,
 ) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
+    keyless = not getattr(od, "api_key", None)
+
+    async def heartbeat() -> None:
+        """Отметка «жив» для healthcheck контейнера: файл обновляется, пока крутится цикл событий."""
+        try:
+            with open(heartbeat_path, "w", encoding="utf-8") as fh:
+                fh.write(str(int(time.time())))
+        except OSError:
+            log.debug("Не удалось записать heartbeat %s", heartbeat_path, exc_info=True)
+
+    if heartbeat_path:
+        scheduler.add_job(heartbeat, "interval", seconds=60, next_run_time=datetime.now(timezone.utc))
 
     async def hourly_digest() -> None:
         now_utc = datetime.now(timezone.utc)  # снимок момента прогона — один на все чаты
         for chat in storage.list_chats():
             due_date = due_local_date(chat, now_utc)
-            if due_date is None:
+            if due_date is None or not chat.notify_digest:
                 continue
             if not storage.list_players(chat.chat_id):
                 continue
@@ -151,8 +189,9 @@ def setup_scheduler(
                     await bot.send_photo(event["chat_id"], avatar, caption=text, parse_mode="HTML")
                 else:
                     await bot.send_message(event["chat_id"], text, parse_mode="HTML")
-            except Exception:
-                log.warning("Не удалось отправить оповещение Steam в чат %s", event["chat_id"], exc_info=True)
+            except Exception as exc:
+                if not chat_gone(storage, event["chat_id"], exc):
+                    log.warning("Не удалось отправить оповещение Steam в чат %s", event["chat_id"], exc_info=True)
 
     async def tags_sync() -> None:
         """Теги участников с их MMR (чаты с /tags on); MMR берётся из кэша БД."""
@@ -170,9 +209,10 @@ def setup_scheduler(
     scheduler.add_job(heroes_refresh, "cron", hour=5, minute=10, misfire_grace_time=3600)
     scheduler.add_job(heroes_refresh, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=45))
 
-    # Каждые 30 минут сверяем ник/аватарку; первый прогон через минуту после старта (заполняет базу).
+    # Каждые 30 минут сверяем ник/аватарку (без ключа OpenDota — раз в час: это запрос на каждого игрока);
+    # первый прогон через минуту после старта (заполняет базу).
     scheduler.add_job(
-        steam_watch, "interval", minutes=30, misfire_grace_time=300, max_instances=1,
+        steam_watch, "interval", minutes=60 if keyless else 30, misfire_grace_time=300, max_instances=1,
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
     )
 
@@ -193,8 +233,10 @@ def setup_scheduler(
                 delivered = True
                 try:
                     await bot.send_message(chat.chat_id, text, parse_mode="HTML")
-                except (TelegramForbiddenError, TelegramBadRequest):
+                except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
                     # Чат недоступен или сообщение не принято — повтор не поможет, не зацикливаемся.
+                    if chat_gone(storage, chat.chat_id, exc):
+                        break
                     log.warning("Оповещение в чат %s отклонено Telegram", chat.chat_id, exc_info=True)
                 except Exception:  # сеть/лимит Telegram: матч остаётся неоповещённым и уйдёт в следующем опросе
                     delivered = False
@@ -212,8 +254,9 @@ def setup_scheduler(
         for event in events:
             try:
                 await bot.send_message(event["chat_id"], render_start_alert(event), parse_mode="HTML")
-            except Exception:
-                log.warning("Не удалось отправить оповещение о заходе в Dota в чат %s", event["chat_id"], exc_info=True)
+            except Exception as exc:
+                if not chat_gone(storage, event["chat_id"], exc):
+                    log.warning("Не удалось отправить оповещение о заходе в Dota в чат %s", event["chat_id"], exc_info=True)
 
     async def weekly_summary() -> None:
         now_utc = datetime.now(timezone.utc)
@@ -226,9 +269,10 @@ def setup_scheduler(
                 for chunk in split_message(render_weekly(report)):
                     await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
                 storage.set_last_weekly(chat.chat_id, key)
-            except (TelegramForbiddenError, TelegramBadRequest):
+            except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
                 log.warning("Недельная сводка в чат %s не доставлена — пропускаю неделю", chat.chat_id)
                 storage.set_last_weekly(chat.chat_id, key)
+                chat_gone(storage, chat.chat_id, exc)
             except Exception:
                 log.exception("Недельная сводка в чат %s не удалась", chat.chat_id)
 

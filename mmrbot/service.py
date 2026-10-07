@@ -374,7 +374,7 @@ async def render_hero_board(
 ) -> str:
     hero_id = find_hero(query)
     if hero_id is None:
-        return f"Герой «{query}» не найден. Пишите по-английски, например: /heroes Axe"
+        return f"Герой «{html.escape(query)}» не найден. Пишите по-английски, например: /heroes Axe"  # уйдёт как HTML
     await refresh_only(storage, od, chat_id, stratz)
     since = period_since(period, int(time.time()))
     entries = await asyncio.to_thread(build_hero_view, storage, chat_id, hero_id, since)

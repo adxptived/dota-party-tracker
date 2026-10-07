@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
+import pytz
 from dotenv import load_dotenv
+
+from mmrbot.storage import DEFAULT_DIGEST_HOUR, DEFAULT_MMR_STEP, DEFAULT_TZ
 
 
 @dataclass
@@ -18,6 +21,36 @@ class Config:
     backup_keep: int = 7  # сколько ежедневных копий БД хранить (0 — бэкап выключен)
     steam_api_key: Optional[str] = None  # Steam Web API: оповещения «зашёл в Dota 2» (без ключа выключены)
     opendota_burst: int = 5  # сколько запросов к OpenDota можно отправить подряд без паузы
+    opendota_enrich_days: int = 90  # детали матчей догружаем только за столько последних дней (0 — за всю историю)
+    opendota_daily_reserve: int = 800  # без ключа: столько запросов суточного лимита фон не трогает
+    default_digest_hour: int = DEFAULT_DIGEST_HOUR  # настройки новых чатов
+    default_mmr_step: int = DEFAULT_MMR_STEP
+    default_tz: str = DEFAULT_TZ
+    allowed_chats: frozenset = field(default_factory=frozenset)  # пусто — бот отвечает всем
+    max_players: int = 16  # игроков на чат: каждый — это запросы к OpenDota из общего лимита
+
+
+def _chat_ids(raw: str) -> frozenset:
+    """`ALLOWED_CHATS=-100123, 456` → {-100123, 456}; мусор в списке — ошибка запуска, а не «пускаем всех»."""
+    ids = set()
+    for token in (raw or "").replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            ids.add(int(token))
+        except ValueError:
+            raise RuntimeError(f"ALLOWED_CHATS: «{token}» — не числовой ID чата.") from None
+    return frozenset(ids)
+
+
+def _tz_env(name: str, default: str) -> str:
+    value = (os.getenv(name) or "").strip() or default
+    try:
+        pytz.timezone(value)
+    except Exception:
+        return default
+    return value
 
 
 def _int_env(name: str, default: int) -> int:
@@ -51,4 +84,11 @@ def load_config() -> Config:
         backup_keep=_int_env("BACKUP_KEEP", 7),
         # 5 подряд + по одному в 1.1 с — это меньше 60 запросов в любую минуту.
         opendota_burst=max(1, _int_env("OPENDOTA_BURST", 5)),
+        opendota_enrich_days=_int_env("OPENDOTA_ENRICH_DAYS", 90),
+        opendota_daily_reserve=_int_env("OPENDOTA_DAILY_RESERVE", 800),
+        default_digest_hour=min(23, _int_env("DEFAULT_DIGEST_HOUR", DEFAULT_DIGEST_HOUR)),
+        default_mmr_step=min(200, max(1, _int_env("DEFAULT_MMR_STEP", DEFAULT_MMR_STEP))),
+        default_tz=_tz_env("DEFAULT_TZ", DEFAULT_TZ),
+        allowed_chats=_chat_ids(os.getenv("ALLOWED_CHATS", "")),
+        max_players=max(1, _int_env("MAX_PLAYERS", 16)),
     )

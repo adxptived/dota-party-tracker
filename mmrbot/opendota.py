@@ -256,45 +256,6 @@ class OpenDota:
         data = self._get(f"/players/{account_id}/recentMatches")
         return data if isinstance(data, list) else []
 
-    def get_lanes(self, account_id: int, lobby_type: Optional[int] = RANKED_LOBBY) -> dict:
-        """Игры/победы по линиям из /players/{id}/counts → {lane_int: (games, wins)}.
-
-        lane_role: 0 — линия неизвестна (нераспарсенные матчи), 1 safe, 2 mid, 3 off, 4 jungle.
-        По умолчанию только ранкед — как и вся остальная статистика бота.
-        """
-        data = self._get(f"/players/{account_id}/counts", params=self._lobby(lobby_type)) or {}
-        lane_role = data.get("lane_role") or {}
-        result: dict[int, tuple[int, int]] = {}
-        for key, stat in lane_role.items():
-            try:
-                lane = int(key)
-            except (TypeError, ValueError):
-                continue
-            result[lane] = (stat.get("games", 0), stat.get("win", 0))
-        return result
-
-    @staticmethod
-    def _lobby(lobby_type: Optional[int]) -> dict:
-        return {} if lobby_type is None else {"lobby_type": lobby_type}
-
-    def get_gpm_distribution(self, account_id: int, lobby_type: Optional[int] = RANKED_LOBBY) -> dict:
-        """Медиана и пик GPM из гистограммы /players/{id}/histograms/gold_per_min (по умолчанию ранкед)."""
-        data = self._get(f"/players/{account_id}/histograms/gold_per_min", params=self._lobby(lobby_type))
-        buckets = [(b["x"], b.get("games", 0)) for b in data if b.get("games")] if isinstance(data, list) else []
-        if not buckets:
-            return {"median": None, "best": None}
-        total = sum(games for _, games in buckets)
-        half = total / 2
-        cumulative = 0
-        median = None
-        for x, games in sorted(buckets):
-            cumulative += games
-            if cumulative >= half:
-                median = x
-                break
-        best = max(x for x, _ in buckets)
-        return {"median": median, "best": best}
-
     _MATCH_FIELDS = {
         "gold_per_min": "gpm", "xp_per_min": "xpm", "last_hits": "last_hits", "denies": "denies",
         "hero_damage": "hero_damage", "tower_damage": "tower_damage", "hero_healing": "hero_healing",
@@ -351,20 +312,4 @@ class OpenDota:
         for metric, value in (player.get("benchmarks") or {}).items():
             benchmarks[metric] = value.get("pct") if isinstance(value, dict) else value
         result["benchmarks"] = benchmarks
-        return result
-
-    def get_totals(self, account_id: int, lobby_type: Optional[int] = RANKED_LOBBY) -> dict:
-        """Средние GPM/XPM/last hits из /players/{id}/totals (sum/n по полям), по умолчанию ранкед.
-
-        Без фильтра OpenDota усредняет по всем режимам (обычные игры, турбо) — цифры не сходились
-        с ранкед-статистикой бота.
-        """
-        data = self._get(f"/players/{account_id}/totals", params=self._lobby(lobby_type))
-        wanted = {"gold_per_min": "gpm", "xp_per_min": "xpm", "last_hits": "last_hits"}
-        result: dict = {"gpm": None, "xpm": None, "last_hits": None}
-        if isinstance(data, list):
-            for row in data:
-                key = wanted.get(row.get("field"))
-                if key and row.get("n"):
-                    result[key] = row["sum"] / row["n"]
         return result

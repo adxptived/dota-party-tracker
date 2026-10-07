@@ -62,8 +62,10 @@ def settings_menu(chat) -> InlineKeyboardMarkup:
     rows += [tz_buttons[i:i + 4] for i in range(0, len(tz_buttons), 4)]
     rows.append([btn(f"🔔 Steam-профиль: {'вкл' if chat.notify_steam else 'выкл'}", "s:steam")])
     rows.append([btn(f"🎮 Конец матча и достижения: {'вкл' if chat.notify_games else 'выкл'}", "s:games")])
+    rows.append([btn(f"📰 Ежедневная сводка: {'вкл' if chat.notify_digest else 'выкл'}", "s:digest")])
     rows.append([btn(f"📅 Недельная сводка: {'вкл' if chat.notify_weekly else 'выкл'}", "s:weekly")])
     rows.append([btn(f"🏷️ Теги с MMR: {'вкл' if chat.tag_mmr else 'выкл'}", "s:tags")])
+    rows.append([btn(f"🔒 Настройки и удаление: {'только админы' if chat.admin_only else 'все участники'}", "s:admins")])
     rows.append(nav_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
