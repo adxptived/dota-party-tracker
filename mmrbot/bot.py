@@ -18,7 +18,7 @@ from mmrbot import commands as cmd
 from mmrbot import perf
 from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, is_chat_admin, may_manage
-from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
+from mmrbot.formatting import render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
@@ -27,6 +27,7 @@ from mmrbot.opendota import OpenDota
 from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
     STATS_MODES,
+    achievements_board,
     stats_board,
     compare_board,
     render_compare_board,
@@ -53,7 +54,7 @@ from mmrbot.storage import Storage
 from mmrbot.tags import auto_link_user, clear_member_tag, link_adder, sync_member_tags
 from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
 from mmrbot.ranks import rank_label
-from mmrbot.tracker import build_leaderboard, check_achievements, list_achievements, refresh_player
+from mmrbot.tracker import build_leaderboard, check_achievements, refresh_player
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -803,6 +804,12 @@ async def _text_hero(storage: Storage, od: OpenDota, chat_id: int, args: list[st
     return await render_hero_board(storage, od, chat_id, hero_name(hero_id), args[1], stratz)
 
 
+async def _text_achievements(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:ach[:<account_id>] — достижения текстом."""
+    board = await achievements_board(storage, chat_id, args[0] if args else None, image=False)
+    return board.text if board else None
+
+
 async def _text_together(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
     """tx:together — совместные игры текстом."""
     return await render_together_board(storage, od, chat_id, stratz)
@@ -821,7 +828,7 @@ async def _text_records(storage: Storage, od: OpenDota, chat_id: int, args: list
 
 
 TEXT_VIEWS = {"together": _text_together, "compare": _text_compare, "records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
-              "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero}
+              "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_achievements}
 
 
 async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
@@ -915,13 +922,22 @@ async def edit_graph(
 
 
 async def do_achievements(message: Message, storage: Storage, name) -> None:
-    rows = await asyncio.to_thread(list_achievements, storage, message.chat.id, int(time.time()), name)
-    if not rows:
+    """Достижения картинкой (под ней «📝 Текстом»); не вышло — текстом."""
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await achievements_board(storage, message.chat.id, name)
+    except Exception:
+        log.exception("Ошибка сборки достижений для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board is None:
+        await _delete(status)
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
-    tz = storage.get_or_create_chat(message.chat.id).tz
-    for chunk in split_message(render_achievements(rows, tz)):
-        await message.answer(chunk, parse_mode="HTML", reply_markup=nav_menu())
+    player = storage.get_player(message.chat.id, name) if name else None
+    arg = player.account_id if player else None
+    await _reply_image(message, board, with_text_button(nav_menu(), "ach", *([arg] if arg else [])), status)
 
 
 async def do_steam(message: Message, storage: Storage, od: OpenDota, name: str) -> None:

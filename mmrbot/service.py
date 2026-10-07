@@ -16,8 +16,9 @@ from typing import Optional
 from mmrbot import avatars, hero_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
 from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
+from mmrbot.achievements_image import MAX_PLAYERS as ACHIEVEMENTS_LIMIT, render_achievements_image
 from mmrbot.card_data import (
-    award_items, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
+    achievements_caption, achievements_players, award_items, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
     summary_rows,
 )
@@ -27,6 +28,7 @@ from mmrbot.together_image import render_together_image
 from mmrbot.health import log_network_error
 from mmrbot.formatting import (
     outage_note,
+    render_achievements,
     render_awards,
     render_party_pulse,
     render_compare_table,
@@ -77,6 +79,7 @@ from mmrbot.tracker import (
     build_mmr_series,
     build_period_awards,
     build_records,
+    list_achievements,
 )
 
 log = logging.getLogger(__name__)
@@ -447,6 +450,34 @@ async def records_board(
         board.png = await _render_png("рекорды", _records_png, period, tiles, data.get("streak"), _plain(note))
         if board.png is not None:
             board.caption = fit_caption(records_caption(data, period) + (f"\n{note}" if note else ""))
+    return board
+
+
+def _achievements_png(players: list, note) -> bytes:
+    """В потоке: аватары (кэш/CDN) + рендер достижений."""
+    avatar_loader = avatars.shared()
+    found = avatar_loader.get_many(p.get("avatar") for p in players[:ACHIEVEMENTS_LIMIT]) if avatar_loader is not None else {}
+    return render_achievements_image(players, found, note)
+
+
+async def achievements_board(
+    storage: Storage, chat_id: int, name: Optional[str] = None, image: Optional[bool] = None,
+) -> Optional[ImageBoard]:
+    """Достижения и антирекорды (по всей пати или одного игрока): текст всегда, картинка — если нарисовалась.
+
+    Считается из БД, сеть не нужна. None — такого игрока нет.
+    """
+    rows = await _build(list_achievements, storage, chat_id, int(time.time()), name)
+    if not rows:
+        return None
+    tz = storage.get_or_create_chat(chat_id).tz
+    board = ImageBoard(render_achievements(rows, tz))
+    if want_image(storage, chat_id, image):
+        avatar_of = {p.display_name: p.steam_avatar for p in storage.list_players(chat_id)}
+        players = achievements_players(rows, avatar_of, tz)
+        board.png = await _render_png("достижения", _achievements_png, players, None)
+        if board.png is not None:
+            board.caption = fit_caption(achievements_caption(players))
     return board
 
 

@@ -426,3 +426,39 @@ def together_caption(result: dict) -> str:
     if duo:
         caption += f"\nлучшая пара: <b>{_esc(duo['pair'][0])} + {_esc(duo['pair'][1])}</b> — {plural_games(duo['games'])}"
     return caption
+
+
+# --- достижения ----------------------------------------------------------------------------------------
+
+def achievements_players(rows: list, avatars: dict, tz: str = "UTC") -> list[dict]:
+    """Игроки для карточки достижений: rows [(имя, {code: (ts, деталь)})], avatars {имя: аватар}.
+
+    Неизвестные коды (убранные из каталога) отбрасываются; порядок — по числу значков, затем по имени.
+    """
+    from mmrbot.achievements import CATALOG
+    players = []
+    for name, earned in rows:
+        items = [{"code": code, "detail": detail, "date": fmt_local(ts, tz, "%d.%m.%Y")}
+                 for code, (ts, detail) in sorted(earned.items(), key=lambda kv: kv[1][0]) if code in CATALOG]
+        players.append({"name": name, "avatar": avatars.get(name), "items": items})
+    players.sort(key=lambda p: (-len(p["items"]), p["name"].lower()))
+    return players
+
+
+def achievements_caption(players: list[dict]) -> str:
+    """Короткая подпись к фото: сколько значков у пати и кто впереди."""
+    from mmrbot.achievements import CATALOG
+    head = "🏅 <b>Достижения</b>"
+    counts = [(p["name"], sum(1 for i in p["items"] if not CATALOG[i["code"]].anti),
+               sum(1 for i in p["items"] if CATALOG[i["code"]].anti)) for p in players]
+    good = sum(c[1] for c in counts)
+    anti = sum(c[2] for c in counts)
+    if not good and not anti:
+        return head + " · пока ни у кого нет"
+    line = f"{head}\nвсего {good} достижений"
+    if anti:
+        line += f" и {anti} антирекордов"
+    top = max(counts, key=lambda c: c[1])
+    if top[1]:
+        line += f" · больше всех у <b>{_esc(top[0])}</b> — {top[1]}"
+    return line

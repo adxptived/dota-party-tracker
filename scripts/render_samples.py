@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from mmrbot.achievements_image import render_achievements_image  # noqa: E402
 from mmrbot.alert_image import render_alert_image  # noqa: E402
 from mmrbot.compare_image import render_compare_image  # noqa: E402
 from mmrbot.together_image import render_together_image  # noqa: E402
@@ -132,6 +133,7 @@ def build() -> dict[str, bytes]:
     out.update(sample_heroes(icons, avatars))
     out.update(sample_records(icons))
     out.update(sample_party(avatars))
+    out.update(sample_achievements(avatars))
     return out
 
 
@@ -204,6 +206,22 @@ def sample_heroes(icons: dict, avatars: dict) -> dict[str, bytes]:
         "hero.png": render_hero_image(12, "Phantom Lancer", "за месяц", players, icons, avatars),
         "hero_empty.png": render_hero_image(12, "Phantom Lancer", "за сутки", [], icons),
     }
+
+
+def sample_achievements(avatars: dict) -> dict[str, bytes]:
+    def player(name, codes, **details):
+        return {"name": name, "avatar": "https://avatars.steamstatic.com/a.jpg",
+                "items": [{"code": c, "detail": details.get(c)} for c in codes]}
+
+    full = player("Вася", ["win_streak_5", "win_streak_10", "games_50", "games_100", "games_250", "hero_50", "hero_100",
+                           "kills_20", "deathless", "marathon", "lose_streak_5", "deaths_20"],
+                  win_streak_10="12", games_250="263", hero_100="Phantom Lancer · 118", kills_20="Lion 22/5/10",
+                  deathless="Anti-Mage 9/0/6", marathon="Pudge · 63 мин", lose_streak_5="5", deaths_20="Pudge 3/21/9")
+    mid = player("Петя", ["games_50", "win_streak_5", "hero_50"], hero_50="Lion · 53")
+    out = {"achievements.png": render_achievements_image([full, mid, player("Ира", ["games_50"]), player("Оля", [])],
+                                                          {"https://avatars.steamstatic.com/a.jpg": fake_photo(7)}, "данные обновлены 12:30"),
+           "achievements_empty.png": render_achievements_image([player("Оля", [])])}
+    return out
 
 
 def sample_player() -> dict:

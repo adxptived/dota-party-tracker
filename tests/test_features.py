@@ -351,12 +351,28 @@ def test_settings_toggle_games_and_weekly(store):
         assert cb.message.edited
 
 
-def test_cmd_achievements_lists_players(store):
+def test_cmd_achievements_sends_picture_with_text_button(store):
     p = store.add_player(100, 1, "Вася", None, 0, 0)
     store.add_matches(p.id, [m(i, i * 100) for i in range(1, 7)])
     msg = Msg()
     asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args=None), store))
-    assert "5 побед подряд" in msg.sent[0][0]
+    (photo, kw), = msg.photos
+    assert photo.data[:8] == b"\x89PNG\r\n\x1a\n" and "Достижения" in kw["caption"]
+    data = [b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row]
+    assert "tx:ach" in data
+    text = asyncio.run(botmod._text_achievements(store, object(), 100, []))  # то, что отдаёт «📝 Текстом»
+    assert "5 побед подряд" in text
+    assert "5 побед подряд" in asyncio.run(botmod._text_achievements(store, object(), 100, ["1"]))
+    assert asyncio.run(botmod._text_achievements(store, object(), 100, ["Никто"])) is None
+
+
+def test_cmd_achievements_as_text_when_chat_prefers_text(store):
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    store.add_matches(p.id, [m(i, i * 100) for i in range(1, 7)])
+    store.set_chat_prefer_text(100, True)
+    msg = Msg()
+    asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args=None), store))
+    assert not msg.photos and "5 побед подряд" in msg.sent[0][0]
     msg = Msg()
     asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args="Никто"), store))
     assert "Не нашёл" in msg.sent[0][0]
