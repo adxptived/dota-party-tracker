@@ -1,7 +1,8 @@
 """Inline-клавиатуры бота (чистые билдеры, без обработчиков).
 
 Схема callback_data (до 64 байт): `m:<действие>` — главное меню, `m:c:<категория>` — его подменю; `pp:<вид>:<account_id>` —
-выбор игрока; `x:close` — удалить сообщение; `r:<период>` — рекорды; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом.
+выбор игрока; `x:close` — удалить сообщение; `r:<период>` — рекорды; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом;
+`mt:<match_id>:<account_id|0>` — матч текстом (кнопка под картинкой матча).
 """
 from __future__ import annotations
 
@@ -184,6 +185,17 @@ def player_actions(account_id: int) -> InlineKeyboardMarkup:
         [btn("🎭 Steam", "steam"), btn("🏅 Достижения", "achv")],
         nav_row(),
     ])
+
+
+def match_photo_buttons(match_id: int, focus, text_shown: bool = False) -> InlineKeyboardMarkup:
+    """Под картинкой матча: «Текстом» (`mt:<match_id>:<account_id|0>`), ссылка на Dotabuff, навигация.
+
+    text_shown — текст уже отправлен: кнопку «Текстом» убираем, чтобы не плодить дубли.
+    """
+    row = [InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{match_id}")]
+    if not text_shown:
+        row.insert(0, InlineKeyboardButton(text="📝 Текстом", callback_data=f"mt:{match_id}:{focus or 0}"))
+    return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
 
 
 def list_actions() -> InlineKeyboardMarkup:

@@ -100,6 +100,17 @@ class FakeMessage:
     async def edit_text(self, text, **kwargs):
         self.sent.append((text, kwargs))
 
+    async def answer_photo(self, photo, caption=None, **kwargs):
+        assert photo.data[:8] == b"\x89PNG\r\n\x1a\n"
+        self.sent.append((caption, dict(kwargs, photo=photo)))
+
+    async def edit_reply_markup(self, reply_markup=None, **kwargs):
+        self.markup_edits = getattr(self, "markup_edits", []) + [reply_markup]
+
+    @property
+    def photos(self):
+        return [(t, kw) for t, kw in self.sent if "photo" in kw]
+
     @property
     def texts(self):
         return "\n".join(t for t, _ in self.sent)
@@ -195,37 +206,80 @@ def test_heroes_unknown_name(env):
     assert "Не нашёл" in msg.texts
 
 
+def _text_button(msg, env, stratz=True):
+    """Нажать «📝 Текстом» под картинкой матча → сообщение, куда ушёл текст."""
+    storage, od, sz = env
+    markup = msg.photos[-1][1]["reply_markup"]
+    data = next(b.callback_data for row in markup.inline_keyboard for b in row
+                if (b.callback_data or "").startswith("mt:"))
+    cb = FakeCallback(data)
+    run(botmod.on_callback(cb, storage, od, sz if stratz else None))
+    assert cb.message.markup_edits and not any(  # кнопку «Текстом» под фото убрали — второй раз не жмут
+        (b.callback_data or "").startswith("mt:") for row in cb.message.markup_edits[-1].inline_keyboard for b in row)
+    return cb.message
+
+
 @pytest.mark.parametrize("args", [None, "последний", "@shinoame", "shinoame последний"])
 def test_match_latest(env, args):
     msg = call(botmod.cmd_match, "match", args, env)
     assert_ok(msg)
-    text = msg.texts
-    assert "9100000007" in text and "Phantom Lancer" in text and "13/3/10" in text
-    assert "Radiant" in text and "Dire" in text
+    assert len(msg.photos) == 1  # картинка матча, текстом — по кнопке
+    caption = msg.photos[0][0]
+    assert "9100000007" in caption and "Phantom Lancer" in caption and "13/3/10" in caption
+    text = _text_button(msg, env).texts
+    assert "Radiant" in text and "Dire" in text and "GPM 640" in text
 
 
 def test_match_by_id_any_match_without_stratz_cache(env):
     msg = call(botmod.cmd_match, "match", "9100000005", env)
     assert_ok(msg)
-    assert "Kez" in msg.texts and "3/7/16" in msg.texts
+    assert msg.photos and "Kez" in msg.texts and "3/7/16" in msg.texts
 
 
 def test_match_unknown_id(env):
     msg = call(botmod.cmd_match, "match", "9999999999", env)
-    assert "не найден в Stratz" in msg.texts
+    assert "не найден в Stratz" in msg.texts and not msg.photos
 
 
 def test_match_by_id_for_stranger_works_when_chat_has_no_players(tmp_path):
     storage = Storage(str(tmp_path / "empty.db"))
+    env = (storage, FakeOD(), FakeStratz())
     msg = FakeMessage()
-    run(botmod.cmd_match(msg, cmdobj("match", "9100000006"), storage, FakeOD(), FakeStratz()))
-    assert "Anti-Mage" in msg.texts and "Враг" in msg.texts  # матч чужой пати — всё равно показан
+    run(botmod.cmd_match(msg, cmdobj("match", "9100000006"), *env))
+    assert msg.photos and "9100000006" in msg.texts
+    text = _text_button(msg, env).texts
+    assert "Anti-Mage" in text and "Враг" in text  # матч чужой пати — всё равно показан
 
 
 def test_match_latest_falls_back_to_cache_without_stratz(env):
     msg = call(botmod.cmd_match, "match", None, env, stratz=False)
     assert_ok(msg)
-    assert "Phantom Lancer" in msg.texts and "13/3/10" in msg.texts
+    assert msg.photos and "Phantom Lancer" in msg.texts and "13/3/10" in msg.texts
+    text = _text_button(msg, env, stratz=False).texts
+    assert "Phantom Lancer" in text and "13/3/10" in text and "Stratz" not in text  # текст из кэша БД
+
+
+def test_match_image_failure_falls_back_to_text(env, monkeypatch):
+    import mmrbot.service as service
+
+    def broken(*a, **k):
+        raise RuntimeError("рендер упал")
+
+    monkeypatch.setattr(service, "render_match_image", broken)
+    msg = call(botmod.cmd_match, "match", None, env)
+    assert_ok(msg)
+    assert not msg.photos and "Radiant" in msg.texts and "13/3/10" in msg.texts
+
+
+def test_match_photo_send_failure_falls_back_to_text(env):
+    class NoPhoto(FakeMessage):
+        async def answer_photo(self, *a, **k):
+            raise RuntimeError("Telegram не принял фото")
+
+    storage, od, sz = env
+    msg = NoPhoto()
+    run(botmod.cmd_match(msg, cmdobj("match", None), storage, od, sz))
+    assert "Radiant" in msg.texts and "13/3/10" in msg.texts
 
 
 def test_match_without_stratz_and_id_asks_for_key(env):

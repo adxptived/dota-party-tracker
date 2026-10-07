@@ -10,6 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import ErrorEvent
 
 import mmrbot.bot as botmod
+from mmrbot import hero_icons
 import mmrbot.tracker as tracker
 from mmrbot.access import ChatGateMiddleware
 from mmrbot.bot import router, set_bot_commands
@@ -41,6 +42,7 @@ async def main() -> None:
     tracker.ENRICH_DAYS = config.opendota_enrich_days
     botmod.MAX_PLAYERS = config.max_players
     stratz = Stratz(config.stratz_api_key) if config.stratz_api_key else None
+    hero_icons.setup(str(Path(config.db_path).resolve().parent / "hero_icons"))  # иконки для картинки матча
     steam = Steam(config.steam_api_key) if config.steam_api_key else None
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(link_preview_is_disabled=True))
