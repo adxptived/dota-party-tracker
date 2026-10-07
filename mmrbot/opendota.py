@@ -78,8 +78,11 @@ class OpenDota:
         burst: int = 1,
         background_reserve: Optional[int] = None,
         health: Optional[ProviderHealth] = None,
+        proxy: Optional[str] = None,
     ):
         self.api_key = api_key
+        # Прокси только для OpenDota (в нём может быть пароль — нигде не логируем и не выводим в repr).
+        self._proxies = {"http": proxy, "https": proxy} if proxy else None
         # Предохранитель: недоступность по сети и 429 — одна логика «не ходить в сеть» (команды берут кэш БД).
         self.health = health or ProviderHealth("OpenDota")
         self.refresh_gap = self.REFRESH_GAP if api_key else self.REFRESH_GAP_NO_KEY
@@ -122,6 +125,11 @@ class OpenDota:
             self._last_call = slot + self.min_interval
         if wait > 0:
             time.sleep(wait)
+
+    def _net(self) -> dict:
+        """Аргументы запроса про сеть: proxies — только если задан OPENDOTA_PROXY. Явный аргумент, а не session.proxies:
+        переменные окружения (HTTPS_PROXY) в requests перебивают прокси сессии."""
+        return {"proxies": self._proxies} if self._proxies else {}
 
     def _auth(self) -> dict:
         """Ключ — только в заголовке: URL (а с ним и query-параметры) попадает в тексты ошибок requests и в логи."""
@@ -170,7 +178,7 @@ class OpenDota:
             self._throttle()
             delay = 1.5 * (attempt + 1)
             try:
-                resp = self._session.get(url, params=params, timeout=self.timeout, **self._auth())
+                resp = self._session.get(url, params=params, timeout=self.timeout, **self._auth(), **self._net())
                 self._note_quota(resp)
                 if resp.status_code in _RETRY_STATUSES:
                     last_exc = RuntimeError(f"OpenDota HTTP {resp.status_code}")
@@ -226,7 +234,7 @@ class OpenDota:
         self._throttle()
         try:
             resp = self._session.post(
-                f"{BASE_URL}/players/{account_id}/refresh", timeout=self.timeout, **self._auth()
+                f"{BASE_URL}/players/{account_id}/refresh", timeout=self.timeout, **self._auth(), **self._net()
             )
             self._note_quota(resp)
             if getattr(resp, "status_code", 200) < 500:

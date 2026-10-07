@@ -21,3 +21,22 @@ def test_command_refresh_wait_from_env(monkeypatch):
 def test_command_refresh_wait_garbage_falls_back_to_default(monkeypatch):
     assert _cfg(monkeypatch, COMMAND_REFRESH_WAIT="быстро").command_refresh_wait == 4.0
     assert _cfg(monkeypatch, COMMAND_REFRESH_WAIT="-3").command_refresh_wait == 0.0
+
+
+# --- A6: OPENDOTA_PROXY ------------------------------------------------------------------------
+
+def test_opendota_proxy_default_is_none(monkeypatch):
+    monkeypatch.delenv("OPENDOTA_PROXY", raising=False)
+    assert _cfg(monkeypatch).opendota_proxy is None
+
+
+def test_opendota_proxy_from_env_is_trimmed(monkeypatch):
+    assert _cfg(monkeypatch, OPENDOTA_PROXY="  socks5h://127.0.0.1:1080 ").opendota_proxy == "socks5h://127.0.0.1:1080"
+    assert _cfg(monkeypatch, OPENDOTA_PROXY="   ").opendota_proxy is None
+
+
+def test_opendota_proxy_with_unknown_scheme_fails_without_echoing_the_value(monkeypatch):
+    import pytest
+    with pytest.raises(RuntimeError) as err:
+        _cfg(monkeypatch, OPENDOTA_PROXY="ftp://user:secret@host:1")
+    assert "secret" not in str(err.value) and "OPENDOTA_PROXY" in str(err.value)

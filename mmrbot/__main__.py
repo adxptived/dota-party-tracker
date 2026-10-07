@@ -37,7 +37,7 @@ async def main() -> None:
     )
     od = OpenDota(
         api_key=config.opendota_api_key, min_interval=config.opendota_min_interval, burst=config.opendota_burst,
-        background_reserve=config.opendota_daily_reserve,
+        background_reserve=config.opendota_daily_reserve, proxy=config.opendota_proxy,
     )
     tracker.ENRICH_DAYS = config.opendota_enrich_days
     service.COMMAND_REFRESH_WAIT = config.command_refresh_wait

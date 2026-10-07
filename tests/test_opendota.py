@@ -570,3 +570,60 @@ def test_get_match_player_stats_average_rank_from_players():
     ]}
     od = OpenDota(session=FakeSession(match), min_interval=0)
     assert od.get_match_player_stats(123, 42)["average_rank"] == 80
+
+
+# --- A6: OPENDOTA_PROXY ------------------------------------------------------------------------
+
+class ProxySession:
+    """Фейковая сессия, принимающая proxies: запоминает, что передали в get/post."""
+
+    def __init__(self):
+        self.get_kwargs, self.post_kwargs = [], []
+
+    def get(self, url, params=None, timeout=None, headers=None, proxies=None):
+        self.get_kwargs.append(proxies)
+        return FakeResp([])
+
+    def post(self, url, timeout=None, headers=None, proxies=None):
+        self.post_kwargs.append(proxies)
+        return FakeResp({})
+
+
+def test_proxy_is_passed_to_get_and_post():
+    session = ProxySession()
+    od = OpenDota(session=session, min_interval=0, proxy="socks5h://user:secret@127.0.0.1:1080")
+    od.get_heroes()
+    od.refresh(42)
+    expected = {"http": "socks5h://user:secret@127.0.0.1:1080", "https": "socks5h://user:secret@127.0.0.1:1080"}
+    assert session.get_kwargs == [expected] and session.post_kwargs == [expected]
+
+
+def test_no_proxy_means_no_proxies_argument():
+    session = FakeSession([])  # его get/post не принимают proxies: передай мы его — TypeError
+    od = OpenDota(session=session, min_interval=0)
+    od.get_heroes()
+    od.refresh(42)
+    assert session.calls and session.post_calls
+
+
+def test_proxy_credentials_never_reach_logs(caplog):
+    import logging
+
+    import requests
+
+    class Broken(ProxySession):
+        def get(self, url, params=None, timeout=None, headers=None, proxies=None):
+            raise requests.ConnectionError(f"Cannot connect to proxy {proxies['https']}")
+
+    od = OpenDota(session=Broken(), min_interval=0, proxy="http://user:secret@10.0.0.1:3128")
+    with caplog.at_level(logging.DEBUG):
+        try:
+            od.get_heroes()
+        except requests.ConnectionError:
+            pass
+    assert "secret" not in caplog.text and "user:" not in caplog.text
+
+
+def test_proxy_repr_of_client_does_not_expose_password():
+    od = OpenDota(session=ProxySession(), min_interval=0, proxy="http://user:secret@10.0.0.1:3128")
+    assert "secret" not in repr(od) and "secret" not in str(od)
