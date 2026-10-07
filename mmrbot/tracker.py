@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import statistics
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ PROFILE_TTL = 6 * 3600  # сек: ранг без новых игр перечи
 DEEP_SYNC_SEC = 6 * 3600  # сек: раз в столько сверяем историю глубоко (200 матчей), между — лёгкий список
 REFRESH_WORKERS = 4  # игроков обновляем параллельно (частоту запросов держит троттлинг клиента)
 REFRESH_COOLDOWN = 180  # сек: не ходить в OpenDota, если игрок обновлён недавно (скорость /stats)
+SINGLE_FLIGHT_WAIT = 30.0  # сек: столько присоединившийся вызов ждёт чужое обновление того же игрока
 
 
 class OpenDotaClient(Protocol):
@@ -562,7 +564,54 @@ def _fetch_matches(storage: Storage, client: OpenDotaClient, player: Player, now
     return raw, True
 
 
+class _Flight:
+    """Идущее обновление игрока: присоединившиеся вызовы ждут его результат вместо своих запросов."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result = 0
+        self.error: Optional[BaseException] = None
+
+
+_flights: dict[tuple, _Flight] = {}
+_flights_lock = threading.Lock()
+
+
 def refresh_player(
+    storage: Storage, client: OpenDotaClient, player: Player, now: int,
+    stratz: Optional[StratzClient] = None, enrich_cap: int = ENRICH_CAP, fast: bool = False,
+) -> int:
+    """Подтянуть ранкед-историю и текущий ранг. Вернуть число новых матчей.
+
+    Single-flight: один аккаунт обновляется одним вызовом за раз (опрос игр, команда, тот же игрок в двух
+    чатах). Второй вызов не идёт в сеть — ждёт первый не дольше SINGLE_FLIGHT_WAIT и получает его результат
+    (или его ошибку); не дождался — берёт БД (0 новых). Сам вызов — _refresh_player_impl.
+    """
+    key = (storage.db_path, player.account_id)
+    with _flights_lock:
+        flight = _flights.get(key)
+        owner = flight is None
+        if owner:
+            flight = _flights[key] = _Flight()
+    if not owner:
+        if not flight.done.wait(SINGLE_FLIGHT_WAIT):
+            return 0
+        if flight.error is not None:
+            raise flight.error
+        return flight.result
+    try:
+        flight.result = _refresh_player_impl(storage, client, player, now, stratz, enrich_cap, fast)
+        return flight.result
+    except BaseException as exc:
+        flight.error = exc
+        raise
+    finally:
+        with _flights_lock:
+            _flights.pop(key, None)
+        flight.done.set()
+
+
+def _refresh_player_impl(
     storage: Storage, client: OpenDotaClient, player: Player, now: int,
     stratz: Optional[StratzClient] = None, enrich_cap: int = ENRICH_CAP, fast: bool = False,
 ) -> int:

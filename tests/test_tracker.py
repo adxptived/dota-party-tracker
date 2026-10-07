@@ -1295,3 +1295,106 @@ def test_stratz_network_failure_in_enrichment_is_one_line(store, caplog):
         _enrich_from_stratz(store, DownStratz(), player, 2000)
     records = _tracker_records(caplog)
     assert [r.levelno for r in records] == [logging.WARNING] and records[0].exc_info is None
+
+
+# --- B2: одно обновление игрока за раз (single-flight) -----------------------------------
+
+class _SlowOpenDota(FakeOpenDota):
+    def __init__(self, delay=0.2, **kw):
+        super().__init__(**kw)
+        self.delay = delay
+        self.fail = None
+
+    def get_matches(self, account_id, limit=200):
+        import time as _t
+        _t.sleep(self.delay)
+        if self.fail:
+            self.match_calls += 1  # обращение было, даже если оно упало
+            raise self.fail
+        return super().get_matches(account_id, limit)
+
+
+def _in_threads(*calls):
+    import threading
+    results = [None] * len(calls)
+
+    def runner(i, fn):
+        try:
+            results[i] = ("ok", fn())
+        except Exception as exc:  # noqa: BLE001 — тест собирает исход каждого потока
+            results[i] = ("err", exc)
+
+    threads = [threading.Thread(target=runner, args=(i, fn)) for i, fn in enumerate(calls)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results
+
+
+def test_concurrent_refreshes_of_same_player_hit_the_client_once(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(matches=[od_match(100, 1000), od_match(101, 1100)])
+    results = _in_threads(*[lambda: refresh_player(store, client, player, 2000, fast=True)] * 3)
+    assert client.match_calls == 1                       # лимит OpenDota не тратим на дубли
+    assert [r[0] for r in results] == ["ok"] * 3 and {r[1] for r in results} == {2}  # все получили результат
+
+
+def test_player_in_two_chats_is_refreshed_once(store):
+    """game_watch и команда (или два чата с одним аккаунтом) не обновляют игрока дважды."""
+    first = store.add_player(1, 42, "Вася", None, 0, 0)
+    second = store.add_player(2, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(matches=[od_match(100, 1000)])
+    _in_threads(lambda: refresh_player(store, client, first, 2000, fast=True),
+                lambda: refresh_player(store, client, second, 2000, fast=True))
+    assert client.match_calls == 1 and store.has_matches(first.id)
+
+
+def test_sequential_refreshes_both_go_to_the_network(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(delay=0, matches=[od_match(100, 1000)])
+    refresh_player(store, client, player, 2000, fast=True)
+    refresh_player(store, client, player, 2001, fast=True)
+    assert client.match_calls == 2                       # реестр очищается: следующий опрос — снова в сеть
+
+
+def test_different_players_refresh_in_parallel(store):
+    import time as _t
+    a = store.add_player(1, 11, "А", None, 0, 0)
+    b = store.add_player(1, 22, "Б", None, 0, 0)
+    client = _SlowOpenDota(delay=0.3, matches=[od_match(100, 1000)])
+    started = _t.monotonic()
+    _in_threads(lambda: refresh_player(store, client, a, 2000, fast=True),
+                lambda: refresh_player(store, client, b, 2000, fast=True))
+    assert client.match_calls == 2 and _t.monotonic() - started < 0.55
+
+
+def test_failed_refresh_error_reaches_joined_callers_and_registry_is_released(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(matches=[od_match(100, 1000)])
+    client.fail = RuntimeError("boom")
+    results = _in_threads(*[lambda: refresh_player(store, client, player, 2000, fast=True)] * 2)
+    assert client.match_calls == 1 and [r[0] for r in results] == ["err", "err"]
+    client.fail = None
+    assert refresh_player(store, client, player, 2001, fast=True) == 1   # после сбоя реестр свободен
+
+
+def test_join_wait_is_bounded(store, monkeypatch):
+    """Ждать чужое обновление бесконечно нельзя: по таймауту присоединившийся берёт БД (0 новых)."""
+    import mmrbot.tracker as tr
+    monkeypatch.setattr(tr, "SINGLE_FLIGHT_WAIT", 0.05)
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(delay=0.4, matches=[od_match(100, 1000)])
+    import time as _t
+    started = {}
+
+    def joiner():
+        _t.sleep(0.05)
+        started["t"] = _t.monotonic()
+        value = refresh_player(store, client, player, 2000, fast=True)
+        started["took"] = _t.monotonic() - started["t"]
+        return value
+
+    results = _in_threads(lambda: refresh_player(store, client, player, 2000, fast=True), joiner)
+    assert results[0] == ("ok", 1) and results[1] == ("ok", 0)
+    assert started["took"] < 0.3 and client.match_calls == 1
