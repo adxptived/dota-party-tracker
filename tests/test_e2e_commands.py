@@ -358,11 +358,18 @@ def test_every_button_works(env, data):
     assert_ok(cb.message)
 
 
-def test_menu_week_button_shows_period_board(env):
+def test_menu_week_button_shows_period_card_and_text_on_demand(env):
     storage, od, sz = env
     cb = FakeCallback("m:week")
     run(botmod.on_callback(cb, storage, od, sz))
-    assert "Статистика за неделю" in cb.message.texts
+    (caption, kw), = cb.message.photos  # неделя — картинкой, под ней вкладки периодов и «Текстом»
+    assert "За неделю" in caption and "shinoame" in caption
+    data = {b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row}
+    assert {"m:stats", "m:today", "m:week", "m:month", "tx:stats:week"} <= data
+    text_cb = FakeCallback("tx:stats:week")
+    text_cb.message.reply_markup = kw["reply_markup"]
+    run(botmod.on_callback(text_cb, storage, od, sz))
+    assert "Статистика за неделю" in text_cb.message.texts  # прежний текстовый отчёт
 
 
 def test_period_buttons_edit_message_in_place(env):
@@ -419,15 +426,14 @@ class DeletableMessage(FakeMessage):
         self.deleted = True
 
 
-def test_menu_button_edits_source_message_in_place(env):
+def test_menu_button_replaces_menu_message_with_report_card(env):
     storage, od, sz = env
     cb = FakeCallback("m:week")
     cb.message = DeletableMessage()
     run(botmod.on_callback(cb, storage, od, sz))
-    assert not cb.message.deleted and not cb.message.statuses  # одно сообщение: новых не плодим
-    assert len(cb.message.sent) >= 1  # отчёт правит то же сообщение (статус «Считаю…» отложен и в быстром ответе не показывается)
-    markup = cb.message.sent[-1][1]["reply_markup"]  # под отчётом «В меню» / «Закрыть»
-    data = {b.callback_data for row in markup.inline_keyboard for b in row}
+    assert cb.message.deleted and not cb.message.statuses  # меню заменено карточкой, лишних сообщений нет
+    (caption, kw), = cb.message.photos
+    data = {b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row}  # под отчётом «В меню» / «Закрыть»
     assert {"m:menu", "x:close"} <= data and {"m:stats", "m:today", "m:week", "m:month"} <= data  # + вкладки периодов
 
 

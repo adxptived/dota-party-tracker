@@ -8,13 +8,18 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import time
 import weakref
 from typing import Optional
 
 from mmrbot import avatars, hero_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
-from mmrbot.boards import CAPTION_LIMIT, ImageBoard, MatchBoard, build_png
+from mmrbot.boards import CAPTION_LIMIT, ImageBoard, MatchBoard, build_png, fit_caption
+from mmrbot.card_data import (
+    award_items, leader_caption, party_tiles, period_caption, period_rows, record_items, summary_rows,
+)
+from mmrbot.cards import ACCENT
 from mmrbot.health import log_network_error
 from mmrbot.formatting import (
     outage_note,
@@ -42,7 +47,9 @@ from mmrbot.charts import _games_word as games_word, render_mmr_chart, series_st
 from mmrbot.heroes import find_hero
 from mmrbot.match_image import render_match_image
 from mmrbot.opendota import OpenDota
+from mmrbot.ranks import rank_label
 from mmrbot.stats import period_since
+from mmrbot.stats_image import render_stats_image
 from mmrbot.storage import Storage
 from mmrbot.tracker import (
     FRESH_ENOUGH,
@@ -202,6 +209,36 @@ def _with_stale(storage: Storage, chat_id: int, text: str, od=None) -> str:
     return f"{text}\n\n{note}" if note else text
 
 
+async def _stats_parts(
+    storage: Storage, od: OpenDota, chat_id: int, today_only: bool, refresh: bool, stratz, awards_period: str,
+) -> dict:
+    """Данные рейтинга: сводки игроков, неделя, рекорды и отличия + собранный из них текст (без пометки об устаревании)."""
+    summaries = await gather_summaries(storage, od, chat_id, refresh, stratz, complete=awards_period == "day")
+    text = render_leaderboard(summaries, today_only=today_only)
+    parts = {"summaries": summaries, "week_rows": [], "week_records": {}, "awards": []}
+    if not today_only:
+        since = int(time.time()) - 7 * 86_400
+        week_rows = await _build(build_period_leaderboard, storage, chat_id, since)
+        week_records = await _build(build_records, storage, chat_id, since)
+        day_rows = None
+        if awards_period == "day":
+            day_rows = await _build(build_period_leaderboard, storage, chat_id, int(time.time()) - 86_400)
+        text += "\n\n" + render_party_pulse(summaries, week_rows, week_records, day_rows)
+        awards = []
+        if len(summaries) >= 2:  # «отличия» — соревнование между игроками: с одним участником смысла нет
+            day = awards_period == "day"
+            awards_since = int(time.time()) - (86_400 if day else 7 * 86_400)
+            awards = await _build(build_period_awards, storage, chat_id, awards_since, 2 if day else 3)
+            if not day:  # «Лидер недели» в «Пульсе» уже называет того, кто поднялся больше всех
+                awards = [a for a in awards if a["key"] != "climb"]
+            block = render_awards(awards, "за сутки" if day else "за неделю")
+            if block:
+                text += "\n\n" + block
+        parts.update(week_rows=week_rows, week_records=week_records, awards=awards)
+    parts["text"] = text
+    return parts
+
+
 async def render_board(
     storage: Storage,
     od: OpenDota,
@@ -212,26 +249,66 @@ async def render_board(
     awards_period: str = "week",
 ) -> str:
     """Рейтинг + «Пульс пати» + отличия за awards_period (week — для /stats, day — для ежедневной сводки)."""
-    summaries = await gather_summaries(storage, od, chat_id, refresh, stratz, complete=awards_period == "day")
-    text = render_leaderboard(summaries, today_only=today_only)
-    if not today_only:
-        since = int(time.time()) - 7 * 86_400
-        week_rows = await _build(build_period_leaderboard, storage, chat_id, since)
-        week_records = await _build(build_records, storage, chat_id, since)
-        day_rows = None
-        if awards_period == "day":
-            day_rows = await _build(build_period_leaderboard, storage, chat_id, int(time.time()) - 86_400)
-        text += "\n\n" + render_party_pulse(summaries, week_rows, week_records, day_rows)
-        if len(summaries) >= 2:  # «отличия» — соревнование между игроками: с одним участником смысла нет
-            day = awards_period == "day"
-            awards_since = int(time.time()) - (86_400 if day else 7 * 86_400)
-            awards = await _build(build_period_awards, storage, chat_id, awards_since, 2 if day else 3)
-            if not day:  # «Лидер недели» в «Пульсе» уже называет того, кто поднялся больше всех
-                awards = [a for a in awards if a["key"] != "climb"]
-            block = render_awards(awards, "за сутки" if day else "за неделю")
-            if block:
-                text += "\n\n" + block
+    text = (await _stats_parts(storage, od, chat_id, today_only, refresh, stratz, awards_period))["text"]
     return _with_stale(storage, chat_id, text, od) if refresh else text
+
+
+def _stale_line(storage: Storage, chat_id: int, od) -> str:
+    """Только строка-пометка («OpenDota недоступен с … — показаны данные на …») — для подписи к картинке."""
+    text = _with_stale(storage, chat_id, "", od)
+    return text.strip()
+
+
+def _stats_png(title, subtitle, badge, rows, tiles, records, awards, note) -> bytes:
+    """В потоке: иконки героев и аватары (кэш/CDN) + рендер таблицы рейтинга."""
+    icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
+    hero_ids = [r.get("hero_id") for r in rows] + [r.get("hero_id") for r in records]
+    icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
+    found = avatar_loader.get_many(r.get("avatar") for r in rows) if avatar_loader is not None else {}
+    return render_stats_image(title, subtitle, badge, rows, tiles, records, awards, note, icons, found)
+
+
+STATS_MODES = {"stats": ("Рейтинг", "игры — с начала отслеживания, ±MMR — оценка от стартового MMR", ("ВСЁ ВРЕМЯ", ACCENT)),
+               "today": ("Сегодня", "оценка MMR: старт ± шаг за игру", ("СЕГОДНЯ", ACCENT)),
+               "week": ("Неделя", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", ACCENT)),
+               "month": ("Месяц", "оценка ±MMR за 30 дней", ("МЕСЯЦ", ACCENT))}
+
+
+async def stats_board(
+    storage: Storage, od: OpenDota, chat_id: int, mode: str = "stats", stratz=None, image: bool = True,
+) -> ImageBoard:
+    """Рейтинг пати (mode: stats | today | week | month): текст всегда, картинка с короткой подписью — если нарисовалась.
+
+    Тот же отчёт, что и текстовые render_board / render_period_board: данные собираются один раз.
+    """
+    title, subtitle, badge = STATS_MODES[mode]
+    if mode in ("stats", "today"):
+        parts = await _stats_parts(storage, od, chat_id, mode == "today", True, stratz, "week")
+        summaries = parts["summaries"]
+        board = ImageBoard(_with_stale(storage, chat_id, parts["text"], od))
+        rows = summary_rows(summaries, today=mode == "today")
+        tiles = party_tiles(summaries, parts["week_rows"]) if mode == "stats" else []
+        records = record_items(parts["week_records"]) if mode == "stats" else []
+        awards = award_items(parts["awards"]) if mode == "stats" else []
+        caption = leader_caption(summaries, parts["week_rows"], mode)
+    else:
+        await refresh_for("period", storage, od, chat_id, stratz)
+        since = period_since(mode, int(time.time()))
+        period = await _build(build_period_leaderboard, storage, chat_id, since)
+        board = ImageBoard(_with_stale(storage, chat_id, render_period_leaderboard(period, mode), od))
+        info = {p.display_name: {"avatar": p.steam_avatar, "rank_tier": p.last_rank_tier,
+                                 "rank_text": rank_label(p.last_rank_tier, p.last_leaderboard_rank)}
+                for p in storage.list_players(chat_id)}
+        rows, tiles, records, awards = period_rows(period, info), [], [], []
+        caption = period_caption(period, mode)
+    if image and rows:
+        note = _stale_line(storage, chat_id, od)
+        plain_note = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
+        board.png = await asyncio.to_thread(
+            build_png, "рейтинг", lambda: _stats_png(title, subtitle, badge, rows, tiles, records, awards, plain_note))
+        if board.png is not None:
+            board.caption = fit_caption(caption + (f"\n{note}" if note else ""))
+    return board
 
 
 async def render_period_board(

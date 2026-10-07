@@ -20,11 +20,12 @@ from mmrbot.formatting import render_achievements, render_player_list, render_se
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
-    render_board,
+    STATS_MODES,
+    stats_board,
     render_compare_board,
     render_hero_board,
     render_graph_board,
@@ -32,7 +33,6 @@ from mmrbot.service import (
     render_heroes_board,
     match_board,
     render_match_board,
-    render_period_board,
     render_player_board,
     render_player_heroes_board,
     render_roles_board,
@@ -217,9 +217,10 @@ async def _progress(message: Message, text: str, action: str = "typing") -> Defe
     async def send_action():
         await message.bot.send_chat_action(chat_id, action)
 
-    return DeferredStatus(
-        send_action, lambda: message.answer(text), delete_sent=not isinstance(message, _InPlace)
-    )
+    in_place = isinstance(message, _InPlace)
+    # Под картинкой (кнопка периода на карточке) текстовый статус затёр бы саму карточку — только индикатор действия.
+    over_photo = in_place and bool(getattr(message, "photo", None))
+    return DeferredStatus(send_action, None if over_photo else (lambda: message.answer(text)), delete_sent=not in_place)
 
 
 async def _send_chunks(message: Message, text: str, markup=None) -> None:
@@ -249,12 +250,14 @@ async def _reply_board(message: Message, coro, status=None, markup=None) -> None
     await _send_chunks(message, text, markup or nav_menu())
 
 
-async def _reply_image(message: Message, board: ImageBoard, markup, status=None, edit: bool = False) -> None:
+async def _reply_image(message: Message, board: ImageBoard, markup, status=None, edit: Optional[bool] = None) -> None:
     """Картинка + подпись + кнопки; не собралась или Telegram не принял — тот же отчёт текстом.
 
     edit=True — под сообщением-фото нажата кнопка (период и т.п.): картинка меняется на месте (edit_media);
     не вышло (старое сообщение) — шлём новую и убираем прежнюю.
     """
+    if edit is None:
+        edit = isinstance(message, _InPlace)  # кнопка на сообщении: правим его на месте
     if board.png is not None:
         photo = BufferedInputFile(board.png, filename="card.png")
         try:
@@ -559,22 +562,26 @@ async def _ask_player(message: Message, storage: Storage, kind: str, prompt: str
 # --- действия (общие для команд и кнопок) -------------------------------
 
 async def do_stats(message: Message, storage: Storage, od: OpenDota, stratz=None, today_only: bool = False) -> None:
-    if not await _has_players(message, storage):
-        return
-    status = await _progress(message, WAIT)
-    await _reply_board(
-        message, render_board(storage, od, message.chat.id, today_only=today_only, refresh=True, stratz=stratz), status,
-        stats_tabs("today" if today_only else "stats"),
-    )
+    await _stats_card(message, storage, od, "today" if today_only else "stats", stratz)
 
 
 async def do_period_stats(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None) -> None:
+    await _stats_card(message, storage, od, period, stratz)
+
+
+async def _stats_card(message: Message, storage: Storage, od: OpenDota, mode: str, stratz=None) -> None:
+    """Рейтинг картинкой (stats | today | week | month) с вкладками периодов и «📝 Текстом»; не вышло — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
-    await _reply_board(
-        message, render_period_board(storage, od, message.chat.id, period, stratz), status, stats_tabs(period)
-    )
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await stats_board(storage, od, message.chat.id, mode, stratz)
+    except Exception:
+        log.exception("Ошибка сборки рейтинга для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    await _reply_image(message, board, with_text_button(stats_tabs(mode), "stats", mode), status)
 
 
 async def do_together(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
@@ -664,7 +671,15 @@ async def _text_match(storage: Storage, od: OpenDota, chat_id: int, args: list[s
 
 
 # Текстовые версии карточек для кнопки «📝 Текстом»: вид → корутина (storage, od, chat_id, args, stratz) → текст.
-TEXT_VIEWS = {"match": _text_match}
+async def _text_stats(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:stats:<stats|today|week|month> — тот же рейтинг текстом."""
+    mode = args[0] if args else ""
+    if mode not in STATS_MODES:
+        return None
+    return (await stats_board(storage, od, chat_id, mode, stratz, image=False)).text
+
+
+TEXT_VIEWS = {"match": _text_match, "stats": _text_stats}
 
 
 async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:

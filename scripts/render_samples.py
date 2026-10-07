@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mmrbot.alert_image import render_alert_image  # noqa: E402
 from mmrbot.match_image import render_match_image  # noqa: E402
+from mmrbot.stats_image import render_stats_image  # noqa: E402
 
 NOW = 1_760_000_000
 
@@ -63,6 +64,24 @@ def sample_alert(kind: str = "win") -> dict:
             "shared": {"games": 5, "wins": 3, "losses": 2}, "average_rank": 55}
 
 
+def sample_stats_rows() -> list[dict]:
+    def row(name, mmr, delta, wins, losses, form, hero, rank_tier, rank_text, **extra):
+        data = {"name": name, "avatar": None, "rank_tier": rank_tier, "rank_text": rank_text, "big": f"≈{mmr}",
+                "big_color": "#e8eef5", "sub": f"{'+' if delta >= 0 else '−'}{abs(delta)} за {wins + losses} игр",
+                "sub_color": "#3ddc84" if delta >= 0 else "#ff5c5c", "wins": wins, "losses": losses, "form": form,
+                "hero_id": hero, "hero_note": "×12"}
+        data.update(extra)
+        return data
+    win, lose = True, False
+    return [
+        row("Вася", 5420, 75, 35, 21, [win, win, lose, win, win, win, lose, win, win, win], 12, 55, "Legend 5"),
+        row("Петя", 4975, -25, 20, 21, [lose, win, lose, lose, win, lose, win, lose, lose, win], 1, 43, "Archon 3"),
+        row("Оооочень длинный ник игрока", 6120, 150, 60, 31, [win] * 4 + [lose], 26, 74, "Divine 4"),
+        row("Макс", 3800, 0, 0, 0, [], None, None, "Без ранга", sub=None, big="≈3800"),
+        row("Ира", 7210, 25, 12, 8, [win, lose, win], 35, 80, "Immortal #812", avatar="https://avatars.steamstatic.com/a.jpg"),
+    ]
+
+
 def build() -> dict[str, bytes]:
     match = sample_match()
     out = {
@@ -72,6 +91,29 @@ def build() -> dict[str, bytes]:
         out[f"alert_{kind}.png"] = render_alert_image(
             sample_alert(kind), "Europe/Moscow", icons={12: fake_photo(1, 256), 1: fake_photo(2, 256)},
             avatars={"https://avatars.steamstatic.com/a.jpg": fake_photo(7)})
+    tiles = [
+        {"label": "Сегодня", "value": "4 игры", "sub": "3–1 (75%) · +50", "color": "#3ddc84"},
+        {"label": "За неделю", "value": "18 игр", "sub": "11–7 (61%) · +100", "color": "#e8eef5"},
+        {"label": "Лидер недели", "value": "Вася", "sub": "+75 (9–3)", "color": "#f0b429"},
+        {"label": "Лучшая серия", "value": "6 побед", "sub": "Вася", "color": "#e8eef5"},
+    ]
+    records = [
+        {"label": "Макс. GPM", "value": "812 GPM", "player": "Вася", "hero_id": 12},
+        {"label": "Больше всего убийств", "value": "21 убийство", "player": "Петя", "hero_id": 1},
+        {"label": "Лучший IMP", "value": "IMP +64", "player": "Ира", "hero_id": 35},
+    ]
+    awards = [
+        {"title": "Лидер недели", "player": "Вася", "detail": "+75 за неделю"},
+        {"title": "Больше всех играл", "player": "Оооочень длинный ник игрока", "detail": "31 игра"},
+        {"title": "Камбэк недели", "player": "Ира", "detail": "5 побед подряд"},
+    ]
+    icons = {12: fake_photo(1, 256), 1: fake_photo(2, 256), 26: fake_photo(5, 256)}
+    avatars = {"https://avatars.steamstatic.com/a.jpg": fake_photo(7)}
+    out["stats.png"] = render_stats_image(
+        "Рейтинг", "оценка MMR: старт ± шаг за игру", ("СЕЗОН", "#3987e5"), sample_stats_rows(), tiles, records, awards,
+        "данные обновлены 12:30", icons, avatars)
+    out["stats_today.png"] = render_stats_image("Сегодня", None, None, sample_stats_rows()[:2], tiles[:2], icons=icons)
+    out["stats_empty.png"] = render_stats_image("Рейтинг", None, None, [])
     return out
 
 

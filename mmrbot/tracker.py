@@ -97,6 +97,9 @@ class PlayerSummary:
     avg_last_hits_window: Optional[float] = None
     avg_hero_healing_window: Optional[float] = None
     skill: dict = field(default_factory=dict)
+    rank_tier: Optional[int] = None  # числовой ранг — для нарисованного значка
+    avatar: Optional[str] = None  # адрес аватара Steam (players.steam_avatar)
+    form_long: list = field(default_factory=list)  # последние 10 исходов (True = победа), новые справа
     role_style: str = ""
     lobby_rank: Optional[int] = None
     hero_pool: int = 0
@@ -767,6 +770,9 @@ def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int)
         best_hour=best_hour,
         worst_hour=worst_hour,
         recent_form=stats.recent_form(all_matches, 5),
+        form_long=stats.recent_form(all_matches, 10),
+        rank_tier=player.last_rank_tier,
+        avatar=player.steam_avatar,
         best_game=stats.best_game(all_matches),
         longest_win_streak=stats.longest_win_streak(all_matches),
         avg_perf=avg_perf,

@@ -132,3 +132,19 @@ def test_delete_is_idempotent():
 
     asyncio.run(go())
     assert rec.deleted == 1
+
+
+def test_without_text_factory_only_the_action_is_shown():
+    actions, texts = [], []
+
+    async def go():
+        status = DeferredStatus(lambda: _record(actions, "a"), None, action_after=0.01, text_after=0.03)
+        await asyncio.sleep(0.1)
+        await status.delete()
+
+    asyncio.run(go())
+    assert actions == ["a"] and texts == []
+
+
+async def _record(bucket, item):
+    bucket.append(item)

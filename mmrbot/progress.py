@@ -17,12 +17,14 @@ class DeferredStatus:
     def __init__(
         self,
         send_action: Callable[[], Awaitable],
-        send_text: Callable[[], Awaitable],
+        send_text: Optional[Callable[[], Awaitable]],
         action_after: float = 0.7,
         text_after: float = 2.0,
         delete_sent: bool = True,
     ) -> None:
         """send_action/send_text — корутины-фабрики; send_text возвращает сообщение (с .delete()) или None.
+
+        send_text=None — текстового статуса нет (под картинкой нельзя затирать сообщение): только индикатор действия.
 
         delete_sent=False — статус правит само сообщение-отчёт (кнопка): удалять его нельзя.
         """
@@ -42,6 +44,8 @@ class DeferredStatus:
             await self._send_action()
         except Exception:
             log.debug("sendChatAction не отправился", exc_info=True)
+        if self._send_text is None:
+            return
         await asyncio.sleep(max(self._text_after - self._action_after, 0.0))
         self._sending = True
         try:

@@ -221,3 +221,44 @@ def test_whole_match_button_sends_match_picture(e2e):
     run(botmod.on_callback(cb, storage, od, sz))
     assert len(cb.message.photos) == 1
     run(botmod.on_callback(e2e.FakeCallback("mx:abc"), storage, od, sz))  # мусор в данных — молча игнорируем
+
+
+def test_period_tab_under_a_card_swaps_the_picture_in_place(e2e):
+    import mmrbot.bot as botmod
+    storage, od, sz = _env_for_match(e2e)
+    msg = PhotoMessage(e2e)
+    msg.reply_markup = None
+    cb = e2e.FakeCallback("m:month")
+    cb.message = msg
+    run(botmod.on_callback(cb, storage, od, sz))
+    assert len(msg.media_edits) == 1 and not msg.sent and not msg.deleted  # edit_media, без новых сообщений и «Считаю…»
+    markup = msg.media_edits[0][1]
+    assert {"m:stats", "m:today", "m:week", "m:month"} <= {b.callback_data for b in _flat(markup)}
+
+
+def test_stats_card_failure_falls_back_to_text(e2e, monkeypatch):
+    import mmrbot.bot as botmod
+    from mmrbot import service
+    storage, od, sz = _env_for_match(e2e)
+
+    def boom(*a, **kw):
+        raise RuntimeError("нет шрифта")
+
+    monkeypatch.setattr(service, "render_stats_image", boom)
+    msg = e2e.FakeMessage()
+    run(botmod.cmd_stats(msg, e2e.cmdobj("stats", None), storage, od, sz))
+    assert not msg.photos and "Рейтинг" in msg.texts and "shinoame" in msg.texts
+
+
+def test_stats_command_sends_card_with_tabs_and_text_button(e2e):
+    import mmrbot.bot as botmod
+    storage, od, sz = _env_for_match(e2e)
+    msg = e2e.FakeMessage()
+    run(botmod.cmd_stats(msg, e2e.cmdobj("stats", None), storage, od, sz))
+    (caption, kw), = msg.photos
+    assert "Рейтинг" in caption and "shinoame" in caption
+    data = {b.callback_data for b in _flat(kw["reply_markup"])}
+    assert {"m:stats", "m:today", "m:week", "m:month", "tx:stats:stats", "m:menu"} <= data
+    msg_today = e2e.FakeMessage()
+    run(botmod.cmd_stats(msg_today, e2e.cmdobj("stats", "сегодня"), storage, od, sz))
+    assert "tx:stats:today" in {b.callback_data for b in _flat(msg_today.photos[0][1]["reply_markup"])}
