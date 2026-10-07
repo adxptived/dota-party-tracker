@@ -259,8 +259,28 @@ async def _reply_board(message: Message, coro, status=None, markup=None) -> None
     await _send_chunks(message, text, markup or nav_menu())
 
 
+async def _show_text(message: Message, text: str, markup, edit: bool) -> None:
+    """Текстовый отчёт с кнопками. edit — нажата кнопка вкладки/периода: правим то же сообщение, а не плодим новые;
+    под фото (картинки отключили настройкой) — шлём текст и убираем старую картинку."""
+    if not isinstance(message, _InPlace):  # _InPlace и так правит сообщение на месте
+        photo = bool(getattr(message, "photo", None))
+        if edit and not photo and len(split_message(text)) == 1:
+            try:
+                await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+                return
+            except Exception as exc:
+                if "not modified" in str(exc):
+                    return
+        await _send_chunks(message, text, markup)
+        if edit and photo:
+            await _delete(message)
+        return
+    await _send_chunks(message, text, markup)
+
+
 async def _reply_image(message: Message, board: ImageBoard, markup, status=None, edit: Optional[bool] = None) -> None:
-    """Картинка + подпись + кнопки; не собралась или Telegram не принял — тот же отчёт текстом.
+    """Картинка + подпись + кнопки; не собралась (или в чате выбраны отчёты текстом) или Telegram не принял —
+    тот же отчёт текстом, с теми же вкладками/периодами, но без «📝 Текстом».
 
     edit=True — под сообщением-фото нажата кнопка (период и т.п.): картинка меняется на месте (edit_media);
     не вышло (старое сообщение) — шлём новую и убираем прежнюю.
@@ -288,7 +308,7 @@ async def _reply_image(message: Message, board: ImageBoard, markup, status=None,
         except Exception:
             log.warning("Не удалось отправить картинку — шлём текстом", exc_info=True)
     await _delete(status)
-    await _send_chunks(message, board.text, nav_menu())
+    await _show_text(message, board.text, without_text_button(markup) if markup is not None else nav_menu(), bool(edit))
 
 
 async def _image_report(message: Message, make_board, markup, what: str, edit: Optional[bool] = None) -> None:
@@ -1063,6 +1083,8 @@ async def _on_settings(message: Message, storage: Storage, args: list[str], bot=
             storage.set_chat_notify_weekly(chat_id, not chat.notify_weekly)
         elif what == "digest":
             storage.set_chat_notify_digest(chat_id, not chat.notify_digest)
+        elif what == "images":
+            storage.set_chat_prefer_text(chat_id, not chat.prefer_text)
         elif what == "admins":
             storage.set_chat_admin_only(chat_id, not chat.admin_only)
         elif what == "tags":

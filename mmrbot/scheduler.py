@@ -270,7 +270,7 @@ def setup_scheduler(
                 continue
             for event in events:
                 if event["kind"] == "match":
-                    board = await alert_board(event, chat.tz)
+                    board = await alert_board(event, chat.tz, image=not chat.prefer_text)
                     markup = alert_buttons(event["match_id"])
                 else:
                     board, markup = ImageBoard(render_achievement_alert(event)), None

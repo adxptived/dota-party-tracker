@@ -36,6 +36,7 @@ class Chat:
     notify_digest: bool = True  # ежедневная сводка
     admin_only: bool = True  # в группе настройки и удаление игроков — только админам чата
     active: bool = True  # False — бота убрали из чата: не опрашиваем и не пишем, данные храним
+    prefer_text: bool = False  # отчёты текстом вместо картинок (настройка чата «🖼 Отчёты»)
 
 
 @dataclass
@@ -76,7 +77,8 @@ CREATE TABLE IF NOT EXISTS chats (
     tag_mmr          INTEGER NOT NULL DEFAULT 0,
     notify_digest    INTEGER NOT NULL DEFAULT 1,
     admin_only       INTEGER NOT NULL DEFAULT 1,
-    active           INTEGER NOT NULL DEFAULT 1
+    active           INTEGER NOT NULL DEFAULT 1,
+    prefer_text      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS achievements (
     player_id INTEGER NOT NULL,
@@ -207,6 +209,7 @@ class Storage:
             "notify_digest": "INTEGER NOT NULL DEFAULT 1",
             "admin_only": "INTEGER NOT NULL DEFAULT 1",
             "active": "INTEGER NOT NULL DEFAULT 1",
+            "prefer_text": "INTEGER NOT NULL DEFAULT 0",
         })
         # Старая история — уже «оповещённая»: иначе после обновления бот завалил бы чат старыми играми.
         had_notified = "notified" in {r["name"] for r in conn.execute("PRAGMA table_info(matches)").fetchall()}
@@ -275,10 +278,11 @@ class Storage:
             notify_digest=bool(row["notify_digest"]),
             admin_only=bool(row["admin_only"]),
             active=bool(row["active"]),
+            prefer_text=bool(row["prefer_text"]),
         )
 
     def _set_chat_flag(self, chat_id: int, column: str, enabled: bool) -> None:
-        assert column in {"notify_digest", "admin_only", "active"}
+        assert column in {"notify_digest", "admin_only", "active", "prefer_text"}
         self.get_or_create_chat(chat_id)
         with self._conn() as conn:
             conn.execute(f"UPDATE chats SET {column} = ? WHERE chat_id = ?", (1 if enabled else 0, chat_id))
@@ -288,6 +292,9 @@ class Storage:
 
     def set_chat_admin_only(self, chat_id: int, enabled: bool) -> None:
         self._set_chat_flag(chat_id, "admin_only", enabled)
+
+    def set_chat_prefer_text(self, chat_id: int, enabled: bool) -> None:
+        self._set_chat_flag(chat_id, "prefer_text", enabled)
 
     def set_chat_active(self, chat_id: int, active: bool) -> None:
         """Бота убрали из чата (False) или вернули (True). Строку чата без нужды не создаём."""

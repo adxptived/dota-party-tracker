@@ -85,6 +85,11 @@ TELEGRAM_LIMIT = 4096
 PERIOD_BADGES = {"day": "ЗА СУТКИ", "week": "ЗА НЕДЕЛЮ", "month": "ЗА МЕСЯЦ", "year": "ЗА ГОД", "all": "ВСЁ ВРЕМЯ"}
 
 
+def want_image(storage: Storage, chat_id: int, image: Optional[bool] = None) -> bool:
+    """Рисовать ли картинку: явное True/False главнее, иначе — настройка чата «🖼 Отчёты» (prefer_text)."""
+    return image if image is not None else not storage.get_or_create_chat(chat_id).prefer_text
+
+
 async def _build(fn, *args):
     """Сборка данных из БД в потоке; время идёт в фазу build строки perf."""
     with perf.phase("build"):
@@ -290,7 +295,7 @@ DIGEST_MODE = ("Ежедневная сводка", "итоги дня · оце
 
 
 async def stats_board(
-    storage: Storage, od: OpenDota, chat_id: int, mode: str = "stats", stratz=None, image: bool = True,
+    storage: Storage, od: OpenDota, chat_id: int, mode: str = "stats", stratz=None, image: Optional[bool] = None,
 ) -> ImageBoard:
     """Рейтинг пати (mode: stats | today | week | month; digest — ежедневная сводка): текст всегда, картинка с короткой подписью — если нарисовалась.
 
@@ -318,7 +323,7 @@ async def stats_board(
                 for p in storage.list_players(chat_id)}
         rows, tiles, records, awards = period_rows(period, info), [], [], []
         caption = period_caption(period, mode)
-    if image and rows:
+    if want_image(storage, chat_id, image) and rows:
         note = _stale_line(storage, chat_id, od)
         plain_note = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
         board.png = await asyncio.to_thread(
@@ -391,12 +396,12 @@ def _weekly_png(rows, tiles, records, awards, note) -> bytes:
     return _stats_png("Итоги недели", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", ACCENT), rows, tiles, records, awards, note, "±MMR")
 
 
-async def weekly_board(storage: Storage, chat_id: int, now: int, image: bool = True) -> ImageBoard:
+async def weekly_board(storage: Storage, chat_id: int, now: int, image: Optional[bool] = None) -> ImageBoard:
     """Итоги недели (из кэша БД, сети нет): текст всегда, картинка с короткой подписью — если нарисовалась."""
     report = await _build(build_weekly_report, storage, chat_id, now)
     board = ImageBoard(render_weekly(report))
     played = [r for r in report["rows"] if r["games"] > 0]
-    if image and played:
+    if want_image(storage, chat_id, image) and played:
         info = {p.display_name: {"avatar": p.steam_avatar, "rank_tier": p.last_rank_tier,
                                  "rank_text": rank_label(p.last_rank_tier, p.last_leaderboard_rank)}
                 for p in storage.list_players(chat_id)}
@@ -416,7 +421,7 @@ def _records_png(period: str, tiles: list, streak, note) -> bytes:
 
 
 async def records_board(
-    storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None, image: bool = True,
+    storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None, image: Optional[bool] = None,
 ) -> ImageBoard:
     """Рекорды пати: текст всегда, картинка с короткой подписью — если нарисовалась."""
     await refresh_for("records", storage, od, chat_id, stratz)
@@ -424,7 +429,7 @@ async def records_board(
     data = await _build(build_records, storage, chat_id, since)
     tz = storage.get_or_create_chat(chat_id).tz
     board = ImageBoard(_with_stale(storage, chat_id, render_records(data, period, tz), od))
-    if image:
+    if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         tiles = record_tiles(data, tz)
         board.png = await _render_png("рекорды", _records_png, period, tiles, data.get("streak"), _plain(note))
@@ -446,11 +451,11 @@ def _party_heroes_png(rows: list) -> bytes:
     return render_party_heroes_image(rows, icons, found)
 
 
-async def heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: bool = True) -> ImageBoard:
+async def heroes_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: Optional[bool] = None) -> ImageBoard:
     """Любимые герои пати: текст всегда, картинка с короткой подписью — если нарисовалась."""
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="heroes")
     board = ImageBoard(_with_stale(storage, chat_id, render_heroes(summaries), od))
-    if image and summaries:
+    if want_image(storage, chat_id, image) and summaries:
         rows = party_hero_rows(summaries)
         board.png = await _render_png("любимых героев", _party_heroes_png, rows)
         if board.png is not None:
@@ -470,13 +475,13 @@ def _together_png(summary, duo, players, pairs, note) -> bytes:
     return render_together_image(summary, duo, players, pairs, found, note)
 
 
-async def together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: bool = True) -> ImageBoard:
+async def together_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: Optional[bool] = None) -> ImageBoard:
     """Совместные игры: текст всегда, картинка (плитки и матрица пар) — если нарисовалась."""
     # Сначала обновляем матчи всех игроков, затем считаем совместную статистику.
     await refresh_for("together", storage, od, chat_id, stratz)
     result = await _build(build_together, storage, chat_id)
     board = ImageBoard(_with_stale(storage, chat_id, render_together(result), od))
-    if image:
+    if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         board.png = await _render_png("совместные игры", _together_png, *together_card(result), _plain(note))
         if board.png is not None:
@@ -504,7 +509,7 @@ def _mmr_values(storage: Storage, chat_id: int, player_id: int) -> list[int]:
 
 
 async def player_board(
-    storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None, image: bool = True
+    storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None, image: Optional[bool] = None
 ) -> Optional[ImageBoard]:
     """Карточка игрока: текст всегда, картинка с короткой подписью — если нарисовалась; None — игрока нет."""
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="player")
@@ -517,7 +522,7 @@ async def player_board(
         return None
     standing = standing_line(comparison, summary.display_name)
     board = ImageBoard(_with_stale(storage, chat_id, render_player_card(summary, standing=standing), od))
-    if image:
+    if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         plain = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
         player = storage.get_player_by_account_id(chat_id, summary.account_id)
@@ -543,14 +548,14 @@ def _compare_png(rows: list, note) -> bytes:
     return render_compare_image(rows, found, note)
 
 
-async def compare_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: bool = True) -> ImageBoard:
+async def compare_board(storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: Optional[bool] = None) -> ImageBoard:
     """Сравнение игроков: текст всегда, картинка-таблица с местами — если нарисовалась."""
     summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="compare")
     if not summaries:
         return ImageBoard(NO_PLAYERS)
     comparison = build_chat_comparison(summaries)
     board = ImageBoard(_with_stale(storage, chat_id, render_compare_table(comparison, summaries), od))
-    if image:
+    if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         board.png = await _render_png("сравнение", _compare_png, compare_rows(comparison, summaries), _plain(note))
         if board.png is not None:
@@ -622,7 +627,7 @@ async def _render_png(what: str, fn, *args) -> Optional[bytes]:
 
 
 async def player_heroes_board(
-    storage: Storage, od: OpenDota, chat_id: int, name: str, period: str, stratz=None, image: bool = True,
+    storage: Storage, od: OpenDota, chat_id: int, name: str, period: str, stratz=None, image: Optional[bool] = None,
     kind: str = "heroes",
 ) -> Optional[ImageBoard]:
     """Герои игрока (kind="heroes": герои + позиции) или только позиции (kind="roles"); None — игрока нет."""
@@ -643,7 +648,7 @@ async def player_heroes_board(
         if roles:
             text += "\n\n" + render_roles(player.display_name, roles, period)
     board = ImageBoard(_with_stale(storage, chat_id, text, od))
-    if image:
+    if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         shown = hero_rows(heroes) if kind == "heroes" else []
         title = (f"Герои · {player.display_name}" if kind == "heroes" else f"Позиции · {player.display_name}")
@@ -718,12 +723,13 @@ def _render_match_png(match: dict, tracked: dict, focus, tz: str, icons) -> byte
 
 async def match_board(
     storage: Storage, od: OpenDota, chat_id: int, name: Optional[str], match_id: Optional[int], stratz=None,
-    image: bool = True, icons=None,
+    image: Optional[bool] = None, icons=None,
 ) -> MatchBoard:
     """Карточка матча. С match_id — любой матч (не обязательно игроков пати), через Stratz.
 
     Без match_id — последний матч игрока (или самого свежего в чате). Если Stratz недоступен,
-    для своих игроков показываем карточку из кэша БД. image=True — ещё и картинка (сбой рендера → только текст).
+    для своих игроков показываем карточку из кэша БД. image=True — ещё и картинка (сбой рендера → только текст);
+    None — по настройке чата («🖼 Отчёты»).
     """
     tracked = {p.account_id: p.display_name for p in storage.list_players(chat_id)}
     focus = None
@@ -766,7 +772,7 @@ async def match_board(
         return MatchBoard(STRATZ_OFF)
     else:
         return MatchBoard(f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт).")
-    if image:
+    if want_image(storage, chat_id, image):
         try:
             board.png = await _render(_render_match_png, match, tracked, focus, tz, icons)
             board.caption = render_match_caption(match, tracked, focus, tz)
@@ -804,7 +810,7 @@ def hero_not_found(query: str) -> str:
 
 
 async def hero_board(
-    storage: Storage, od: OpenDota, chat_id: int, query: str, period: str, stratz=None, image: bool = True,
+    storage: Storage, od: OpenDota, chat_id: int, query: str, period: str, stratz=None, image: Optional[bool] = None,
 ) -> HeroBoard:
     """Герой и кто из пати на нём играл: текст всегда, картинка — если нарисовалась. `board.hero_id` — для кнопок."""
     hero_id = find_hero(query)
@@ -814,7 +820,7 @@ async def hero_board(
     since = period_since(period, int(time.time()))
     entries = await _build(build_hero_view, storage, chat_id, hero_id, since)
     board = HeroBoard(_with_stale(storage, chat_id, render_hero_detail(hero_id, period, entries), od), hero_id=hero_id)
-    if image:
+    if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         rows = hero_detail_rows(entries)
         label = {"day": "за сутки", "week": "за неделю", "month": "за месяц", "year": "за год", "all": "всё время"}.get(period, "")
