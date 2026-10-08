@@ -119,6 +119,18 @@ def _signed(value: int) -> str:
     return f"{value:+d}".replace("-", "−") if value else "0"
 
 
+@lru_cache(maxsize=1)
+def _epoch_offset() -> float:
+    import matplotlib.dates as mdates
+    return float(mdates.date2num(datetime(1970, 1, 1)))
+
+
+def date_num(ts: float) -> float:
+    """Unix-время → число matplotlib (дни от эпохи). То же, что date2num(datetime), но без объекта datetime на точку:
+    aware-datetime date2num и так приводит к UTC, часовой пояс остаётся забота оси."""
+    return ts / 86400.0 + _epoch_offset()
+
+
 def warmup() -> None:
     """Прогрев matplotlib (импорт и кэш шрифтов) — вызывается фоном при старте, чтобы первый график был быстрым."""
     try:
@@ -160,7 +172,7 @@ def render_mmr_chart(
         return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz)
 
     def to_x(ts: float) -> float:
-        return ts if by_games else mdates.date2num(to_dt(ts))
+        return ts if by_games else date_num(ts)
 
     if by_games:  # ось X — порядковый номер игры: серии разных игроков сравнимы «игра к игре»
         series = {name: [(i, v) for i, (_, v) in enumerate(pts, 1)] for name, pts in series.items()}
