@@ -55,3 +55,8 @@ Telegram-бот (aiogram 3, Python 3.12, SQLite, APScheduler) для пати Do
 
 - Windows 11, основной шелл PowerShell (Bash тоже есть). Команды префиксуй `rtk` (см. глобальный CLAUDE.md).
 - Запуск: `python -m mmrbot`; Docker: `docker compose up -d --build`.
+
+## VPS
+
+- Боевой сервер, деплой и откат описаны в `docs/vps.md`; управление — `python scripts/vps.py status|deploy|rollback|switch-bot|logs`.
+- Пароль SSH и токены двух ботов — только в `.vps/secrets.env` (в `.gitignore`). Таро-бот на том же сервере (`shepot-*`) не трогать.

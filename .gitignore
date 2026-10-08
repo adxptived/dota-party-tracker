@@ -32,3 +32,6 @@ Thumbs.db
 *.log
 heartbeat
 samples/
+
+# локальные секреты VPS
+.vps/
