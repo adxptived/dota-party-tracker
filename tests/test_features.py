@@ -124,6 +124,8 @@ def test_migration_marks_existing_matches_as_notified(tmp_path):
     p = st.add_player(100, 1, "Вася", None, 0, 0)
     st.add_matches(p.id, [m(1, 100)])
     with sqlite3.connect(path) as conn:  # имитируем БД старой схемы: без колонки notified
+        conn.execute("DROP TRIGGER matches_bump_upd")  # у реальной старой базы триггеров и индекса ещё нет
+        conn.execute("DROP INDEX idx_matches_unnotified")
         conn.execute("ALTER TABLE matches DROP COLUMN notified")
     st2 = Storage(path)  # миграция
     assert st2.get_unnotified_matches(p.id, 0) == []
@@ -349,12 +351,28 @@ def test_settings_toggle_games_and_weekly(store):
         assert cb.message.edited
 
 
-def test_cmd_achievements_lists_players(store):
+def test_cmd_achievements_sends_picture_with_text_button(store):
     p = store.add_player(100, 1, "Вася", None, 0, 0)
     store.add_matches(p.id, [m(i, i * 100) for i in range(1, 7)])
     msg = Msg()
     asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args=None), store))
-    assert "5 побед подряд" in msg.sent[0][0]
+    (photo, kw), = msg.photos
+    assert photo.data[:8] == b"\x89PNG\r\n\x1a\n" and "Достижения" in kw["caption"]
+    data = [b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row]
+    assert "tx:ach" in data
+    text = asyncio.run(botmod._text_achievements(store, object(), 100, []))  # то, что отдаёт «📝 Текстом»
+    assert "5 побед подряд" in text
+    assert "5 побед подряд" in asyncio.run(botmod._text_achievements(store, object(), 100, ["1"]))
+    assert asyncio.run(botmod._text_achievements(store, object(), 100, ["Никто"])) is None
+
+
+def test_cmd_achievements_as_text_when_chat_prefers_text(store):
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    store.add_matches(p.id, [m(i, i * 100) for i in range(1, 7)])
+    store.set_chat_prefer_text(100, True)
+    msg = Msg()
+    asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args=None), store))
+    assert not msg.photos and "5 побед подряд" in msg.sent[0][0]
     msg = Msg()
     asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args="Никто"), store))
     assert "Не нашёл" in msg.sent[0][0]
@@ -512,12 +530,26 @@ def test_cmd_records_and_period_buttons_edit_in_place(store):
     put(store, p, 5, now - 3600, gpm=700)
     msg = Msg()
     asyncio.run(botmod.cmd_records(msg, CommandObject(command="records", args="месяц"), store, FakeOD()))
-    assert any("Рекорды пати за месяц" in t for t, _ in msg.sent)
+    (_, kw), = msg.photos  # рекорды — картинкой, текст по кнопке
+    assert "Рекорды пати" in kw["caption"] and "за месяц" in kw["caption"]
+    data = {b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row}
+    assert {"r:year", "tx:records:month"} <= data
     cb = CB("r:year")
+    cb.message = PhotoMsg()
     asyncio.run(botmod.on_callback(cb, store, FakeOD()))
-    assert "за год" in cb.message.edited[0][0] and not cb.message.sent
-    marked = [b for row in cb.message.edited[0][1]["reply_markup"].inline_keyboard for b in row if b.text.startswith("•")]
+    (media, mkw), = cb.message.media  # период сменился на месте: то же сообщение, новая картинка
+    assert "за год" in media.caption and not cb.message.sent and not cb.message.deleted
+    marked = [b for row in mkw["reply_markup"].inline_keyboard for b in row if b.text.startswith("•")]
     assert marked[0].callback_data == "r:year"
+
+
+def test_records_text_button_gives_text_report(store):
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    put(store, p, 5, now - 3600, gpm=700)
+    cb = CB("tx:records:month")
+    asyncio.run(botmod.on_callback(cb, store, FakeOD()))
+    assert any("Рекорды пати за месяц" in t and "700 GPM" in t for t, _ in cb.message.sent)
 
 
 # --- «Стата пати» вместо «Отличий» -------------------------------------
@@ -746,3 +778,78 @@ def test_long_match_still_notified_when_it_ended_inside_window(tmp_path):
     ])
     got = store.get_unnotified_matches(player.id, now - 3 * 3600)
     assert [m["match_id"] for m in got] == [1]
+
+
+# --- недельная сводка и дайджест картинкой ---------------------------------------------
+
+def _weekly_report_data(store):
+    a, b = _chat_with_two(store)
+    day = 86_400
+    store.add_matches(a.id, [m(1, NOW - day, True, hero=1), m(2, NOW - 2 * day, True, hero=1),
+                             m(3, NOW - 3 * day, False, hero=2)])
+    store.add_matches(b.id, [m(1, NOW - day, True, hero=1), m(4, NOW - 4 * day, False, hero=3)])
+    return build_weekly_report(store, 100, NOW)
+
+
+def test_weekly_card_data_has_tiles_hero_and_caption(store):
+    from mmrbot import card_data as cd
+    report = _weekly_report_data(store)
+    tiles = cd.weekly_tiles(report)
+    assert 3 <= len(tiles) <= 4 and tiles[0]["label"] == "Всего за неделю" and tiles[0]["value"] == "5 игр"
+    assert any(t["label"] == "Лучшая серия побед" and t["value"] == "2 подряд" for t in tiles)
+    (hero,) = cd.weekly_records(report)
+    assert hero["hero_id"] == 1 and hero["value"] == "Anti-Mage" and "3 игры" in hero["player"]
+    caption = cd.weekly_caption(report)
+    assert "Итоги недели" in caption and "5 игр" in caption
+    assert cd.weekly_tiles({"rows": [], "streak": None}) == [] and "не было" in cd.weekly_caption({"rows": []})
+
+
+def test_weekly_board_has_png_and_text_fallback(store, monkeypatch):
+    from mmrbot import service
+    _weekly_report_data(store)
+    board = asyncio.run(service.weekly_board(store, 100, NOW))
+    assert board.png[:8] == b"\x89PNG\r\n\x1a\n" and "Итоги недели" in board.caption and "Итоги недели" in board.text
+    assert asyncio.run(service.weekly_board(store, 100, NOW, image=False)).png is None
+
+    def broken(*a, **k):
+        raise RuntimeError("рендер упал")
+
+    monkeypatch.setattr(service, "render_stats_image", broken)
+    fallback = asyncio.run(service.weekly_board(store, 100, NOW))
+    assert fallback.png is None and "Итоги недели" in fallback.text
+
+
+def test_weekly_board_for_quiet_week_is_text_only(store):
+    from mmrbot import service
+    store.add_player(100, 1, "Вася", None, 0, 0)
+    board = asyncio.run(service.weekly_board(store, 100, NOW))
+    assert board.png is None and "не было" in board.text
+
+
+class _PhotoBot:
+    def __init__(self):
+        self.photos, self.messages = [], []
+
+    async def send_photo(self, chat_id, photo, caption=None, **kw):
+        self.photos.append((chat_id, caption))
+
+    async def send_message(self, chat_id, text, **kw):
+        self.messages.append((chat_id, text))
+
+
+def test_send_board_sends_weekly_card_as_photo(store):
+    from mmrbot import scheduler as sched, service
+    _weekly_report_data(store)
+    board = asyncio.run(service.weekly_board(store, 100, NOW))
+    bot = _PhotoBot()
+    asyncio.run(sched.send_board(bot, 100, board))
+    assert bot.photos and "Итоги недели" in bot.photos[0][1] and not bot.messages
+
+
+def test_send_board_splits_long_text_without_picture():
+    from mmrbot import scheduler as sched
+    from mmrbot.boards import ImageBoard
+    bot = _PhotoBot()
+    asyncio.run(sched.send_board(bot, 1, ImageBoard("строка\n" * 1500)))
+    assert len(bot.messages) >= 2 and not bot.photos
+    assert all(len(text) <= 4096 for _, text in bot.messages)

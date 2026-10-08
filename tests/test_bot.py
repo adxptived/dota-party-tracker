@@ -26,7 +26,7 @@ def test_cmd_stats_handles_render_error_gracefully(monkeypatch):
     async def boom(*args, **kwargs):
         raise RuntimeError("OpenDota down")
 
-    monkeypatch.setattr(botmod, "render_board", boom)
+    monkeypatch.setattr(botmod, "stats_board", boom)
     msg = FakeMessage()
     asyncio.run(botmod.cmd_stats(msg, CommandObject(command="stats"), FakeStorage(), object()))
     # хендлер не должен падать; пользователь получает понятное сообщение об ошибке
@@ -37,7 +37,7 @@ def test_cmd_today_handles_render_error_gracefully(monkeypatch):
     async def boom(*args, **kwargs):
         raise RuntimeError("OpenDota down")
 
-    monkeypatch.setattr(botmod, "render_board", boom)
+    monkeypatch.setattr(botmod, "stats_board", boom)
     msg = FakeMessage()
     asyncio.run(botmod.cmd_stats(msg, CommandObject(command="today"), FakeStorage(), object()))
     assert any(("не получилось" in t.lower()) or ("ошибка" in t.lower()) for t in msg.sent)

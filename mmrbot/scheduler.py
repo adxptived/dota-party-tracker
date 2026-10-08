@@ -9,30 +9,34 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from functools import partial
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pytz
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
+from aiogram.types import BufferedInputFile
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from mmrbot.boards import ImageBoard
+from mmrbot.delivery import send_with_retry
+from mmrbot.health import log_network_error, provider_down
+from mmrbot.keyboards import alert_buttons
 from mmrbot.opendota import OpenDota
 from mmrbot.backup import backup_db
 from mmrbot.formatting import (
     render_achievement_alert,
-    render_game_alert,
     render_start_alert,
     render_steam_change,
-    render_weekly,
 )
-from mmrbot.service import _chat_lock, render_board, split_message
+from mmrbot.status import write_heartbeat
+from mmrbot.service import _chat_lock, alert_board, refresh_only, split_message, stats_board, warm_chat, weekly_board
 from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
 from mmrbot.tracker import (
     backfill_opendota,
     backfill_stratz,
-    build_weekly_report,
     detect_new_games,
     detect_presence,
     detect_steam_changes,
@@ -40,6 +44,25 @@ from mmrbot.tracker import (
 )
 
 log = logging.getLogger(__name__)
+
+
+async def send_board(bot: Bot, chat_id: int, board: ImageBoard, markup=None) -> None:
+    """Отчёт в чат: фото с подписью; нет картинки или Telegram её не принял — тот же отчёт текстом.
+
+    Ошибки доступа к чату и сети летят наверх — решает вызывающий код (повтор в следующем опросе и т. п.).
+    """
+    if board.png is not None:
+        try:
+            photo = BufferedInputFile(board.png, filename="card.png")
+            await send_with_retry(partial(bot.send_photo, chat_id, photo, caption=board.caption, parse_mode="HTML",
+                                          reply_markup=markup))
+            return
+        except TelegramBadRequest:  # фото не принято (формат, размер, подпись) — текстом; «чат не найден» повторится и уйдёт наверх
+            log.warning("Telegram не принял картинку для чата %s — шлём текстом", chat_id, exc_info=True)
+    chunks = split_message(board.text)
+    for i, chunk in enumerate(chunks):  # без картинки длинный отчёт (много игроков) идёт несколькими сообщениями
+        last = markup if i == len(chunks) - 1 else None
+        await send_with_retry(partial(bot.send_message, chat_id, chunk, parse_mode="HTML", reply_markup=last))
 
 
 def due_local_date(chat: Chat, now_utc: datetime) -> Optional[str]:
@@ -102,13 +125,13 @@ async def send_digest(bot: Bot, storage: Storage, od: OpenDota, chat: Chat, due_
     сделанными: иначе каждый час повторялось бы полное обновление игроков впустую.
     """
     try:
-        text = await render_board(storage, od, chat.chat_id, today_only=False, refresh=True, stratz=stratz, awards_period="day")
-        last = storage.last_activity(chat.chat_id)  # после обновления — по свежим данным
+        await refresh_only(storage, od, chat.chat_id, stratz)  # сначала данные: тихий день не стоит рисования картинки
+        last = storage.last_activity(chat.chat_id)
         if last is None or time.time() - last > IDLE_DIGEST_SEC:
             storage.set_last_digest_date(chat.chat_id, due_date)  # никто не играл — не шумим
             return
-        for chunk in split_message("📰 <b>Ежедневная сводка</b>\n\n" + text):
-            await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
+        board = await stats_board(storage, od, chat.chat_id, "digest", stratz)
+        await send_board(bot, chat.chat_id, board)
         storage.set_last_digest_date(chat.chat_id, due_date)
     except (TelegramForbiddenError, TelegramMigrateToChat) as exc:
         storage.set_last_digest_date(chat.chat_id, due_date)
@@ -131,10 +154,9 @@ def setup_scheduler(
     keyless = not getattr(od, "api_key", None)
 
     async def heartbeat() -> None:
-        """Отметка «жив» для healthcheck контейнера: файл обновляется, пока крутится цикл событий."""
+        """Отметка «жив» для healthcheck контейнера (mtime файла) + JSON со снимком состояния — тот же, что в /status."""
         try:
-            with open(heartbeat_path, "w", encoding="utf-8") as fh:
-                fh.write(str(int(time.time())))
+            await asyncio.to_thread(write_heartbeat, heartbeat_path, storage, od, stratz)
         except OSError:
             log.debug("Не удалось записать heartbeat %s", heartbeat_path, exc_info=True)
 
@@ -154,41 +176,62 @@ def setup_scheduler(
     async def stratz_backfill() -> None:
         if stratz is None:
             return
+        if provider_down(stratz):
+            log.debug("Stratz недоступен — дозаполнение пропущено до следующего тика")
+            return
         try:
             await asyncio.to_thread(backfill_stratz, storage, stratz)
-        except Exception:
-            log.exception("Фоновое дозаполнение Stratz не удалось")
+        except Exception as exc:
+            log_network_error(log, "Фоновое дозаполнение Stratz не удалось", exc, health=getattr(stratz, "health", None))
 
     async def opendota_backfill() -> None:
+        if provider_down(od):
+            log.debug("OpenDota недоступен — обогащение матчей пропущено до следующего тика")
+            return
         try:
             await asyncio.to_thread(backfill_opendota, storage, od)
-        except Exception:
-            log.exception("Фоновое обогащение матчей OpenDota не удалось")
+        except Exception as exc:
+            log_network_error(log, "Фоновое обогащение матчей OpenDota не удалось", exc, health=getattr(od, "health", None))
+
+    def retry_heroes_in_an_hour() -> None:
+        """OpenDota недоступен — справочник героев догоним через час, а не ждём следующих суток."""
+        scheduler.add_job(
+            heroes_refresh, "date", run_date=datetime.now(timezone.utc) + timedelta(hours=1),
+            id="heroes_retry", replace_existing=True,
+        )
 
     async def heroes_refresh() -> None:
-        """Справочник героев: раз в сутки и вскоре после старта."""
+        """Справочник героев: раз в сутки и вскоре после старта; при недоступном OpenDota — повтор через час."""
+        if provider_down(od):
+            log.debug("OpenDota недоступен — обновление справочника героев перенесено на +1 ч")
+            retry_heroes_in_an_hour()
+            return
         try:
             added = await asyncio.to_thread(refresh_heroes, od)
             if added:
                 log.info("Справочник героев пополнен: +%d", added)
-        except Exception:
-            log.exception("Обновление справочника героев не удалось")
+        except Exception as exc:
+            log_network_error(log, "Обновление справочника героев не удалось", exc, health=getattr(od, "health", None))
+            retry_heroes_in_an_hour()
 
     async def steam_watch() -> None:
         """Оповещения о смене ника/аватарки Steam (профили берём из OpenDota)."""
+        if provider_down(od):
+            log.debug("OpenDota недоступен — проверка Steam-профилей пропущена до следующего тика")
+            return
         try:
             events = await asyncio.to_thread(detect_steam_changes, storage, od)
-        except Exception:
-            log.exception("Проверка смены Steam-профилей не удалась")
+        except Exception as exc:
+            log_network_error(log, "Проверка смены Steam-профилей не удалась", exc, health=getattr(od, "health", None))
             return
         for event in events:
             text = render_steam_change(event["player"], event["changes"])
             avatar = event["profile"].get("avatarfull")
             try:
                 if event["changes"].get("avatar") and avatar:
-                    await bot.send_photo(event["chat_id"], avatar, caption=text, parse_mode="HTML")
+                    await send_with_retry(partial(bot.send_photo, event["chat_id"], avatar, caption=text, parse_mode="HTML"))
                 else:
-                    await bot.send_message(event["chat_id"], text, parse_mode="HTML")
+                    await send_with_retry(partial(bot.send_message, event["chat_id"], text, parse_mode="HTML"))
             except Exception as exc:
                 if not chat_gone(storage, event["chat_id"], exc):
                     log.warning("Не удалось отправить оповещение Steam в чат %s", event["chat_id"], exc_info=True)
@@ -225,14 +268,20 @@ def setup_scheduler(
             try:
                 async with _chat_lock(chat.chat_id):
                     events = await asyncio.to_thread(detect_new_games, storage, od, chat, now, stratz, False)
-            except Exception:
-                log.exception("Проверка новых игр в чате %s не удалась", chat.chat_id)
+            except Exception as exc:
+                log_network_error(log, f"Проверка новых игр в чате {chat.chat_id} не удалась", exc,
+                                  health=getattr(od, "health", None))
                 continue
+            warm = False
             for event in events:
-                text = render_game_alert(event) if event["kind"] == "match" else render_achievement_alert(event)
+                if event["kind"] == "match":
+                    board = await alert_board(event, chat.tz, image=not chat.prefer_text)
+                    markup = alert_buttons(event["match_id"])
+                else:
+                    board, markup = ImageBoard(render_achievement_alert(event)), None
                 delivered = True
                 try:
-                    await bot.send_message(chat.chat_id, text, parse_mode="HTML")
+                    await send_board(bot, chat.chat_id, board, markup)
                 except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
                     # Чат недоступен или сообщение не принято — повтор не поможет, не зацикливаемся.
                     if chat_gone(storage, chat.chat_id, exc):
@@ -243,6 +292,9 @@ def setup_scheduler(
                     log.warning("Не удалось отправить оповещение в чат %s", chat.chat_id, exc_info=True)
                 if delivered:
                     storage.mark_notified_matches(event.get("pending") or [])
+                    warm = warm or event["kind"] == "match"
+            if warm:  # пользователь, открывший /stats после оповещения, получает готовое
+                await warm_chat(storage, od, chat.chat_id, stratz)
 
     async def presence_watch() -> None:
         """Оповещения «зашёл в Dota 2» (Steam Web API); без ключа задача не регистрируется."""
@@ -253,7 +305,8 @@ def setup_scheduler(
             return
         for event in events:
             try:
-                await bot.send_message(event["chat_id"], render_start_alert(event), parse_mode="HTML")
+                start_text = render_start_alert(event)
+                await send_with_retry(partial(bot.send_message, event["chat_id"], start_text, parse_mode="HTML"))
             except Exception as exc:
                 if not chat_gone(storage, event["chat_id"], exc):
                     log.warning("Не удалось отправить оповещение о заходе в Dota в чат %s", event["chat_id"], exc_info=True)
@@ -265,9 +318,8 @@ def setup_scheduler(
             if key is None or not chat.notify_weekly or not storage.list_players(chat.chat_id):
                 continue
             try:
-                report = await asyncio.to_thread(build_weekly_report, storage, chat.chat_id, int(now_utc.timestamp()))
-                for chunk in split_message(render_weekly(report)):
-                    await bot.send_message(chat.chat_id, chunk, parse_mode="HTML")
+                board = await weekly_board(storage, chat.chat_id, int(now_utc.timestamp()))
+                await send_board(bot, chat.chat_id, board)
                 storage.set_last_weekly(chat.chat_id, key)
             except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
                 log.warning("Недельная сводка в чат %s не доставлена — пропускаю неделю", chat.chat_id)

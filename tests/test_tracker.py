@@ -273,6 +273,8 @@ def test_build_together_counts_shared(store):
     result = build_together(store, 100)
     assert result["summary"]["games"] == 1  # общий матч 1
     assert result["summary"]["wins"] == 1
+    assert [p["name"] for p in result["players"]] == ["Alice", "Bob"]
+    assert result["pairs"] == [{"a": 0, "b": 1, "games": 1, "wins": 1}]  # матрица пар для картинки
 
 
 def test_leaderboard_reread_by_account_id_not_name(store):
@@ -1126,3 +1128,275 @@ def test_idle_poll_does_not_spend_reserve_on_old_backlog(store):
     asked.clear()
     refresh_player(store, client, store.get_player(100, "Вася"), now=T0 + 600)
     assert asked == []  # новых игр нет — бэклог подождёт
+
+
+# --- A2: провайдер лежит — в сеть не ходим (команды и фон) -------------------------------
+
+def _down(name="OpenDota"):
+    from mmrbot.health import ProviderHealth
+    health = ProviderHealth(name)
+    health.failure(RuntimeError("down"))
+    return health
+
+
+def _down_od():
+    client = FakeOpenDota(matches=[od_match(500, 5000)])
+    client.health = _down()
+    return client
+
+
+def test_refresh_chat_does_not_touch_client_when_opendota_is_down(store):
+    from mmrbot.tracker import refresh_chat
+    store.add_player(1, 11, "Вася", None, 0, 0)
+    store.add_player(1, 22, "Петя", None, 0, 0)
+    client = _down_od()
+    players = refresh_chat(store, client, 1, 1_000_000)
+    assert {p.display_name for p in players} == {"Вася", "Петя"}  # игроки из БД
+    assert (client.profile_calls, client.match_calls, client.refresh_calls) == (0, 0, 0)
+
+
+def test_refresh_player_skips_opendota_but_still_enriches_from_stratz(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [{**od_match(100, 1000)}])
+    client = _down_od()
+    stratz = FakeStratz({100: {"position": 3, "role": "CORE", "lane": "OFF_LANE", "imp": 7, "party_size": 1}})
+    assert refresh_player(store, client, player, 2000, stratz=stratz) == 0
+    assert (client.profile_calls, client.match_calls, client.refresh_calls) == (0, 0, 0)
+    assert store.get_matches(player.id)[0]["position"] == 3  # Stratz жив — дозаполнение идёт без OpenDota
+    assert store.get_player_by_account_id(1, 42).updated_ts is None  # «обновлён» не ставим — сверки не было
+
+
+def test_stratz_enrichment_is_skipped_when_stratz_is_down(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    od = FakeOpenDota(matches=[od_match(100, 1000)])
+    stratz = FakeStratz({100: {"position": 3}})
+    stratz.health = _down("Stratz")
+    assert refresh_player(store, od, player, 2000, stratz=stratz) == 1  # матчи OpenDota сохранены
+    assert stratz.calls == 0
+    assert store.get_match_ids_without_stratz(player.id, 0, 10) == [100]  # попытка не сожжена
+
+
+def test_background_jobs_do_nothing_when_providers_are_down(store):
+    from mmrbot.tracker import backfill_opendota, backfill_stratz, detect_steam_changes, finish_refresh
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [od_match(1, 1000)])
+
+    class Calls(FakeOpenDota):
+        extra = 0
+
+        def get_match_player_stats(self, match_id, account_id, player_slot=None):
+            self.extra += 1
+            return {}
+
+    client = Calls()
+    client.health = _down()
+    stratz = FakeStratz({1: {"position": 1}})
+    stratz.health = _down("Stratz")
+
+    assert backfill_opendota(store, client, days=0) == 0
+    assert finish_refresh(store, client, 100, days=0) == 0
+    assert detect_steam_changes(store, client) == []
+    assert backfill_stratz(store, stratz) == 0
+    assert (client.profile_calls, client.match_calls, client.refresh_calls, client.extra) == (0, 0, 0, 0)
+    assert stratz.calls == 0
+
+
+def test_detect_new_games_announces_db_matches_without_network_when_opendota_is_down(store):
+    from mmrbot.tracker import detect_new_games
+    now = 1_000_000
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", 5000, 0, 0)
+    store.add_matches(player.id, [{**od_match(7, now - 600), "duration": 1800}])
+    client = _down_od()
+    events = detect_new_games(store, client, store.get_or_create_chat(100), now, mark=False)
+    assert [e["match_id"] for e in events if e["kind"] == "match"] == [7]  # матч уже в БД — оповещение не теряем
+    assert client.match_calls == 0 and client.profile_calls == 0
+
+
+# --- A5: ожидаемые сетевые сбои — одна строка в логе, без трейсбеков ----------------------
+
+class _RaisingOpenDota(FakeOpenDota):
+    def __init__(self, exc):
+        super().__init__()
+        self.exc = exc
+
+    def get_matches(self, account_id, limit=200):
+        raise self.exc
+
+
+def _tracker_records(caplog):
+    return [r for r in caplog.records if r.name == "mmrbot.tracker"]
+
+
+def test_refresh_chat_network_failure_is_one_line_without_traceback(store, caplog):
+    import logging
+
+    import requests
+    from mmrbot.tracker import refresh_chat
+    store.add_player(1, 11, "Вася", None, 0, 0)
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.tracker"):
+        refresh_chat(store, _RaisingOpenDota(requests.exceptions.ConnectTimeout("boom")), 1, 1_000_000)
+    records = _tracker_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.WARNING
+    assert records[0].exc_info is None
+    assert "ConnectTimeout" in records[0].getMessage() and "Traceback" not in caplog.text
+
+
+def test_refresh_chat_unexpected_error_keeps_traceback(store, caplog):
+    import logging
+
+    from mmrbot.tracker import refresh_chat
+    store.add_player(1, 11, "Вася", None, 0, 0)
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.tracker"):
+        refresh_chat(store, _RaisingOpenDota(KeyError("bug")), 1, 1_000_000)
+    records = _tracker_records(caplog)
+    assert len(records) == 1 and records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None  # баг в нашем коде не должен прятаться
+
+
+def test_outage_of_real_client_logs_one_warning_for_the_whole_chat(store, caplog):
+    """Четыре игрока обновляются параллельно, OpenDota лежит: в логе одна строка о падении и одна от трекера."""
+    import logging
+
+    import requests
+    from mmrbot.opendota import OpenDota
+    from mmrbot.tracker import refresh_chat
+
+    class Down:
+        def get(self, *a, **kw):
+            raise requests.exceptions.ConnectTimeout("connect timeout")
+
+        post = get
+
+    for n in range(4):
+        store.add_player(1, 100 + n, f"Игрок{n}", None, 0, 0)
+    od = OpenDota(session=Down(), min_interval=0)
+    with caplog.at_level(logging.DEBUG):
+        refresh_chat(store, od, 1, 1_000_000)
+        refresh_chat(store, od, 1, 1_000_001)  # вторая команда в паузу — вообще без записей уровня WARNING
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert [r.name for r in warnings].count("mmrbot.health") == 1
+    assert [r.name for r in warnings].count("mmrbot.tracker") <= 1
+    assert all(r.exc_info is None for r in warnings) and "Traceback" not in caplog.text
+
+
+def test_stratz_network_failure_in_enrichment_is_one_line(store, caplog):
+    import logging
+
+    import requests
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [od_match(100, 1000)])
+
+    class DownStratz:
+        def get_matches(self, *a, **kw):
+            raise requests.exceptions.ConnectTimeout("boom")
+
+    from mmrbot.tracker import _enrich_from_stratz
+    with caplog.at_level(logging.DEBUG, logger="mmrbot.tracker"):
+        _enrich_from_stratz(store, DownStratz(), player, 2000)
+    records = _tracker_records(caplog)
+    assert [r.levelno for r in records] == [logging.WARNING] and records[0].exc_info is None
+
+
+# --- B2: одно обновление игрока за раз (single-flight) -----------------------------------
+
+class _SlowOpenDota(FakeOpenDota):
+    def __init__(self, delay=0.2, **kw):
+        super().__init__(**kw)
+        self.delay = delay
+        self.fail = None
+
+    def get_matches(self, account_id, limit=200):
+        import time as _t
+        _t.sleep(self.delay)
+        if self.fail:
+            self.match_calls += 1  # обращение было, даже если оно упало
+            raise self.fail
+        return super().get_matches(account_id, limit)
+
+
+def _in_threads(*calls):
+    import threading
+    results = [None] * len(calls)
+
+    def runner(i, fn):
+        try:
+            results[i] = ("ok", fn())
+        except Exception as exc:  # noqa: BLE001 — тест собирает исход каждого потока
+            results[i] = ("err", exc)
+
+    threads = [threading.Thread(target=runner, args=(i, fn)) for i, fn in enumerate(calls)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results
+
+
+def test_concurrent_refreshes_of_same_player_hit_the_client_once(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(matches=[od_match(100, 1000), od_match(101, 1100)])
+    results = _in_threads(*[lambda: refresh_player(store, client, player, 2000, fast=True)] * 3)
+    assert client.match_calls == 1                       # лимит OpenDota не тратим на дубли
+    assert [r[0] for r in results] == ["ok"] * 3 and {r[1] for r in results} == {2}  # все получили результат
+
+
+def test_player_in_two_chats_is_refreshed_once(store):
+    """game_watch и команда (или два чата с одним аккаунтом) не обновляют игрока дважды."""
+    first = store.add_player(1, 42, "Вася", None, 0, 0)
+    second = store.add_player(2, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(matches=[od_match(100, 1000)])
+    _in_threads(lambda: refresh_player(store, client, first, 2000, fast=True),
+                lambda: refresh_player(store, client, second, 2000, fast=True))
+    assert client.match_calls == 1 and store.has_matches(first.id)
+
+
+def test_sequential_refreshes_both_go_to_the_network(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(delay=0, matches=[od_match(100, 1000)])
+    refresh_player(store, client, player, 2000, fast=True)
+    refresh_player(store, client, player, 2001, fast=True)
+    assert client.match_calls == 2                       # реестр очищается: следующий опрос — снова в сеть
+
+
+def test_different_players_refresh_in_parallel(store):
+    import time as _t
+    a = store.add_player(1, 11, "А", None, 0, 0)
+    b = store.add_player(1, 22, "Б", None, 0, 0)
+    client = _SlowOpenDota(delay=0.3, matches=[od_match(100, 1000)])
+    started = _t.monotonic()
+    _in_threads(lambda: refresh_player(store, client, a, 2000, fast=True),
+                lambda: refresh_player(store, client, b, 2000, fast=True))
+    assert client.match_calls == 2 and _t.monotonic() - started < 0.55
+
+
+def test_failed_refresh_error_reaches_joined_callers_and_registry_is_released(store):
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(matches=[od_match(100, 1000)])
+    client.fail = RuntimeError("boom")
+    results = _in_threads(*[lambda: refresh_player(store, client, player, 2000, fast=True)] * 2)
+    assert client.match_calls == 1 and [r[0] for r in results] == ["err", "err"]
+    client.fail = None
+    assert refresh_player(store, client, player, 2001, fast=True) == 1   # после сбоя реестр свободен
+
+
+def test_join_wait_is_bounded(store, monkeypatch):
+    """Ждать чужое обновление бесконечно нельзя: по таймауту присоединившийся берёт БД (0 новых)."""
+    import mmrbot.tracker as tr
+    monkeypatch.setattr(tr, "SINGLE_FLIGHT_WAIT", 0.05)
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    client = _SlowOpenDota(delay=0.4, matches=[od_match(100, 1000)])
+    import time as _t
+    started = {}
+
+    def joiner():
+        _t.sleep(0.05)
+        started["t"] = _t.monotonic()
+        value = refresh_player(store, client, player, 2000, fast=True)
+        started["took"] = _t.monotonic() - started["t"]
+        return value
+
+    results = _in_threads(lambda: refresh_player(store, client, player, 2000, fast=True), joiner)
+    assert results[0] == ("ok", 1) and results[1] == ("ok", 0)
+    assert started["took"] < 0.3 and client.match_calls == 1

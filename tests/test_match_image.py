@@ -2,7 +2,8 @@ import io
 
 from PIL import Image
 
-from mmrbot.match_image import WIDTH_PX, render_match_image
+from mmrbot.cards import WIDTH as WIDTH_PX
+from mmrbot.match_image import render_match_image
 
 
 def _icon(color=(200, 50, 50)) -> bytes:

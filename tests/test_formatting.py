@@ -273,6 +273,15 @@ def test_render_compare_table_orders_by_power():
     assert "🥇" in text and "🥈" in text
 
 
+def test_render_compare_table_survives_metrics_without_enough_games():
+    # перф и GPM посчитаны, но по < 5 играм: в ранжирование они не попадают, а текст не должен падать на отсутствующем месте
+    a = summary(display_name="A", avg_perf=0.8, winrate=0.6, kda_ratio=4.0, avg_gpm_window=500.0, enriched_games=2, detail_games=2)
+    b = summary(display_name="B", avg_perf=0.4, winrate=0.4, kda_ratio=2.0, avg_gpm_window=400.0, enriched_games=2, detail_games=2)
+    text = render_compare_table(build_chat_comparison([a, b]), [a, b])
+    assert "A" in text and "винрейт 60% (#1)" in text and "перф 80" in text and "(#" in text
+    assert "перф 80 (#" not in text and "GPM 500 (#" not in text  # места нет — скобок нет
+
+
 def test_standing_line_shows_ranks():
     comp, _ = _two_player_comparison()
     line = standing_line(comp, "A")
@@ -493,3 +502,56 @@ def test_leaderboard_explains_mmr_period_when_it_differs():
     from mmrbot.formatting import render_leaderboard
     assert "за 3 игры с момента задания MMR" in render_leaderboard([summary(games_total=10, anchor_games=3)])
     assert "с момента задания MMR" not in render_leaderboard([summary(games_total=4, anchor_games=4)])
+
+
+# --- A3: пометка «OpenDota недоступен с … — данные на …» --------------------------------
+
+def _utc(y, m, d, h, mi=0):
+    from datetime import datetime, timezone
+    return int(datetime(y, m, d, h, mi, tzinfo=timezone.utc).timestamp())
+
+
+def _player(updated_ts, name="Вася"):
+    from mmrbot.storage import Player
+    return Player(1, 100, 1, name, None, 0, 0, None, None, updated_ts=updated_ts)
+
+
+def test_outage_note_names_outage_start_and_age_of_data_in_chat_timezone():
+    from mmrbot.formatting import outage_note
+    # 00:34 и 00:30 по Москве (UTC+3) — это 21:34 и 21:30 по UTC предыдущего дня
+    status = {"state": "down", "since": _utc(2026, 10, 7, 21, 34)}
+    now = _utc(2026, 10, 7, 21, 40)
+    note = outage_note(status, [_player(_utc(2026, 10, 7, 21, 30))], now, "Europe/Moscow")
+    assert note == "⚠️ <i>OpenDota недоступен с 00:34 — показаны данные на 00:30.</i>"
+
+
+def test_outage_note_is_empty_when_opendota_is_alive():
+    from mmrbot.formatting import outage_note
+    now = _utc(2026, 10, 8, 12)
+    assert outage_note({"state": "up", "since": None}, [_player(now - 30)], now, "UTC") == ""
+    assert outage_note(None, [_player(now - 30)], now, "UTC") == ""  # у клиента нет предохранителя (фейк в тестах)
+
+
+def test_outage_note_shows_date_when_not_today():
+    from mmrbot.formatting import outage_note
+    now = _utc(2026, 10, 8, 12)
+    status = {"state": "down", "since": _utc(2026, 10, 6, 9, 15)}
+    note = outage_note(status, [_player(_utc(2026, 10, 6, 9, 10))], now, "UTC")
+    assert "с 06.10 09:15" in note and "на 06.10 09:10" in note
+
+
+def test_outage_note_uses_freshest_player_and_handles_never_loaded():
+    from mmrbot.formatting import outage_note
+    now = _utc(2026, 10, 8, 12)
+    status = {"state": "probing", "since": _utc(2026, 10, 8, 11, 50)}
+    note = outage_note(status, [_player(_utc(2026, 10, 8, 11, 0), "А"), _player(_utc(2026, 10, 8, 11, 45), "Б")], now, "UTC")
+    assert "на 11:45" in note and "11:00" not in note
+    assert "данные ещё не загружены" in outage_note(status, [_player(None)], now, "UTC")
+    assert "данные ещё не загружены" in outage_note(status, [], now, "UTC")
+
+
+def test_outage_note_for_rate_limit_says_so():
+    from mmrbot.formatting import outage_note
+    now = _utc(2026, 10, 8, 12)
+    note = outage_note({"state": "limited", "since": _utc(2026, 10, 8, 11, 50)}, [_player(now - 600)], now, "UTC")
+    assert "ограничил запросы" in note and "недоступен" not in note

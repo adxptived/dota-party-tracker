@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from typing import Optional
 
 import requests
 
+from .health import ProviderHealth, ProviderUnavailable
+
 URL = "https://api.stratz.com/graphql"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
+_BLOCK_NO_HEADER = 30.0  # 429 на всех попытках — короткая пауза, чтобы не долбить сервис в соседних командах
 
 _PLAYER_FIELDS = """
     lobbyType
@@ -65,6 +69,11 @@ def _party_size(rows: list, me: dict) -> Optional[int]:
 
 
 class Stratz:
+    MATCH_CACHE_SIZE = 64  # сколько последних полных матчей держим в памяти
+    MATCH_CACHE_TTL = 600  # сек: свежий матч у Stratz может дополниться (разбор) — долго не держим
+    OLD_MATCH_TTL = 86_400  # сек: матч старше суток уже не меняется
+    OLD_MATCH_AGE = 86_400
+
     def __init__(
         self,
         api_key: str,
@@ -74,8 +83,11 @@ class Stratz:
         retry_sleep: float = 1.5,
         chunk: int = 10,
         session=None,
+        health: Optional[ProviderHealth] = None,
     ):
         self.api_key = api_key
+        # Предохранитель: при падении Stratz команды не ждут timeout × ретраи, а сразу получают отказ.
+        self.health = health or ProviderHealth("Stratz")
         self.min_interval = min_interval
         self.timeout = timeout
         self.max_retries = max_retries
@@ -84,6 +96,7 @@ class Stratz:
         self._session = session or requests.Session()
         self._last_call = 0.0
         self._lock = threading.Lock()
+        self._match_cache: "OrderedDict[int, tuple[float, float, dict]]" = OrderedDict()  # id → (когда, TTL, матч)
 
     def _throttle(self) -> None:
         """Резервируем слот под локом, спим вне лока (как в opendota.py): запросы идут параллельно."""
@@ -98,13 +111,24 @@ class Stratz:
             time.sleep(wait)
 
     def _query(self, query: str, variables: dict) -> dict:
+        if not self.health.allow():
+            raise ProviderUnavailable("Stratz недоступен: пауза ещё не истекла")
+        try:
+            return self._query_with_retries(query, variables)
+        finally:
+            self.health.release()  # проба не должна «зависнуть», если запрос ушёл нестандартным исключением
+
+    def _query_with_retries(self, query: str, variables: dict) -> dict:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "User-Agent": "STRATZ_API",  # без него Stratz отвечает 403
             "Content-Type": "application/json",
         }
         last_exc: Optional[Exception] = None
+        limited = False
         for attempt in range(self.max_retries):
+            if attempt and self.health.paused():  # пока ретраили, другой поток уже объявил паузу
+                raise ProviderUnavailable("Stratz недоступен: пауза ещё не истекла")
             self._throttle()
             try:
                 resp = self._session.post(
@@ -112,18 +136,32 @@ class Stratz:
                     headers=headers, timeout=self.timeout,
                 )
                 if resp.status_code not in _RETRY_STATUSES:
-                    resp.raise_for_status()
+                    try:
+                        resp.raise_for_status()
+                    except requests.HTTPError:
+                        self.health.success()  # сервис ответил — он жив
+                        raise
                     payload = resp.json()
+                    self.health.success()
                     if payload.get("errors"):
                         raise RuntimeError(f"Stratz: {payload['errors'][0].get('message')}")
                     return payload.get("data") or {}
                 last_exc = RuntimeError(f"Stratz HTTP {resp.status_code}")
+                limited = resp.status_code == 429
             except requests.HTTPError:
                 raise  # 4xx — не ретраим
+            except requests.ConnectionError as exc:  # не достучались: ретраи — только лишнее ожидание
+                self.health.failure(exc)
+                raise
             except (requests.RequestException, ValueError) as exc:  # сеть / битый JSON
                 last_exc = exc
+                limited = False
             if attempt < self.max_retries - 1:  # после последней попытки не спим зря
                 time.sleep(self.retry_sleep * (attempt + 1))
+        if limited:
+            self.health.limit(_BLOCK_NO_HEADER)
+        elif last_exc is not None:
+            self.health.failure(last_exc)
         raise last_exc or RuntimeError("Stratz: не удалось получить ответ")
 
     def get_matches(
@@ -169,7 +207,17 @@ class Stratz:
         return result
 
     def get_match(self, match_id: int):
-        """Полный матч (все 10 игроков) по id → dict | None, если Stratz матча не знает."""
+        """Полный матч (все 10 игроков) по id → dict | None, если Stratz матча не знает.
+
+        Ответ кэшируется в памяти (LRU): /match, «📝 Текстом» и «Весь матч» под оповещением — один запрос.
+        None не кэшируем: Stratz мог ещё не разобрать матч.
+        """
+        match_id = int(match_id)
+        with self._lock:
+            hit = self._match_cache.get(match_id)
+            if hit and time.monotonic() - hit[0] < hit[1]:
+                self._match_cache.move_to_end(match_id)
+                return hit[2]
         data = self._query(_FULL_MATCH_QUERY % int(match_id), {})
         raw = data.get("match")
         if not raw:
@@ -192,10 +240,18 @@ class Stratz:
             for src, out in _FIELD_MAP.items():
                 player[out] = row.get(src)
             players.append(player)
-        return {
+        match = {
             "match_id": raw.get("id", match_id),
             "start_time": raw.get("startDateTime"),
             "duration": raw.get("durationSeconds"),
             "radiant_win": raw.get("didRadiantWin"),
             "players": players,
         }
+        started = match["start_time"]
+        old = started is not None and time.time() - started > self.OLD_MATCH_AGE
+        with self._lock:
+            self._match_cache[match_id] = (time.monotonic(), self.OLD_MATCH_TTL if old else self.MATCH_CACHE_TTL, match)
+            self._match_cache.move_to_end(match_id)
+            while len(self._match_cache) > self.MATCH_CACHE_SIZE:
+                self._match_cache.popitem(last=False)
+        return match

@@ -28,6 +28,8 @@ class Config:
     default_tz: str = DEFAULT_TZ
     allowed_chats: frozenset = field(default_factory=frozenset)  # пусто — бот отвечает всем
     max_players: int = 16  # игроков на чат: каждый — это запросы к OpenDota из общего лимита
+    command_refresh_wait: float = 4.0  # сек: команда ждёт обновление игроков не дольше, дальше — ответ из БД
+    opendota_proxy: Optional[str] = None  # прокси только для OpenDota (socks5h://… или http://…); в нём может быть пароль
 
 
 def _chat_ids(raw: str) -> frozenset:
@@ -58,6 +60,26 @@ def _int_env(name: str, default: int) -> int:
         return max(0, int(os.getenv(name, default)))
     except ValueError:
         return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.getenv(name, default)))
+    except ValueError:
+        return default
+
+
+_PROXY_SCHEMES = ("http://", "https://", "socks4://", "socks4a://", "socks5://", "socks5h://")
+
+
+def _proxy_env(name: str) -> Optional[str]:
+    """Прокси из окружения: пусто — нет; неизвестная схема — ошибка запуска (значение в тексте не повторяем: там пароль)."""
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        return None
+    if not value.lower().startswith(_PROXY_SCHEMES):
+        raise RuntimeError(f"{name}: ожидается адрес вида socks5h://хост:порт или http://хост:порт.")
+    return value
 
 
 def load_config() -> Config:
@@ -91,4 +113,6 @@ def load_config() -> Config:
         default_tz=_tz_env("DEFAULT_TZ", DEFAULT_TZ),
         allowed_chats=_chat_ids(os.getenv("ALLOWED_CHATS", "")),
         max_players=max(1, _int_env("MAX_PLAYERS", 16)),
+        command_refresh_wait=_float_env("COMMAND_REFRESH_WAIT", 4.0),
+        opendota_proxy=_proxy_env("OPENDOTA_PROXY"),
     )

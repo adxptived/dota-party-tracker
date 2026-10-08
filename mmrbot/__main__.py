@@ -10,10 +10,10 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import ErrorEvent
 
 import mmrbot.bot as botmod
-from mmrbot import hero_icons
+from mmrbot import avatars, cards, hero_icons, service
 import mmrbot.tracker as tracker
 from mmrbot.access import ChatGateMiddleware
-from mmrbot.bot import router, set_bot_commands
+from mmrbot.bot import PerfMiddleware, router, set_bot_commands
 from mmrbot.lifecycle import router as lifecycle_router
 from mmrbot.charts import warmup
 from mmrbot.config import load_config
@@ -37,12 +37,15 @@ async def main() -> None:
     )
     od = OpenDota(
         api_key=config.opendota_api_key, min_interval=config.opendota_min_interval, burst=config.opendota_burst,
-        background_reserve=config.opendota_daily_reserve,
+        background_reserve=config.opendota_daily_reserve, proxy=config.opendota_proxy,
     )
     tracker.ENRICH_DAYS = config.opendota_enrich_days
+    service.COMMAND_REFRESH_WAIT = config.command_refresh_wait
     botmod.MAX_PLAYERS = config.max_players
     stratz = Stratz(config.stratz_api_key) if config.stratz_api_key else None
-    hero_icons.setup(str(Path(config.db_path).resolve().parent / "hero_icons"))  # иконки для картинки матча
+    data_dir = Path(config.db_path).resolve().parent
+    icons = hero_icons.setup(str(data_dir / "hero_icons"))  # иконки для картинок
+    avatars.setup(str(data_dir / "avatars"), health=icons.health)  # аватары Steam; общий предохранитель CDN
     steam = Steam(config.steam_api_key) if config.steam_api_key else None
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(link_preview_is_disabled=True))
@@ -53,6 +56,8 @@ async def main() -> None:
     gate = ChatGateMiddleware(config.allowed_chats, storage)
     dp.message.outer_middleware(gate)
     dp.callback_query.outer_middleware(gate)
+    dp.message.outer_middleware(PerfMiddleware())
+    dp.callback_query.outer_middleware(PerfMiddleware())
     dp.include_router(lifecycle_router)
     dp.include_router(router)
 
@@ -64,6 +69,7 @@ async def main() -> None:
 
     await set_bot_commands(bot)
     asyncio.get_running_loop().run_in_executor(None, warmup)  # прогрев matplotlib: первый график без задержки
+    asyncio.get_running_loop().run_in_executor(None, cards.warmup)  # шрифты и первый рендер Pillow-карточек
 
     scheduler = setup_scheduler(
         bot, storage, od, stratz, backup_keep=config.backup_keep, steam=steam,

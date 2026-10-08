@@ -151,3 +151,181 @@ def test_hidden_profile_found_by_side_and_hero():
     st = Stratz("k", session=session, min_interval=0)
     assert st.get_matches(42, [1]) == {}                                   # без подсказки — не угадываем
     assert st.get_matches(42, [1], hints={1: (True, 8)})[1]["position"] == 2
+
+
+# --- предохранитель: Stratz недоступен --------------------------------------------------
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def mono(self):
+        return self.now
+
+    def wall(self):
+        return 1_700_000_000.0 + (self.now - 1000.0)
+
+
+def _st_with_clock(session, **kw):
+    from mmrbot.health import ProviderHealth
+    clock = _Clock()
+    health = ProviderHealth("Stratz", clock=clock.mono, wall=clock.wall)
+    return Stratz("k", session=session, min_interval=0, retry_sleep=0, health=health, **kw), clock
+
+
+class _DownSession:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        import requests
+        self.calls.append(url)
+        raise requests.exceptions.ConnectTimeout("connect timeout")
+
+
+def test_network_failure_is_not_retried_and_next_calls_fail_fast():
+    """Stratz лёг: одна попытка (без 3 × таймаут), следующие вызовы отказывают без обращения в сеть."""
+    import requests
+    from mmrbot.health import ProviderUnavailable
+    session = _DownSession()
+    st, clock = _st_with_clock(session)
+    try:
+        st.get_matches(1, [5])
+        assert False, "ожидали ошибку сети"
+    except requests.exceptions.ConnectionError:
+        pass
+    assert len(session.calls) == 1
+    for call in (lambda: st.get_matches(1, [5]), lambda: st.get_match(7)):
+        try:
+            call()
+            assert False, "ожидали отказ предохранителя"
+        except ProviderUnavailable:
+            pass
+    assert len(session.calls) == 1  # пауза: в сеть не ходили
+    clock.now += 61  # пауза истекла — одна пробная попытка
+    try:
+        st.get_matches(1, [5])
+    except requests.exceptions.ConnectionError:
+        pass
+    assert len(session.calls) == 2
+
+
+def test_server_errors_on_all_attempts_open_the_breaker():
+    from mmrbot.health import ProviderUnavailable
+    session = FakeSession([FakeResp({}, 503)] * 3)
+    st, _ = _st_with_clock(session)
+    try:
+        st.get_matches(1, [5])
+        assert False, "ожидали ошибку"
+    except RuntimeError:
+        pass
+    try:
+        st.get_matches(1, [5])
+        assert False, "ожидали отказ предохранителя"
+    except ProviderUnavailable:
+        pass
+    assert len(session.calls) == 3
+
+
+def test_graphql_error_does_not_open_the_breaker():
+    """Stratz ответил (пусть и ошибкой запроса) — он жив, остальные запросы идут как обычно."""
+    session = FakeSession([{"errors": [{"message": "boom"}]}, {"data": {"m0": _match()}}])
+    st, _ = _st_with_clock(session)
+    try:
+        st.get_matches(1, [5])
+    except RuntimeError:
+        pass
+    assert 5 in st.get_matches(1, [5])
+    assert st.health.status()["state"] == "up"
+
+
+def test_health_is_available_for_status():
+    st, _ = _st_with_clock(FakeSession([]))
+    assert st.health.status()["state"] == "up" and st.health.name == "Stratz"
+
+
+# --- B5: кэш полного матча ----------------------------------------------------------------
+
+def _match_payload(match_id, start=None):
+    import time as _t
+    return {"data": {"match": {
+        "id": match_id, "durationSeconds": 2000, "didRadiantWin": True,
+        "startDateTime": int(_t.time()) - 600 if start is None else start,
+        "players": [_full_player(1, True, 2, name="Вася")],
+    }}}
+
+
+def _clocked(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("mmrbot.stratz.time.monotonic", lambda: clock[0])
+    return clock
+
+
+def test_get_match_is_cached_one_http_request(monkeypatch):
+    _clocked(monkeypatch)
+    session = FakeSession([_match_payload(77)])
+    st = Stratz("k", session=session, min_interval=0)
+    first, second = st.get_match(77), st.get_match(77)
+    assert first == second and first["match_id"] == 77
+    assert len(session.calls) == 1  # /match, «📝 Текстом» и «Весь матч» — один запрос
+
+
+def test_fresh_match_cache_expires_after_ten_minutes(monkeypatch):
+    clock = _clocked(monkeypatch)
+    session = FakeSession([_match_payload(77), _match_payload(77)])
+    st = Stratz("k", session=session, min_interval=0)
+    st.get_match(77)
+    clock[0] += 599
+    st.get_match(77)
+    assert len(session.calls) == 1
+    clock[0] += 2  # 10 минут вышли: свежий матч мог дополниться (разбор Stratz)
+    st.get_match(77)
+    assert len(session.calls) == 2
+
+
+def test_old_match_is_cached_for_a_day(monkeypatch):
+    import time as _t
+    clock = _clocked(monkeypatch)
+    old = int(_t.time()) - 3 * 86_400
+    session = FakeSession([_match_payload(5, start=old), _match_payload(5, start=old)])
+    st = Stratz("k", session=session, min_interval=0)
+    st.get_match(5)
+    clock[0] += 23 * 3600
+    st.get_match(5)
+    assert len(session.calls) == 1  # матч старше суток уже не меняется
+    clock[0] += 2 * 3600
+    st.get_match(5)
+    assert len(session.calls) == 2
+
+
+def test_missing_match_is_not_cached(monkeypatch):
+    _clocked(monkeypatch)
+    session = FakeSession([{"data": {"match": None}}, _match_payload(9)])
+    st = Stratz("k", session=session, min_interval=0)
+    assert st.get_match(9) is None
+    assert st.get_match(9)["match_id"] == 9  # Stratz мог ещё не разобрать матч — спросим снова
+    assert len(session.calls) == 2
+
+
+def test_match_cache_is_lru_bounded(monkeypatch):
+    _clocked(monkeypatch)
+    ids = list(range(1, Stratz.MATCH_CACHE_SIZE + 3))
+    session = FakeSession([_match_payload(i) for i in ids] + [_match_payload(1)])
+    st = Stratz("k", session=session, min_interval=0)
+    for i in ids:
+        st.get_match(i)
+    assert len(st._match_cache) == Stratz.MATCH_CACHE_SIZE
+    st.get_match(1)  # самый старый вытеснен — снова запрос
+    assert len(session.calls) == len(ids) + 1
+
+
+def test_cached_match_is_served_while_stratz_is_down(monkeypatch):
+    """Кэш отвечает и во время паузы предохранителя — «Весь матч» не падает из-за лежащего Stratz."""
+    from mmrbot.health import ProviderHealth
+    _clocked(monkeypatch)
+    session = FakeSession([_match_payload(77)])
+    health = ProviderHealth("Stratz")
+    st = Stratz("k", session=session, min_interval=0, health=health)
+    st.get_match(77)
+    health.failure(RuntimeError("down"))
+    assert st.get_match(77)["match_id"] == 77

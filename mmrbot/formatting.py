@@ -180,6 +180,30 @@ def stale_note(players: list, now: int, cooldown: int) -> str:
     return f"⚠️ <i>OpenDota не ответил — показаны сохранённые данные{who}: {when}.</i>"
 
 
+def outage_note(
+    status: Optional[dict], players: list, now: int, tz_name: str = "UTC", provider: str = "OpenDota"
+) -> str:
+    """Единая строка под отчётом и в подписи картинки: почему данные устарели и на какой момент они показаны.
+
+    status — снимок ProviderHealth.status(); пока сервис жив (up) или предохранителя нет (None) — пустая строка.
+    Время — в часовом поясе чата; другие сутки — с датой. Данные — по самому свежему обновлению игроков чата.
+    """
+    state = (status or {}).get("state")
+    if state in (None, "up"):
+        return ""
+
+    def when(ts: int) -> str:
+        same_day = fmt_local(ts, tz_name, "%Y-%m-%d") == fmt_local(now, tz_name, "%Y-%m-%d")
+        return fmt_local(ts, tz_name, "%H:%M" if same_day else "%d.%m %H:%M")
+
+    since = status.get("since")
+    since_part = f" с {when(since)}" if since else ""
+    loaded = [p.updated_ts for p in players if p.updated_ts is not None]
+    data = f"показаны данные на {when(max(loaded))}" if loaded else "данные ещё не загружены"
+    what = "ограничил запросы" if state == "limited" else "недоступен"
+    return f"⚠️ <i>{provider} {what}{since_part} — {data}.</i>"
+
+
 def render_leaderboard(summaries: list[PlayerSummary], today_only: bool = False) -> str:
     if not summaries:
         return NO_PLAYERS
@@ -395,6 +419,11 @@ def standing_line(comparison: dict, name: str) -> Optional[str]:
     return line
 
 
+def _place(ranks: dict, key: str) -> str:
+    """« (#2)» — место по показателю; пусто, если он посчитан по слишком малому числу игр и в ранжирование не вошёл."""
+    return f" (#{ranks[key]})" if key in ranks else ""
+
+
 def render_compare_table(comparison: dict, summaries: list[PlayerSummary]) -> str:
     """Сравнительная таблица: игроки по «силе в чате» + ранги по метрикам."""
     order = sorted(summaries, key=lambda s: comparison["players"][s.display_name]["power_rank"])
@@ -407,12 +436,12 @@ def render_compare_table(comparison: dict, summaries: list[PlayerSummary]) -> st
         lines.append(f"{_pos(player['power_rank'])} {_b(s.display_name)} — индекс {_b(power_str)}")
         parts = []
         if s.avg_perf is not None:
-            parts.append(f"перф {s.avg_perf * 100:.0f} (#{ranks['perf']})")
+            parts.append(f"перф {s.avg_perf * 100:.0f}{_place(ranks, 'perf')}")
         if s.games_total:
-            parts.append(f"винрейт {s.winrate * 100:.0f}% (#{ranks['winrate']})")
-            parts.append(f"KDA {s.kda_ratio:.1f} (#{ranks['kda']})")
+            parts.append(f"винрейт {s.winrate * 100:.0f}%{_place(ranks, 'winrate')}")
+            parts.append(f"KDA {s.kda_ratio:.1f}{_place(ranks, 'kda')}")
         if s.avg_gpm_window is not None:
-            parts.append(f"GPM {s.avg_gpm_window:.0f} (#{ranks['gpm']})")
+            parts.append(f"GPM {s.avg_gpm_window:.0f}{_place(ranks, 'gpm')}")
         if parts:
             lines.append("    " + " · ".join(parts))
     return "\n".join(lines)
@@ -785,6 +814,8 @@ def render_settings(chat) -> str:
         f"🔔 Оповещения о смене ника/аватарки Steam: <b>{state(chat.notify_steam)}</b>\n"
         f"🎮 Оповещения о конце матча и достижениях: <b>{state(chat.notify_games)}</b>\n"
         f"📅 Недельная сводка (понедельник): <b>{state(chat.notify_weekly, 'включена', 'выключена')}</b>\n"
+        f"🖼 Отчёты: <b>{'текстом' if chat.prefer_text else 'картинками'}</b> <i>(рейтинг, матч, карточка игрока и др.; "
+        f"«📝 Текстом» под картинкой работает всегда)</i>\n"
         f"🏷️ Теги участников с MMR: <b>{state(chat.tag_mmr)}</b> <i>(привязка: Пати → «Это я»)</i>\n"
         f"🔒 Менять настройки и удалять игроков в группе: "
         f"<b>{'только админы' if chat.admin_only else 'все участники'}</b>\n\n"

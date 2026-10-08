@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 
 import re
+from collections import OrderedDict
 from typing import Optional
 
 from aiogram import BaseMiddleware, Bot, F, Router
@@ -13,36 +15,51 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InputMediaPhoto, Message
 
 from mmrbot import commands as cmd
-from mmrbot.access import DENIED, may_manage
-from mmrbot.formatting import render_achievements, render_player_list, render_settings, render_steam_profile, tz_label
-from mmrbot.heroes import find_hero
+from mmrbot import perf
+from mmrbot.boards import ImageBoard
+from mmrbot.access import DENIED, is_chat_admin, may_manage
+from mmrbot.formatting import render_player_list, render_settings, render_steam_profile, tz_label
+from mmrbot.health import log_network_error
+from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
+from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
-    render_board,
+    STATS_MODES,
+    achievements_board,
+    stats_board,
+    compare_board,
     render_compare_board,
+    hero_board,
     render_hero_board,
     render_graph_board,
+    records_board,
     render_records_board,
+    heroes_board,
     render_heroes_board,
     match_board,
+    player_board,
+    player_heroes_board,
     render_match_board,
-    render_period_board,
     render_player_board,
     render_player_heroes_board,
     render_roles_board,
+    together_board,
     render_together_board,
     split_message,
 )
+from mmrbot.status import collect_status, render_status
 from mmrbot.storage import Storage
 from mmrbot.tags import auto_link_user, clear_member_tag, link_adder, sync_member_tags
 from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
 from mmrbot.ranks import rank_label
-from mmrbot.tracker import build_leaderboard, check_achievements, list_achievements, refresh_player
+from mmrbot.tracker import build_leaderboard, check_achievements, refresh_player
 
 router = Router()
 log = logging.getLogger(__name__)
+
+PERIODS_KEYS = {"day", "week", "month", "year", "all"}
 
 MAX_PLAYERS = 16  # игроков на чат (переопределяется из конфига при старте): каждый тратит общий лимит OpenDota
 
@@ -55,6 +72,18 @@ async def _can_manage(message, storage: Storage, user=None, bot=None) -> bool:
         return True
     await message.answer(DENIED)
     return False
+
+
+class PerfMiddleware(BaseMiddleware):
+    """Замер каждой команды/кнопки: строка `perf cmd=… total=… refresh=… build=… render=… send=…` в лог."""
+
+    async def __call__(self, handler, event, data):
+        trace = perf.begin()
+        try:
+            return await handler(event, data)
+        finally:
+            chat = getattr(event, "chat", None) or getattr(getattr(event, "message", None), "chat", None)
+            perf.finish(trace, perf.label(event), getattr(chat, "id", None))
 
 
 class DeleteCommandMiddleware(BaseMiddleware):
@@ -117,6 +146,7 @@ BOT_COMMANDS = [
     BotCommand(command="me", description="🙋 Привязать себя к игроку"),
     BotCommand(command="tags", description="🏷️ Теги с MMR (вкл/выкл)"),
     BotCommand(command="remove", description="🗑️ Удалить игрока"),
+    BotCommand(command="status", description="🩺 Состояние бота (админам)"),
     BotCommand(command="help", description="📖 Справка"),
 ]
 
@@ -190,10 +220,21 @@ class _InPlace:
         return sent
 
 
-async def _progress(message: Message, text: str):
-    """Временное «⏳ Считаю…» — удаляется, когда отчёт готов (на месте кнопки — просто подменяет текст)."""
-    result = await message.answer(text)
-    return None if isinstance(message, _InPlace) else result
+async def _progress(message: Message, text: str, action: str = "typing") -> DeferredStatus:
+    """Отложенное «⏳ Считаю…»: быстрый ответ обходится без статуса вовсе (экономим 2 запроса к Telegram).
+
+    Через ~0.7 с — индикатор действия (action: «печатает…» / «отправляет фото»), через ~2 с — само сообщение.
+    На месте кнопки (_InPlace) статус правит это же сообщение и не удаляется — его заменит отчёт.
+    """
+    chat_id = message.chat.id
+
+    async def send_action():
+        await message.bot.send_chat_action(chat_id, action)
+
+    in_place = isinstance(message, _InPlace)
+    # Под картинкой (кнопка периода на карточке) текстовый статус затёр бы саму карточку — только индикатор действия.
+    over_photo = in_place and bool(getattr(message, "photo", None))
+    return DeferredStatus(send_action, None if over_photo else (lambda: message.answer(text)), delete_sent=not in_place)
 
 
 async def _send_chunks(message: Message, text: str, markup=None) -> None:
@@ -221,6 +262,106 @@ async def _reply_board(message: Message, coro, status=None, markup=None) -> None
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
     await _send_chunks(message, text, markup or nav_menu())
+
+
+async def _show_text(message: Message, text: str, markup, edit: bool) -> None:
+    """Текстовый отчёт с кнопками. edit — нажата кнопка вкладки/периода: правим то же сообщение, а не плодим новые;
+    под фото (картинки отключили настройкой) — шлём текст и убираем старую картинку."""
+    if not isinstance(message, _InPlace):  # _InPlace и так правит сообщение на месте
+        photo = bool(getattr(message, "photo", None))
+        if edit and not photo and len(split_message(text)) == 1:
+            try:
+                await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+                return
+            except Exception as exc:
+                if "not modified" in str(exc):
+                    return
+        await _send_chunks(message, text, markup)
+        if edit and photo:
+            await _delete(message)
+        return
+    await _send_chunks(message, text, markup)
+
+
+_file_ids: OrderedDict = OrderedDict()  # sha1 PNG → file_id уже отправленной картинки (B7)
+FILE_ID_LIMIT = 256
+
+
+def _remember_file_id(digest: str, sent) -> None:
+    """Запомнить file_id самого крупного размера из ответа Telegram (у фейков и True ответа нет — тогда ничего)."""
+    try:
+        file_id = sent.photo[-1].file_id
+    except (AttributeError, IndexError, TypeError):
+        return
+    if isinstance(file_id, str) and file_id:
+        _file_ids[digest] = file_id
+        _file_ids.move_to_end(digest)
+        while len(_file_ids) > FILE_ID_LIMIT:
+            _file_ids.popitem(last=False)
+
+
+async def _send_photo(message: Message, photo, caption, markup, edit: bool):
+    """Показать картинку: edit — заменить на месте (не вышло — новая, прежняя убирается), иначе новое сообщение."""
+    if edit and getattr(message, "photo", None):
+        try:
+            return await message.edit_media(InputMediaPhoto(media=photo, caption=caption, parse_mode="HTML"), reply_markup=markup)
+        except Exception as exc:
+            if "not modified" in str(exc):
+                return None
+            if isinstance(photo, str):  # file_id отвергнут — пусть вызывающий пробует загрузить PNG
+                raise
+            sent = await message.answer_photo(photo, caption=caption, parse_mode="HTML", reply_markup=markup)
+            await _delete(message)
+            return sent
+    sent = await message.answer_photo(photo, caption=caption, parse_mode="HTML", reply_markup=markup)
+    if edit:
+        await _delete(message)
+    return sent
+
+
+async def _reply_image(message: Message, board: ImageBoard, markup, status=None, edit: Optional[bool] = None) -> None:
+    """Картинка + подпись + кнопки; не собралась (или в чате выбраны отчёты текстом) или Telegram не принял —
+    тот же отчёт текстом, с теми же вкладками/периодами, но без «📝 Текстом».
+
+    edit=True — под сообщением-фото нажата кнопка (период и т.п.): картинка меняется на месте (edit_media);
+    не вышло (старое сообщение) — шлём новую и убираем прежнюю.
+    """
+    if edit is None:
+        edit = isinstance(message, _InPlace)  # кнопка на сообщении: правим его на месте
+    if board.png is not None:
+        digest = hashlib.sha1(board.png).hexdigest()
+        known = _file_ids.get(digest)
+        for photo in ([known] if known else []) + [BufferedInputFile(board.png, filename="card.png")]:
+            try:
+                sent = await _send_photo(message, photo, board.caption, markup, bool(edit))
+            except Exception:
+                if photo is known:  # Telegram не принял старый file_id — грузим картинку заново
+                    _file_ids.pop(digest, None)
+                    log.info("file_id картинки устарел — отправляем PNG заново")
+                    continue
+                log.warning("Не удалось отправить картинку — шлём текстом", exc_info=True)
+                break
+            _remember_file_id(digest, sent)
+            await _delete(status)
+            return
+    await _delete(status)
+    await _show_text(message, board.text, without_text_button(markup) if markup is not None else nav_menu(), bool(edit))
+
+
+async def _image_report(message: Message, make_board, markup, what: str, edit: Optional[bool] = None) -> None:
+    """Общий путь «отчёт картинкой»: индикатор → сборка борда → картинка с кнопками (не вышло — текстом).
+
+    make_board — корутина, дающая ImageBoard; markup — кнопки под отчётом; what — для лога при сбое сборки.
+    """
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await make_board
+    except Exception:
+        log.exception("Ошибка сборки %s для чата %s", what, message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    await _reply_image(message, board, markup, status, edit=edit)
 
 
 @router.message(Command("help"))
@@ -319,8 +460,9 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
 
     try:
         await asyncio.to_thread(refresh_player, storage, od, player, now, stratz)
-    except Exception:  # первичная подгрузка не критична — досчитается в /stats
-        log.warning("Первая загрузка истории игрока %s не удалась", account_id, exc_info=True)
+    except Exception as exc:  # первичная подгрузка не критична — досчитается в /stats
+        log_network_error(log, f"Первая загрузка истории игрока {account_id} не удалась", exc,
+                          health=getattr(od, "health", None))
 
     try:  # история при добавлении — не «новые игры»: помечаем оповещённой и запоминаем достижения молча
         storage.mark_notified(player.id)
@@ -502,90 +644,102 @@ async def _ask_player(message: Message, storage: Storage, kind: str, prompt: str
 # --- действия (общие для команд и кнопок) -------------------------------
 
 async def do_stats(message: Message, storage: Storage, od: OpenDota, stratz=None, today_only: bool = False) -> None:
-    if not await _has_players(message, storage):
-        return
-    status = await _progress(message, WAIT)
-    await _reply_board(
-        message, render_board(storage, od, message.chat.id, today_only=today_only, refresh=True, stratz=stratz), status,
-        stats_tabs("today" if today_only else "stats"),
-    )
+    await _stats_card(message, storage, od, "today" if today_only else "stats", stratz)
 
 
 async def do_period_stats(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None) -> None:
+    await _stats_card(message, storage, od, period, stratz)
+
+
+async def _stats_card(message: Message, storage: Storage, od: OpenDota, mode: str, stratz=None) -> None:
+    """Рейтинг картинкой (stats | today | week | month) с вкладками периодов и «📝 Текстом»; не вышло — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
-    await _reply_board(
-        message, render_period_board(storage, od, message.chat.id, period, stratz), status, stats_tabs(period)
-    )
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await stats_board(storage, od, message.chat.id, mode, stratz)
+    except Exception:
+        log.exception("Ошибка сборки рейтинга для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    await _reply_image(message, board, with_text_button(stats_tabs(mode), "stats", mode), status)
 
 
 async def do_together(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
+    """Совместные игры картинкой (плитки и матрица пар) с кнопкой «📝 Текстом»; не вышло — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
-    await _reply_board(message, render_together_board(storage, od, message.chat.id, stratz), status)
+    await _image_report(message, together_board(storage, od, message.chat.id, stratz),
+                        with_text_button(nav_menu(), "together"), "совместных игр")
 
 
 async def do_compare(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
+    """Сравнение игроков картинкой (индекс и места по показателям) с кнопкой «📝 Текстом»; не вышло — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
-    await _reply_board(message, render_compare_board(storage, od, message.chat.id, stratz), status)
+    await _image_report(message, compare_board(storage, od, message.chat.id, stratz),
+                        with_text_button(nav_menu(), "compare"), "сравнения")
 
 
 async def do_heroes_board(message: Message, storage: Storage, od: OpenDota, stratz=None) -> None:
+    """Любимые герои пати картинкой (под ней «📝 Текстом»); не вышло с картинкой — текстом."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
-    await _reply_board(message, render_heroes_board(storage, od, message.chat.id, stratz), status)
+    await _image_report(message, heroes_board(storage, od, message.chat.id, stratz),
+                        with_text_button(nav_menu(), "heroes"), "героев пати")
 
 
-async def _reply_with_period(message: Message, make_coro, prefix: str, storage: Storage, name: str,
-                             period: str, edit: bool) -> None:
-    """Борд игрока + ряд кнопок периода (edit=True — правим сообщение с нажатой кнопкой)."""
+async def do_hero(message: Message, storage: Storage, od: OpenDota, query: str, period: str, stratz=None) -> None:
+    """Герой и кто из пати на нём играл — картинкой; нет такого героя — подсказка текстом."""
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await hero_board(storage, od, message.chat.id, query, period, stratz)
+    except Exception:
+        log.exception("Ошибка сборки героя для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    markup = with_text_button(nav_menu(), "hero", board.hero_id, period) if board.hero_id else nav_menu()
+    await _reply_image(message, board, markup, status)
+
+
+async def _reply_with_period(message: Message, kind: str, prefix: str, storage: Storage, od: OpenDota, name: str,
+                             period: str, stratz, edit: bool) -> None:
+    """Герои/позиции игрока картинкой + ряд кнопок периода и «📝 Текстом» (edit=True — правим сообщение с кнопкой)."""
     player = storage.get_player(message.chat.id, name)
     if player is None:
         await message.answer(NOT_FOUND_TEXT)
         return
-    status = None if edit else await _progress(message, WAIT)
+    status = await _progress(message, WAIT, "upload_photo")
     try:
-        text = await make_coro()
+        board = await player_heroes_board(storage, od, message.chat.id, name, period, stratz, kind=kind)
     except Exception:
-        logging.getLogger(__name__).exception("Ошибка сборки борда для чата %s", message.chat.id)
+        log.exception("Ошибка сборки борда для чата %s", message.chat.id)
         await _delete(status)
         await message.answer(FAILED, reply_markup=nav_menu())
         return
-    await _delete(status)
-    markup = period_buttons(prefix, player.account_id, period)
-    if edit:
-        try:
-            await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
-            return
-        except Exception:
-            pass  # «message is not modified» и т.п. — шлём новым сообщением
-    await _send_chunks(message, text, markup)
+    if board is None:
+        await _delete(status)
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    markup = with_text_button(period_buttons(prefix, player.account_id, period), prefix, player.account_id, period)
+    await _reply_image(message, board, markup, status, edit=edit)
 
 
 async def do_player_heroes(message: Message, storage: Storage, od: OpenDota, name: str, period: str,
                            stratz=None, edit: bool = False) -> None:
-    await _reply_with_period(
-        message, lambda: render_player_heroes_board(storage, od, message.chat.id, name, period, stratz),
-        "hp", storage, name, period, edit,
-    )
+    await _reply_with_period(message, "heroes", "hp", storage, od, name, period, stratz, edit)
 
 
 async def do_roles(message: Message, storage: Storage, od: OpenDota, name: str, period: str,
                    stratz=None, edit: bool = False) -> None:
-    await _reply_with_period(
-        message, lambda: render_roles_board(storage, od, message.chat.id, name, period, stratz),
-        "rp", storage, name, period, edit,
-    )
+    await _reply_with_period(message, "roles", "rp", storage, od, name, period, stratz, edit)
 
 
 async def do_match(message: Message, storage: Storage, od: OpenDota, name, match_id, stratz=None) -> None:
     """Матч картинкой (иконки героев, ники, K/D/A…) с кнопкой «Текстом»; не вышло с картинкой — текстом."""
-    status = await _progress(message, WAIT)
+    status = await _progress(message, WAIT, "upload_photo")
     try:
         board = await match_board(storage, od, message.chat.id, name, match_id, stratz)
     except Exception:
@@ -593,64 +747,126 @@ async def do_match(message: Message, storage: Storage, od: OpenDota, name, match
         await _delete(status)
         await message.answer(FAILED, reply_markup=nav_menu())
         return
-    if board.png is not None:
-        try:
-            await message.answer_photo(
-                BufferedInputFile(board.png, filename="match.png"), caption=board.caption, parse_mode="HTML",
-                reply_markup=match_photo_buttons(board.match_id, board.focus),
-            )
-            await _delete(status)
-            return
-        except Exception:
-            log.warning("Не удалось отправить картинку матча %s — шлём текстом", board.match_id, exc_info=True)
-    await _delete(status)
-    await _send_chunks(message, board.text, nav_menu())
+    await _reply_image(message, board, match_photo_buttons(board.match_id, board.focus), status)
 
 
-async def on_match_text(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
-    """Кнопка «📝 Текстом» под картинкой: тот же матч текстом отдельным сообщением, кнопку под фото убираем."""
+# Текстовые версии карточек для кнопки «📝 Текстом»: вид → корутина (storage, od, chat_id, args, stratz) → текст.
+async def _text_match(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:match:<match_id>:<account_id|0> — тот же матч текстом."""
     try:
         match_id, account = int(args[0]), int(args[1])
     except (IndexError, ValueError):
-        return
-    player = storage.get_player(message.chat.id, str(account)) if account else None
-    name = player.display_name if player else None
-    await _reply_board(message, render_match_board(storage, od, message.chat.id, name, match_id, stratz))
+        return None
+    player = storage.get_player(chat_id, str(account)) if account else None
+    return await render_match_board(storage, od, chat_id, player.display_name if player else None, match_id, stratz)
+
+
+async def _text_stats(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:stats:<stats|today|week|month> — тот же рейтинг текстом."""
+    mode = args[0] if args else ""
+    if mode not in STATS_MODES:
+        return None
+    return (await stats_board(storage, od, chat_id, mode, stratz, image=False)).text
+
+
+async def _text_player(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:player:<account_id> — карточка игрока текстом."""
+    return await render_player_board(storage, od, chat_id, args[0], stratz) if args else None
+
+
+async def _text_player_heroes(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:hp:<account_id>:<period> — герои (и позиции) игрока текстом."""
+    if len(args) != 2 or args[1] not in PERIODS_KEYS:
+        return None
+    return await render_player_heroes_board(storage, od, chat_id, args[0], args[1], stratz)
+
+
+async def _text_roles(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:rp:<account_id>:<period> — позиции игрока текстом."""
+    if len(args) != 2 or args[1] not in PERIODS_KEYS:
+        return None
+    return await render_roles_board(storage, od, chat_id, args[0], args[1], stratz)
+
+
+async def _text_party_heroes(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:heroes — любимые герои пати текстом."""
+    return await render_heroes_board(storage, od, chat_id, stratz)
+
+
+async def _text_hero(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:hero:<hero_id>:<period> — герой и пати на нём текстом."""
     try:
-        await message.edit_reply_markup(reply_markup=match_photo_buttons(match_id, account, text_shown=True))
+        hero_id = int(args[0])
+    except (IndexError, ValueError):
+        return None
+    if len(args) != 2 or args[1] not in PERIODS_KEYS:
+        return None
+    return await render_hero_board(storage, od, chat_id, hero_name(hero_id), args[1], stratz)
+
+
+async def _text_achievements(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:ach[:<account_id>] — достижения текстом."""
+    board = await achievements_board(storage, chat_id, args[0] if args else None, image=False)
+    return board.text if board else None
+
+
+async def _text_together(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:together — совместные игры текстом."""
+    return await render_together_board(storage, od, chat_id, stratz)
+
+
+async def _text_compare(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:compare — сравнение игроков текстом."""
+    return await render_compare_board(storage, od, chat_id, stratz)
+
+
+async def _text_records(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:records:<period> — рекорды пати текстом."""
+    if len(args) != 1 or args[0] not in PERIODS_KEYS:
+        return None
+    return await render_records_board(storage, od, chat_id, args[0], stratz)
+
+
+TEXT_VIEWS = {"together": _text_together, "compare": _text_compare, "records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
+              "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_achievements}
+
+
+async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
+    """Кнопка «📝 Текстом» под картинкой: тот же отчёт текстом отдельным сообщением, кнопку под фото убираем."""
+    view = TEXT_VIEWS.get(args[0]) if args else None
+    if view is None:
+        return
+    await _reply_board(message, view(storage, od, message.chat.id, args[1:], stratz))
+    try:
+        await message.edit_reply_markup(reply_markup=without_text_button(getattr(message, "reply_markup", None)))
     except Exception:
         pass  # старое сообщение / уже изменено — не важно
 
 
 async def do_player_card(message: Message, storage: Storage, od: OpenDota, name: str, stratz=None) -> None:
-    status = await _progress(message, WAIT)
+    """Карточка игрока картинкой (под ней кнопки игрока и «📝 Текстом»); не вышло — текстом."""
+    status = await _progress(message, WAIT, "upload_photo")
     player = storage.get_player(message.chat.id, name)
-    markup = player_actions(player.account_id) if player else None
-    await _reply_board(message, render_player_board(storage, od, message.chat.id, name, stratz), status, markup)
+    try:
+        board = await player_board(storage, od, message.chat.id, name, stratz)
+    except Exception:
+        log.exception("Ошибка сборки карточки игрока для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board is None:
+        await _delete(status)
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    markup = with_text_button(player_actions(player.account_id), "player", player.account_id) if player else nav_menu()
+    await _reply_image(message, board, markup, status)
 
 
 async def do_records(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None,
                      edit: bool = False) -> None:
-    """Рекорды пати за период; edit=True — правим сообщение с нажатой кнопкой периода."""
-    status = None if edit else await _progress(message, WAIT)
-    try:
-        text = await render_records_board(storage, od, message.chat.id, period, stratz)
-    except Exception:
-        logging.getLogger(__name__).exception("Ошибка сборки рекордов для чата %s", message.chat.id)
-        await _delete(status)
-        if not edit:
-            await message.answer(FAILED, reply_markup=nav_menu())
-        return
-    await _delete(status)
-    markup = records_buttons(period)
-    if edit:
-        try:
-            await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
-        except Exception as exc:
-            if "not modified" not in str(exc):
-                logging.getLogger(__name__).exception("Не удалось сменить период рекордов")
-        return
-    await _send_chunks(message, text, markup)
+    """Рекорды пати картинкой (периоды меняют её на месте, «📝 Текстом» — текстом); не вышло — текстом."""
+    await _image_report(message, records_board(storage, od, message.chat.id, period, stratz),
+                        with_text_button(records_buttons(period), "records", period), "рекордов", edit=edit)
 
 
 async def do_graph(
@@ -659,7 +875,7 @@ async def do_graph(
     """График ±MMR по игрокам за период (картинка + кнопки периодов)."""
     if not await _has_players(message, storage):
         return
-    status = await _progress(message, WAIT)
+    status = await _progress(message, WAIT, "upload_photo")
     try:
         result = await render_graph_board(storage, od, message.chat.id, period, stratz, by_games=by_games)
     except Exception:
@@ -706,13 +922,22 @@ async def edit_graph(
 
 
 async def do_achievements(message: Message, storage: Storage, name) -> None:
-    rows = await asyncio.to_thread(list_achievements, storage, message.chat.id, int(time.time()), name)
-    if not rows:
+    """Достижения картинкой (под ней «📝 Текстом»); не вышло — текстом."""
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await achievements_board(storage, message.chat.id, name)
+    except Exception:
+        log.exception("Ошибка сборки достижений для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board is None:
+        await _delete(status)
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
-    tz = storage.get_or_create_chat(message.chat.id).tz
-    for chunk in split_message(render_achievements(rows, tz)):
-        await message.answer(chunk, parse_mode="HTML", reply_markup=nav_menu())
+    player = storage.get_player(message.chat.id, name) if name else None
+    arg = player.account_id if player else None
+    await _reply_image(message, board, with_text_button(nav_menu(), "ach", *([arg] if arg else [])), status)
 
 
 async def do_steam(message: Message, storage: Storage, od: OpenDota, name: str) -> None:
@@ -779,8 +1004,7 @@ async def cmd_heroes(message: Message, command: CommandObject, storage: Storage,
     elif storage.get_player(message.chat.id, name) is not None:
         await do_player_heroes(message, storage, od, name, period, stratz)  # герои + позиции игрока
     elif find_hero(name) is not None:
-        status = await _progress(message, WAIT)
-        await _reply_board(message, render_hero_board(storage, od, message.chat.id, name, period, stratz), status)
+        await do_hero(message, storage, od, name, period, stratz)
     else:
         await message.answer(f"🔍 Не нашёл ни игрока, ни героя «{name}». Список: /list. Героя пишите по-английски: /heroes Axe")
 
@@ -859,9 +1083,7 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
         await do_add(message, storage, od, message.text or "", stratz)
         return
     if prompt.startswith(HERO_PROMPT):
-        query = (message.text or "").strip()
-        status = await _progress(message, WAIT)
-        await _reply_board(message, render_hero_board(storage, od, message.chat.id, query, "all", stratz), status)
+        await do_hero(message, storage, od, (message.text or "").strip(), "all", stratz)
         return
     if prompt.startswith(MATCHID_PROMPT):
         match_id, name = cmd.parse_match_args(message.text or "")
@@ -913,6 +1135,8 @@ async def _on_settings(message: Message, storage: Storage, args: list[str], bot=
             storage.set_chat_notify_weekly(chat_id, not chat.notify_weekly)
         elif what == "digest":
             storage.set_chat_notify_digest(chat_id, not chat.notify_digest)
+        elif what == "images":
+            storage.set_chat_prefer_text(chat_id, not chat.prefer_text)
         elif what == "admins":
             storage.set_chat_admin_only(chat_id, not chat.admin_only)
         elif what == "tags":
@@ -930,13 +1154,25 @@ async def _on_settings(message: Message, storage: Storage, args: list[str], bot=
         pass  # «message is not modified» — значение не изменилось
 
 
+@router.message(Command("status"))
+async def cmd_status(message: Message, storage: Storage, od: OpenDota, stratz=None, bot: Optional[Bot] = None) -> None:
+    """Состояние бота: внешние сервисы, очереди дозагрузки, свежесть данных. Только админам чата."""
+    actor = getattr(message, "from_user", None)
+    sender_chat = getattr(message, "sender_chat", None)
+    if not await is_chat_admin(bot or getattr(message, "bot", None), message.chat, actor, sender_chat):
+        await message.answer(DENIED)
+        return
+    data = await asyncio.to_thread(collect_status, storage, od, stratz)
+    await message.answer(render_status(data), parse_mode="HTML")
+
+
 @router.message(Command("settings"))
 async def cmd_settings(message: Message, storage: Storage) -> None:
     chat = storage.get_or_create_chat(message.chat.id)
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "mt"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "mt", "tx", "mx"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -958,8 +1194,16 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             await do_records(message, storage, od, period, stratz, edit=True)  # меняем период на месте
         return
 
-    if kind == "mt":
-        await on_match_text(message, storage, od, args, stratz)  # текст — новым сообщением, фото остаётся
+    if kind == "mx":  # «🎮 Весь матч» под оповещением: тот же разбор, что и /match <id>
+        try:
+            match_id = int(args[0])
+        except (IndexError, ValueError):
+            return
+        await do_match(message, storage, od, None, match_id, stratz)
+        return
+
+    if kind in {"tx", "mt"}:  # mt — прежний формат кнопки «Текстом» под матчем (сообщения уже в чатах)
+        await on_text_view(message, storage, od, args if kind == "tx" else ["match", *args], stratz)
         return
 
     if kind == "g":

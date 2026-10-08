@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from bisect import bisect_left
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -36,6 +39,7 @@ class Chat:
     notify_digest: bool = True  # ежедневная сводка
     admin_only: bool = True  # в группе настройки и удаление игроков — только админам чата
     active: bool = True  # False — бота убрали из чата: не опрашиваем и не пишем, данные храним
+    prefer_text: bool = False  # отчёты текстом вместо картинок (настройка чата «🖼 Отчёты»)
 
 
 @dataclass
@@ -76,7 +80,8 @@ CREATE TABLE IF NOT EXISTS chats (
     tag_mmr          INTEGER NOT NULL DEFAULT 0,
     notify_digest    INTEGER NOT NULL DEFAULT 1,
     admin_only       INTEGER NOT NULL DEFAULT 1,
-    active           INTEGER NOT NULL DEFAULT 1
+    active           INTEGER NOT NULL DEFAULT 1,
+    prefer_text      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS achievements (
     player_id INTEGER NOT NULL,
@@ -169,6 +174,8 @@ class _Connection(sqlite3.Connection):
 
 
 class Storage:
+    MATCH_CACHE_ROWS = 30_000  # строк матчей в памяти суммарно (≈ 60–70 МБ): хватает пати на 16 игроков по ~1800 игр
+
     def __init__(
         self, db_path: str, default_digest_hour: int = DEFAULT_DIGEST_HOUR,
         default_mmr_step: int = DEFAULT_MMR_STEP, default_tz: str = DEFAULT_TZ,
@@ -178,6 +185,9 @@ class Storage:
         self.default_digest_hour = default_digest_hour
         self.default_mmr_step = default_mmr_step
         self.default_tz = default_tz
+        # B3: история матчей игрока в памяти по «версии данных» players.data_ver (её двигают триггеры на matches).
+        self._matches_cache: OrderedDict = OrderedDict()
+        self._matches_cache_lock = threading.Lock()
         with self._conn() as conn:
             conn.execute("PRAGMA journal_mode = WAL")  # режим хранится в файле БД — достаточно один раз
             version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -207,6 +217,7 @@ class Storage:
             "notify_digest": "INTEGER NOT NULL DEFAULT 1",
             "admin_only": "INTEGER NOT NULL DEFAULT 1",
             "active": "INTEGER NOT NULL DEFAULT 1",
+            "prefer_text": "INTEGER NOT NULL DEFAULT 0",
         })
         # Старая история — уже «оповещённая»: иначе после обновления бот завалил бы чат старыми играми.
         had_notified = "notified" in {r["name"] for r in conn.execute("PRAGMA table_info(matches)").fetchall()}
@@ -222,6 +233,7 @@ class Storage:
             "fh_unavailable": "INTEGER NOT NULL DEFAULT 0",
             "ingame_since": "INTEGER", "ingame_misses": "INTEGER NOT NULL DEFAULT 0",
             "tg_user_id": "INTEGER", "last_tag": "TEXT",
+            "data_ver": "INTEGER NOT NULL DEFAULT 0",
         })
         add_missing("matches", {
             "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
@@ -236,6 +248,20 @@ class Storage:
             "stratz_next_ts": "INTEGER NOT NULL DEFAULT 0",
             "leaver_status": "INTEGER",
         })
+        # Кандидатов на оповещение ищут на каждом тике game_watch: частичный индекс по notified = 0 вместо скана истории.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_matches_unnotified ON matches(player_id, start_time) WHERE notified = 0"
+        )
+        # «Версия данных» игрока: любое изменение его матчей (кроме служебных счётчиков) двигает players.data_ver.
+        bump = "UPDATE players SET data_ver = data_ver + 1 WHERE id = {}.player_id"
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_ins AFTER INSERT ON matches BEGIN {bump.format('NEW')}; END")
+        conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_del AFTER DELETE ON matches BEGIN {bump.format('OLD')}; END")
+        conn.execute(
+            "CREATE TRIGGER IF NOT EXISTS matches_bump_upd AFTER UPDATE ON matches "
+            "WHEN OLD.notified IS NEW.notified AND OLD.enrich_tries IS NEW.enrich_tries "
+            "AND OLD.stratz_tries IS NEW.stratz_tries AND OLD.stratz_next_ts IS NEW.stratz_next_ts "
+            f"BEGIN {bump.format('NEW')}; END"
+        )
 
     def _conn(self) -> sqlite3.Connection:
         # timeout: фоновые джобы и хендлеры пишут из разных потоков — ждём блокировку, а не падаем.
@@ -275,10 +301,11 @@ class Storage:
             notify_digest=bool(row["notify_digest"]),
             admin_only=bool(row["admin_only"]),
             active=bool(row["active"]),
+            prefer_text=bool(row["prefer_text"]),
         )
 
     def _set_chat_flag(self, chat_id: int, column: str, enabled: bool) -> None:
-        assert column in {"notify_digest", "admin_only", "active"}
+        assert column in {"notify_digest", "admin_only", "active", "prefer_text"}
         self.get_or_create_chat(chat_id)
         with self._conn() as conn:
             conn.execute(f"UPDATE chats SET {column} = ? WHERE chat_id = ?", (1 if enabled else 0, chat_id))
@@ -288,6 +315,9 @@ class Storage:
 
     def set_chat_admin_only(self, chat_id: int, enabled: bool) -> None:
         self._set_chat_flag(chat_id, "admin_only", enabled)
+
+    def set_chat_prefer_text(self, chat_id: int, enabled: bool) -> None:
+        self._set_chat_flag(chat_id, "prefer_text", enabled)
 
     def set_chat_active(self, chat_id: int, active: bool) -> None:
         """Бота убрали из чата (False) или вернули (True). Строку чата без нужды не создаём."""
@@ -597,6 +627,8 @@ class Storage:
         columns = ("player_id", "match_id", "start_time", "player_slot", "radiant_win", "lobby_type",
                    "kills", "deaths", "assists") + self._FILL_FIELDS
         fill = ", ".join(f"{f} = COALESCE({f}, excluded.{f})" for f in self._FILL_FIELDS)
+        # Уже известный матч трогаем, только если пришло что-то новое для пустого поля: пустая запись не двигает data_ver.
+        fills_something = " OR ".join(f"({f} IS NULL AND excluded.{f} IS NOT NULL)" for f in self._FILL_FIELDS)
         rows = [
             (
                 player_id,
@@ -616,7 +648,7 @@ class Storage:
             before = conn.execute(count, (player_id,)).fetchone()[0]
             conn.executemany(
                 f"INSERT INTO matches ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))}) "
-                f"ON CONFLICT(player_id, match_id) DO UPDATE SET {fill}",
+                f"ON CONFLICT(player_id, match_id) DO UPDATE SET {fill} WHERE {fills_something}",
                 rows,
             )
             return conn.execute(count, (player_id,)).fetchone()[0] - before
@@ -766,6 +798,29 @@ class Storage:
             ).fetchone()
         return None if row is None else row["player_slot"]
 
+    def backlog_counts(self, enrich_since: int, enrich_max_tries: int = 3, stratz_max_tries: int = 8) -> dict:
+        """Размер очередей фоновой догрузки по игрокам активных чатов: детали матчей (OpenDota) и данные Stratz."""
+        base = ("FROM matches m JOIN players p ON p.id = m.player_id JOIN chats c ON c.chat_id = p.chat_id "
+                "WHERE c.active = 1 AND ")
+        with self._conn() as conn:
+            details = conn.execute(
+                f"SELECT COUNT(*) {base}m.enriched = 0 AND m.enrich_tries < ? AND m.start_time >= ?",
+                (enrich_max_tries, enrich_since),
+            ).fetchone()[0]
+            stratz = conn.execute(
+                f"SELECT COUNT(*) {base}(m.stratz_done = 0 OR m.party_size IS NULL) AND m.stratz_tries < ?",
+                (stratz_max_tries,),
+            ).fetchone()[0]
+        return {"details": details, "stratz": stratz}
+
+    def player_update_times(self) -> list[Optional[int]]:
+        """updated_ts (последняя успешная сверка матчей) всех игроков активных чатов; None — ещё не обновлялся."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT p.updated_ts FROM players p JOIN chats c ON c.chat_id = p.chat_id WHERE c.active = 1"
+            ).fetchall()
+        return [r["updated_ts"] for r in rows]
+
     def mark_enrich_miss(self, player_id: int, match_id: int) -> None:
         """OpenDota не отдал детали матча — копим попытки, чтобы он не блокировал очередь."""
         with self._conn() as conn:
@@ -864,12 +919,35 @@ class Storage:
         return [dict(r) for r in rows]
 
     def get_matches(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
-        query = "SELECT * FROM matches WHERE player_id = ?"
-        params: list = [player_id]
-        if since_ts is not None:
-            query += " AND start_time >= ?"
-            params.append(since_ts)
-        query += " ORDER BY start_time"
+        """Ранкед-история игрока по времени. Строки берутся из кэша, пока players.data_ver не изменился.
+
+        Словари общие с кэшем — их нельзя менять; список — копия, его можно резать и сортировать.
+        """
         with self._conn() as conn:
-            rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+            row = conn.execute("SELECT data_ver FROM players WHERE id = ?", (player_id,)).fetchone()
+            if row is None:
+                return []
+            version = row[0]  # версию читаем до строк: гонка с записью даст лишь лишнюю перезагрузку
+            with self._matches_cache_lock:
+                cached = self._matches_cache.get(player_id)
+                if cached is not None and cached[0] == version:
+                    self._matches_cache.move_to_end(player_id)
+                else:
+                    cached = None
+            if cached is None:
+                rows = [dict(r) for r in conn.execute(
+                    "SELECT * FROM matches WHERE player_id = ? ORDER BY start_time", (player_id,)
+                ).fetchall()]
+                cached = (version, rows, [r["start_time"] for r in rows])
+                self._remember_matches(player_id, cached)
+        _, rows, starts = cached
+        return list(rows) if since_ts is None else rows[bisect_left(starts, since_ts):]
+
+    def _remember_matches(self, player_id: int, entry: tuple) -> None:
+        with self._matches_cache_lock:
+            self._matches_cache[player_id] = entry
+            self._matches_cache.move_to_end(player_id)
+            total = sum(len(v[1]) for v in self._matches_cache.values())
+            while total > self.MATCH_CACHE_ROWS and len(self._matches_cache) > 1:
+                _, dropped = self._matches_cache.popitem(last=False)
+                total -= len(dropped[1])
