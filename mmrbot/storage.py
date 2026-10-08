@@ -894,9 +894,31 @@ class Storage:
                 [(player_id, code, times.get(code, earned_ts), detail) for code, detail in items.items()],
             )
 
-    def get_outcomes(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
-        """Лёгкая выборка исходов (время/слот/победа) — для графиков, без тяжёлых полей вроде bench_json."""
-        query = "SELECT start_time, player_slot, radiant_win FROM matches WHERE player_id = ?"
+    def player_data_ver(self, player_id: int) -> int:
+        """Версия данных игрока (растёт при любом изменении его матчей); 0 — игрока нет."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT data_ver FROM players WHERE id = ?", (player_id,)).fetchone()
+        return row[0] if row else 0
+
+    def _warm_matches(self, player_id: int, since_ts: Optional[int]) -> Optional[list[dict]]:
+        """Матчи из кэша, если он тёплый и актуален; иначе None (тогда дешевле лёгкий запрос, чем грузить всю историю)."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT data_ver FROM players WHERE id = ?", (player_id,)).fetchone()
+        if row is None:
+            return []
+        with self._matches_cache_lock:
+            cached = self._matches_cache.get(player_id)
+            if cached is None or cached[0] != row[0]:
+                return None
+            self._matches_cache.move_to_end(player_id)
+        _, rows, starts = cached
+        return rows if since_ts is None else rows[bisect_left(starts, since_ts):]
+
+    def _light_matches(self, player_id: int, columns: tuple, since_ts: Optional[int]) -> list[dict]:
+        warm = self._warm_matches(player_id, since_ts)
+        if warm is not None:
+            return [{c: m[c] for c in columns} for m in warm]
+        query = f"SELECT {', '.join(columns)} FROM matches WHERE player_id = ?"
         params: list = [player_id]
         if since_ts is not None:
             query += " AND start_time >= ?"
@@ -906,17 +928,14 @@ class Storage:
             rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
+    def get_outcomes(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
+        """Лёгкая выборка исходов (время/слот/победа) — для графиков: из тёплого кэша матчей, иначе узким запросом."""
+        return self._light_matches(player_id, ("start_time", "player_slot", "radiant_win"), since_ts)
+
     def get_match_sides(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
-        """Лёгкая выборка для совместных игр: id матча, сторона, исход и размер пати (без тяжёлых полей)."""
-        query = "SELECT match_id, start_time, player_slot, radiant_win, party_size FROM matches WHERE player_id = ?"
-        params: list = [player_id]
-        if since_ts is not None:
-            query += " AND start_time >= ?"
-            params.append(since_ts)
-        query += " ORDER BY start_time"
-        with self._conn() as conn:
-            rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        """Лёгкая выборка для совместных игр: id матча, сторона, исход и размер пати."""
+        return self._light_matches(
+            player_id, ("match_id", "start_time", "player_slot", "radiant_win", "party_size"), since_ts)
 
     def get_matches(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
         """Ранкед-история игрока по времени. Строки берутся из кэша, пока players.data_ver не изменился.

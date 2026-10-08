@@ -11,7 +11,7 @@ from typing import Optional
 from mmrbot import cards
 from mmrbot.cards import ACCENT, FG, GOLD, ICON_H, ICON_W, LOSS, MUTED, PAD, PANEL, WIDTH, clean, draw_text
 
-TILE_H, GAP = 118, 14
+TILE_H, GAP = 128, 14
 PER_ROW = 2
 LIMIT = 12
 TILE_W = (WIDTH - 2 * PAD - GAP * (PER_ROW - 1)) / PER_ROW
@@ -57,13 +57,13 @@ def _draw_tile(img, draw, x0: float, y0: float, rec: dict, icons: dict) -> None:
     cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id), x0 + 20, mid - ICON_H / 2)
     tx = x0 + 20 + ICON_W + 20
     room = TILE_W - (tx - x0) - 18
-    draw_text(draw, (tx, y0 + 26), clean(rec.get("label")), 19, MUTED, anchor="lm", max_w=room)
-    draw_text(draw, (tx, y0 + 62), clean(rec.get("value")), 34, LOSS if anti else GOLD, bold=True, anchor="lm", max_w=room)
+    draw_text(draw, (tx, y0 + 28), clean(rec.get("label")), 19, MUTED, anchor="lm", max_w=room)
+    draw_text(draw, (tx, y0 + 66), clean(rec.get("value")), 34, LOSS if anti else GOLD, bold=True, anchor="lm", max_w=room)
     date = clean(rec.get("date"))
     date_w = cards.text_width(date, 20) + 16 if date else 0
-    draw_text(draw, (tx, y0 + 96), clean(rec.get("player")), 20, FG, anchor="lm", max_w=room - date_w)
+    draw_text(draw, (tx, y0 + 105), clean(rec.get("player")), 20, FG, anchor="lm", max_w=room - date_w)
     if date:
-        draw_text(draw, (x0 + TILE_W - 18, y0 + 96), date, 20, MUTED, anchor="rm")
+        draw_text(draw, (x0 + TILE_W - 18, y0 + 105), date, 20, MUTED, anchor="rm")
 
 
 def _draw_streak(img, draw, y: int, streak: tuple[str, int]) -> int:

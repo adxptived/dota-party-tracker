@@ -11,7 +11,8 @@ import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from dataclasses import astuple, dataclass, field
 from typing import Optional, Protocol
 
 from mmrbot import achievements, party, records, stats
@@ -687,7 +688,30 @@ def _counts_for_mmr(match: dict, anchor_ts: int) -> bool:
     return match["start_time"] >= anchor_ts
 
 
+SUMMARY_CACHE_LIMIT = 256
+_SUMMARIES: "OrderedDict[tuple, PlayerSummary]" = OrderedDict()  # сводки игроков (B3): общий для потоков, под _SUMMARIES_LOCK
+_SUMMARIES_LOCK = threading.Lock()
+
+
 def build_player_summary(storage: Storage, chat: Chat, player: Player, now: int) -> PlayerSummary:
+    """Сводка игрока. Кэшируется по версии его данных, всем полям игрока, шагу/поясу чата и локальной дате:
+    `now` влияет только на границу «сегодня». Результат общий — менять его нельзя."""
+    day_start = stats.local_day_start(now, chat.tz)
+    key = (storage.db_path, storage.player_data_ver(player.id), astuple(player), chat.mmr_step, chat.tz, day_start)
+    with _SUMMARIES_LOCK:
+        cached = _SUMMARIES.get(key)
+        if cached is not None:
+            _SUMMARIES.move_to_end(key)
+            return cached
+    summary = _build_player_summary(storage, chat, player, now)
+    with _SUMMARIES_LOCK:
+        _SUMMARIES[key] = summary
+        while len(_SUMMARIES) > SUMMARY_CACHE_LIMIT:
+            _SUMMARIES.popitem(last=False)
+    return summary
+
+
+def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int) -> PlayerSummary:
     step = chat.mmr_step
 
     all_matches = storage.get_matches(player.id)  # вся ранкед-история; MMR-оценка — от якоря ниже

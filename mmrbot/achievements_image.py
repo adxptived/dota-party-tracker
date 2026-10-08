@@ -95,7 +95,7 @@ def _tile(img, draw, x0: float, y0: float, badge: dict) -> None:
         size -= 1
     draw_text(draw, (cx, y0 + 88), label, size, FG, anchor="mm", max_w=TILE_W - 26)
     if badge.get("sub"):
-        draw_text(draw, (cx, y0 + 112), clean(badge["sub"]), 16, MUTED, anchor="mm", max_w=TILE_W - 36)
+        draw_text(draw, (cx, y0 + 112), clean(badge["sub"]), 17, MUTED, anchor="mm", max_w=TILE_W - 36)
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:
@@ -158,7 +158,7 @@ def render_achievements_image(players: list, avatars: Optional[dict] = None, not
         if good:
             ty += _rows(len(good)) * (TILE_H + GAP)
         if anti:
-            draw_text(draw, (PAD + 22, ty + 12), "АНТИРЕКОРДЫ", 17, LOSS, bold=True, anchor="lm")
+            draw_text(draw, (PAD + 22, ty + 12), "АНТИРЕКОРДЫ", 18, LOSS, bold=True, anchor="lm")
             ty += 38
             for i, badge in enumerate(anti):
                 _tile(img, draw, PAD + 22 + (i % PER_ROW) * (TILE_W + GAP), ty + (i // PER_ROW) * (TILE_H + GAP), badge)

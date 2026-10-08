@@ -159,3 +159,18 @@ def test_unnotified_query_uses_partial_index(env):
             "EXPLAIN QUERY PLAN SELECT * FROM matches WHERE player_id = ? AND notified = 0 "
             "AND start_time + COALESCE(duration, 0) >= ? ORDER BY start_time", (player.id, 0)))
     assert "idx_matches_unnotified" in plan
+
+
+def test_light_selects_use_warm_cache_and_stay_correct(env):
+    storage, player, spy = env
+    cold = storage.get_outcomes(player.id)
+    assert spy.row_reads() == 0 and len(cold) == 5  # холодный кэш: узкий запрос, историю целиком не грузим
+    storage.get_matches(player.id)
+    spy.reset()
+    warm = storage.get_outcomes(player.id)
+    sides = storage.get_match_sides(player.id, since_ts=NOW - 1000 + 3)
+    assert not any("FROM matches" in s for s in spy.statements)
+    assert warm == cold and set(warm[0]) == {"start_time", "player_slot", "radiant_win"}
+    assert [m["match_id"] for m in sides] == [3, 4, 5] and "kills" not in sides[0]
+    storage.add_matches(player.id, [_m(9, NOW - 100)])
+    assert len(storage.get_outcomes(player.id)) == 6  # новая игра — кэш не отдаёт устаревшее
