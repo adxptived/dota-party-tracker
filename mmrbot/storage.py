@@ -894,6 +894,12 @@ class Storage:
                 [(player_id, code, times.get(code, earned_ts), detail) for code, detail in items.items()],
             )
 
+    def player_data_ver(self, player_id: int) -> int:
+        """Версия данных игрока (растёт при любом изменении его матчей); 0 — игрока нет."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT data_ver FROM players WHERE id = ?", (player_id,)).fetchone()
+        return row[0] if row else 0
+
     def _warm_matches(self, player_id: int, since_ts: Optional[int]) -> Optional[list[dict]]:
         """Матчи из кэша, если он тёплый и актуален; иначе None (тогда дешевле лёгкий запрос, чем грузить всю историю)."""
         with self._conn() as conn:
