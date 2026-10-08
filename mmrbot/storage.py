@@ -83,12 +83,13 @@ CREATE TABLE IF NOT EXISTS chats (
     active           INTEGER NOT NULL DEFAULT 1,
     prefer_text      INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS achievements (
-    player_id INTEGER NOT NULL,
-    code      TEXT    NOT NULL,
-    earned_ts INTEGER NOT NULL,
-    detail    TEXT,
-    PRIMARY KEY (player_id, code)
+-- прежние лидеры номинаций соревнования (по чату и периоду): по ним замечаем смену лидера
+CREATE TABLE IF NOT EXISTS contest_leaders (
+    chat_id INTEGER NOT NULL,
+    period  TEXT    NOT NULL,
+    key     TEXT    NOT NULL,
+    leader  TEXT    NOT NULL,
+    PRIMARY KEY (chat_id, period, key)
 );
 -- last_gpm … last_gpm_best и insights_dirty больше не используются (карьерные средние бот не запрашивает);
 -- колонки оставлены, чтобы старые базы открывались без пересборки таблицы.
@@ -346,7 +347,6 @@ class Storage:
             ).fetchall()
             for row in clash:
                 conn.execute("DELETE FROM matches WHERE player_id = ?", (row["id"],))
-                conn.execute("DELETE FROM achievements WHERE player_id = ?", (row["id"],))
                 conn.execute("DELETE FROM players WHERE id = ?", (row["id"],))
             conn.execute("DELETE FROM chats WHERE chat_id = ?", (new_chat_id,))
             conn.execute("UPDATE chats SET chat_id = ?, active = 1 WHERE chat_id = ?", (new_chat_id, old_chat_id))
@@ -560,7 +560,6 @@ class Storage:
             return False
         with self._conn() as conn:
             conn.execute("DELETE FROM matches WHERE player_id = ?", (player.id,))
-            conn.execute("DELETE FROM achievements WHERE player_id = ?", (player.id,))
             conn.execute("DELETE FROM players WHERE id = ?", (player.id,))
         return True
 
@@ -876,22 +875,22 @@ class Storage:
             ).fetchall()
         return {r["match_id"] for r in rows}
 
-    # --- достижения -------------------------------------------------------
+    # --- соревнование: прежние лидеры --------------------------------------
 
-    def get_achievements(self, player_id: int) -> dict[str, tuple[int, Optional[str]]]:
+    def get_contest_leaders(self, chat_id: int, period: str) -> dict[str, str]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT code, earned_ts, detail FROM achievements WHERE player_id = ?", (player_id,)
+                "SELECT key, leader FROM contest_leaders WHERE chat_id = ? AND period = ?", (chat_id, period)
             ).fetchall()
-        return {r["code"]: (r["earned_ts"], r["detail"]) for r in rows}
+        return {r["key"]: r["leader"] for r in rows}
 
-    def add_achievements(self, player_id: int, items: dict, earned_ts: int, times: Optional[dict] = None) -> None:
-        """times — {code: реальное время получения}; без него (и для кода без записи) — earned_ts."""
-        times = times or {}
+    def set_contest_leaders(self, chat_id: int, period: str, leaders: dict[str, str]) -> None:
+        """Заменяет набор лидеров чата за период (номинации, которых больше нет, забываются)."""
         with self._conn() as conn:
+            conn.execute("DELETE FROM contest_leaders WHERE chat_id = ? AND period = ?", (chat_id, period))
             conn.executemany(
-                "INSERT OR IGNORE INTO achievements (player_id, code, earned_ts, detail) VALUES (?, ?, ?, ?)",
-                [(player_id, code, times.get(code, earned_ts), detail) for code, detail in items.items()],
+                "INSERT INTO contest_leaders (chat_id, period, key, leader) VALUES (?, ?, ?, ?)",
+                [(chat_id, period, key, leader) for key, leader in leaders.items()],
             )
 
     def player_data_ver(self, player_id: int) -> int:

@@ -684,46 +684,35 @@ def render_game_alert(event: dict) -> str:
     return "\n".join(lines)
 
 
-def _achievement_text(code: str, detail) -> str:
-    from mmrbot.achievements import CATALOG
-    ach = CATALOG.get(code)
-    if ach is None:
-        return _esc(code)
-    extra = f" <i>({_esc(detail)})</i>" if detail and not str(detail).isdigit() else ""
-    return f"{ach.emoji} <b>{_esc(ach.title)}</b>{extra}"
-
-
-def render_achievement_alert(event: dict) -> str:
-    from mmrbot.achievements import CATALOG
-    lines = []
-    for code, detail in event["items"]:
-        ach = CATALOG.get(code)
-        if ach is not None and ach.anti:
-            lines.append(f"🤡 {_b(event['name'])} заработал антирекорд: {_achievement_text(code, detail)}")
-        else:
-            lines.append(f"🏅 {_b(event['name'])} получил достижение: {_achievement_text(code, detail)}")
+def render_contest(period_label: str, standings: list[dict], points: list[dict]) -> str:
+    """Соревнование чата текстом: общий зачёт и топ-3 по каждой номинации (антирекорды — отдельным блоком)."""
+    if not standings:
+        return f"🏅 <b>Соревнование {period_label}</b>\n\n💤 Пока не с кем соревноваться: нужны двое игроков с играми за период."
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = [f"🏅 <b>Соревнование {period_label}</b>", "", "<b>Общий зачёт</b> · 3/2/1 очко за места"]
+    rank = 1
+    for i, row in enumerate(points):
+        if i and (row["points"], row["golds"]) != (points[i - 1]["points"], points[i - 1]["golds"]):
+            rank = i + 1
+        lines.append(f"{medals.get(rank, '▫️')} {_b(row['player'])} — {row['points']} очк.")
+    for anti, title in ((False, "Номинации"), (True, "Антирекорды")):
+        block = [s for s in standings if s["anti"] == anti]
+        if not block:
+            continue
+        lines += ["", f"<b>{title}</b>"]
+        for s in block:
+            lines.append(f"{s['emoji']} {_esc(s['title'])}")
+            for e in s["entries"]:
+                lines.append(f"    {medals.get(e['place'], '▫️')} {_b(e['player'])} — {_esc(e['text'])}")
     return "\n".join(lines)
 
 
-def render_achievements(rows: list, tz: str = "UTC") -> str:
-    """rows: [(имя, {code: (earned_ts, detail)})] — достижения и антирекорды по игрокам."""
-    from mmrbot.achievements import CATALOG
-    if not rows:
-        return NO_PLAYERS
-    blocks = []
-    for name, earned in rows:
-        items = [(c, v) for c, v in earned.items() if c in CATALOG]
-        head = f"{_b(name)} · {len(items)}"
-        if not items:
-            blocks.append(f"{head}\n    💤 пока нет достижений")
-            continue
-        items.sort(key=lambda kv: (CATALOG[kv[0]].anti, kv[1][0]))
-        body = []
-        for code, (ts, detail) in items:
-            date = fmt_local(ts, tz, "%d.%m.%Y")
-            body.append(f"    {_achievement_text(code, detail)} · {date}")
-        blocks.append(head + "\n" + "\n".join(body))
-    return "🏅 <b>Достижения и антирекорды</b>\n\n" + "\n\n".join(blocks)
+def render_leader_change(period_label: str, changes: list[dict]) -> str:
+    """Объявление: кто кого обошёл в номинациях соревнования."""
+    lines = [f"🔄 <b>Смена лидера {period_label}</b>"]
+    for c in changes:
+        lines.append(f"{c['emoji']} {_esc(c['title'])}: {_b(c['new'])} обошёл {_b(c['old'])} ({_esc(c['text'])})")
+    return chr(10).join(lines)
 
 
 _WEEKLY_DUPLICATES = {"climb", "drop", "games", "win_streak"}  # эти итоги недели уже есть в шапке сводки
@@ -736,6 +725,9 @@ def render_weekly(report: dict) -> str:
     games = sum(r["games"] for r in rows)
     wins = sum(r["wins"] for r in rows)
     lines = ["📅 <b>Итоги недели</b>", "", f"🎮 Всего: {plural_games(games)} · {_fmt_wr(games, wins)}"]
+    champion = report.get("champion")
+    if champion:
+        lines.append(f"🏆 Чемпион недели: {_b(champion['player'])} — {champion['points']} очк. (/achievements)")
     best = max(rows, key=lambda r: r["delta"])
     worst = min(rows, key=lambda r: r["delta"])
     if best["delta"] > 0:
@@ -813,7 +805,7 @@ def render_settings(chat) -> str:
         f"<b>{state(chat.notify_digest, 'включена', 'выключена')}</b> <i>(в дни без игр не приходит)</i>\n"
         f"🌍 Часовой пояс: <b>{_esc(tz_label(chat.tz))}</b>\n"
         f"🔔 Оповещения о смене ника/аватарки Steam: <b>{state(chat.notify_steam)}</b>\n"
-        f"🎮 Оповещения о конце матча и достижениях: <b>{state(chat.notify_games)}</b>\n"
+        f"🎮 Оповещения о конце матча: <b>{state(chat.notify_games)}</b>\n"
         f"📅 Недельная сводка (понедельник): <b>{state(chat.notify_weekly, 'включена', 'выключена')}</b>\n"
         f"🖼 Отчёты: <b>{'текстом' if chat.prefer_text else 'картинками'}</b> <i>(рейтинг, матч, карточка игрока и др.; "
         f"«📝 Текстом» под картинкой работает всегда)</i>\n"

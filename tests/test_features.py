@@ -1,19 +1,17 @@
-"""Новые игры, достижения, недельная сводка, график, бэкап, ссылки и склонения."""
+"""Новые игры, соревнование, недельная сводка, график, бэкап, ссылки и склонения."""
 import asyncio
 import sqlite3
+import time
 from datetime import date, datetime, timezone
 
 import pytest
 from aiogram.filters import CommandObject
 
 import mmrbot.bot as botmod
-from mmrbot import achievements
 from mmrbot.backup import backup_db
 from mmrbot.charts import render_mmr_chart
 from mmrbot.formatting import (
     plural_heroes,
-    render_achievement_alert,
-    render_achievements,
     render_game_alert,
     render_match_card,
     render_player_card,
@@ -27,9 +25,7 @@ from mmrbot.storage import Storage
 from mmrbot.tracker import (
     build_mmr_series,
     build_weekly_report,
-    check_achievements,
     detect_new_games,
-    list_achievements,
 )
 from tests.test_formatting import summary
 from tests.test_tracker import FakeOpenDota, od_match
@@ -49,71 +45,11 @@ def store(tmp_path):
     return st
 
 
-# --- достижения (правила) -----------------------------------------------
-
-def test_win_streak_and_lose_streak_achievements():
-    wins = [m(i, i * 100, True) for i in range(1, 7)]
-    got = achievements.evaluate(wins)
-    assert "win_streak_5" in got and "win_streak_10" not in got and "lose_streak_5" not in got
-    losses = [m(i, i * 100, False) for i in range(1, 6)]
-    assert "lose_streak_5" in achievements.evaluate(losses)
-
-
-def test_game_count_and_hero_achievements():
-    matches = [m(i, i * 100, i % 2 == 0, hero=1) for i in range(1, 101)]
-    got = achievements.evaluate(matches)
-    assert {"games_50", "games_100", "hero_50", "hero_100"} <= set(got)
-    assert "games_250" not in got and "Anti-Mage" in got["hero_100"]
-
-
-def test_single_game_achievements():
-    got = achievements.evaluate([
-        m(1, 100, k=22, d=2, a=5), m(2, 200, k=1, d=21, a=3), m(3, 300, k=8, d=0, a=4, dur=3700),
-    ])
-    assert {"kills_20", "deaths_20", "deathless", "marathon"} <= set(got)
-
-
-# --- достижения (хранение) ----------------------------------------------
-
-def test_check_achievements_first_run_is_silent_then_reports_new(store):
+def test_remove_player_still_clears_matches(store):
     p = store.add_player(100, 1, "Вася", None, 0, 0)
-    store.add_matches(p.id, [m(i, i * 100) for i in range(1, 5)])
-    assert check_achievements(store, p, NOW) == []  # засев без оповещений
-    store.add_matches(p.id, [m(5, NOW - 3000)])  # только что сыграл
-    new = check_achievements(store, p, NOW)
-    assert [code for code, _ in new] == ["win_streak_5"]
-    assert check_achievements(store, p, NOW) == []  # второй раз — уже известно
-
-
-def test_late_arriving_history_does_not_flood_chat_with_old_achievements(store):
-    """История доехала уже после засева (при /add OpenDota не ответил или профиль был закрыт):
-    всё заработанное давно запоминается молча, объявляется только сегодняшнее."""
-    p = store.add_player(100, 1, "Вася", None, 0, 0)
-    assert check_achievements(store, p, NOW) == []  # засев на пустой истории
-    old = [m(i, NOW - 400 * 86_400 + i * 3600, k=25 if i == 3 else 5) for i in range(1, 61)]  # год назад: серии, 50 игр, 20 убийств
-    fresh = m(100, NOW - 3000, dur=3700)  # сегодня — марафон
-    store.add_matches(p.id, old + [fresh])
-    new = check_achievements(store, p, NOW)
-    assert [code for code, _ in new] == ["marathon"]
-    known = store.get_achievements(p.id)
-    assert {"games_50", "win_streak_10", "kills_20"} <= set(known)  # старое учтено и в списке достижений видно
-    assert check_achievements(store, p, NOW) == []
-
-
-def test_list_achievements_does_not_write(store):
-    p = store.add_player(100, 1, "Вася", None, 0, 0)
-    store.add_matches(p.id, [m(i, i * 100) for i in range(1, 7)])
-    rows = list_achievements(store, 100, NOW)
-    assert rows[0][0] == "Вася" and "win_streak_5" in rows[0][1]
-    assert store.get_achievements(p.id) == {}
-    assert list_achievements(store, 100, NOW, name="Нет такого") == []
-
-
-def test_remove_player_deletes_achievements(store):
-    p = store.add_player(100, 1, "Вася", None, 0, 0)
-    store.add_achievements(p.id, {"games_50": "50"}, NOW)
+    store.add_matches(p.id, [m(1, 100)])
     store.remove_player(100, "Вася")
-    assert store.get_achievements(p.id) == {}
+    assert store.get_matches(p.id) == []
 
 
 # --- миграция «оповещённых» матчей --------------------------------------
@@ -193,17 +129,16 @@ def test_render_game_alert():
     assert "Сегодня вместе: 5 игр · 3–2" in text
 
 
-def test_render_achievement_alert_normal_and_anti():
-    good = render_achievement_alert({"name": "Вася", "items": [("win_streak_5", "5")]})
-    bad = render_achievement_alert({"name": "Вася", "items": [("deaths_20", "Axe 1/21/3")]})
-    assert "получил достижение" in good and "5 побед подряд" in good
-    assert "антирекорд" in bad and "Axe 1/21/3" in bad
-
-
-def test_render_achievements_list():
-    rows = [("Вася", {"win_streak_5": (NOW, "5")}), ("Петя", {})]
-    text = render_achievements(rows)
-    assert "Вася" in text and "5 побед подряд" in text and "пока нет" in text
+def test_render_contest_text_has_table_nominations_and_anti():
+    from mmrbot.awards import compute_standings, contest_points
+    from mmrbot.formatting import render_contest
+    a = [{"start_time": t, "player_slot": 0, "radiant_win": True, "kills": 5, "deaths": 3, "assists": 7} for t in (1, 2, 3)]
+    b = [dict(x, radiant_win=False) for x in a]
+    st = compute_standings([("Вася", a), ("Петя", b)])
+    text = render_contest("за неделю", st, contest_points(st))
+    assert "Соревнование за неделю" in text and "Общий зачёт" in text and "🥇 <b>Вася</b>" in text
+    assert "Антирекорды" in text and "Серия поражений" in text
+    assert "не с кем" in render_contest("за сутки", [], [])
 
 
 # --- недельная сводка ---------------------------------------------------
@@ -351,31 +286,50 @@ def test_settings_toggle_games_and_weekly(store):
         assert cb.message.edited
 
 
-def test_cmd_achievements_sends_picture_with_text_button(store):
-    p = store.add_player(100, 1, "Вася", None, 0, 0)
-    store.add_matches(p.id, [m(i, i * 100) for i in range(1, 7)])
+def _two_players_with_games(store):
+    a = store.add_player(100, 1, "Вася", None, 0, 0)
+    b = store.add_player(100, 2, "Петя", None, 0, 0)
+    now = int(time.time())
+    store.add_matches(a.id, [m(i, now - 3600 * i, True) for i in range(1, 5)])
+    store.add_matches(b.id, [m(10 + i, now - 3600 * i, False) for i in range(1, 5)])
+
+
+def test_cmd_achievements_sends_contest_picture_with_period_and_text_buttons(store):
+    _two_players_with_games(store)
     msg = Msg()
-    asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args=None), store))
+    asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args=None), store, object()))
     (photo, kw), = msg.photos
-    assert photo.data[:8] == b"\x89PNG\r\n\x1a\n" and "Достижения" in kw["caption"]
+    assert photo.data[:8] == b"\x89PNG\r\n\x1a\n" and "Соревнование" in kw["caption"] and "Вася" in kw["caption"]
     data = [b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row]
-    assert "tx:ach" in data
-    text = asyncio.run(botmod._text_achievements(store, object(), 100, []))  # то, что отдаёт «📝 Текстом»
-    assert "5 побед подряд" in text
-    assert "5 побед подряд" in asyncio.run(botmod._text_achievements(store, object(), 100, ["1"]))
-    assert asyncio.run(botmod._text_achievements(store, object(), 100, ["Никто"])) is None
+    assert "tx:ach:week" in data and {"c:day", "c:week", "c:month", "c:all"} <= set(data)
+    text = asyncio.run(botmod._text_contest(store, object(), 100, ["week"]))  # то, что отдаёт «📝 Текстом»
+    assert "Общий зачёт" in text and "Вася" in text and "Лучший винрейт" in text
+    assert asyncio.run(botmod._text_contest(store, object(), 100, ["nope"])) is None
 
 
 def test_cmd_achievements_as_text_when_chat_prefers_text(store):
-    p = store.add_player(100, 1, "Вася", None, 0, 0)
-    store.add_matches(p.id, [m(i, i * 100) for i in range(1, 7)])
+    _two_players_with_games(store)
     store.set_chat_prefer_text(100, True)
     msg = Msg()
-    asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args=None), store))
-    assert not msg.photos and "5 побед подряд" in msg.sent[0][0]
+    asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args="день"), store, object()))
+    assert not msg.photos and "Соревнование за сутки" in msg.sent[0][0]
+
+
+def test_contest_needs_two_players(store):
+    p = store.add_player(100, 1, "Вася", None, 0, 0)
+    store.add_matches(p.id, [m(i, int(time.time()) - 3600 * i) for i in range(1, 5)])
+    store.set_chat_prefer_text(100, True)
     msg = Msg()
-    asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args="Никто"), store))
-    assert "Не нашёл" in msg.sent[0][0]
+    asyncio.run(botmod.cmd_achievements(msg, CommandObject(command="achievements", args=None), store, object()))
+    assert "не с кем соревноваться" in msg.sent[0][0]
+
+
+def test_contest_period_button_edits_in_place(store):
+    _two_players_with_games(store)
+    cb = CB("c:month")
+    cb.message.photo = True
+    asyncio.run(botmod.on_callback(cb, store, object()))
+    assert cb.message.photos or cb.message.sent or cb.message.edited  # период сменился, отчёт показан
 
 
 class FakeOD:
@@ -720,35 +674,6 @@ def test_command_does_not_wait_for_per_match_requests(store):
 
 
 # --- аудит данных: подписи и даты ----------------------------------------
-
-def test_achievement_dates_are_real_match_dates():
-    from mmrbot.achievements import evaluate_timed
-    day = 86_400
-    matches = [
-        {"match_id": i, "start_time": 1_000_000 + i * day, "duration": 1800, "player_slot": 0,
-         "radiant_win": True, "hero_id": 1, "kills": 1, "deaths": 1, "assists": 1}
-        for i in range(1, 8)
-    ]
-    got = evaluate_timed(matches)
-    ts, detail = got["win_streak_5"]
-    assert ts == 1_000_000 + 5 * day + 1800          # серия достигла 5 на пятом матче, а не «сегодня»
-    assert detail == "7"
-    assert "win_streak_10" not in got
-
-
-def test_seeded_achievements_keep_real_dates(tmp_path):
-    from mmrbot.storage import Storage
-    from mmrbot.tracker import check_achievements
-    store = Storage(str(tmp_path / "a.db"))
-    player = store.add_player(1, 5, "Вася", None, 0, 0)
-    store.add_matches(player.id, [
-        {"match_id": i, "start_time": 1000 * i, "player_slot": 0, "radiant_win": True, "lobby_type": 7, "duration": 600}
-        for i in range(1, 7)
-    ])
-    assert check_achievements(store, player, now=9_999_999) == []        # первая проверка — молча
-    stored = store.get_achievements(player.id)
-    assert stored["win_streak_5"][0] == 5000 + 600                        # не 9_999_999
-
 
 def test_fmt_local_uses_chat_timezone():
     from mmrbot.formatting import fmt_local

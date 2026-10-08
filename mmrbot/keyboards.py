@@ -1,7 +1,7 @@
 """Inline-клавиатуры бота (чистые билдеры, без обработчиков).
 
 Схема callback_data (до 64 байт): `m:<действие>` — главное меню, `m:c:<категория>` — его подменю; `pp:<вид>:<account_id>` —
-выбор игрока; `x:close` — удалить сообщение; `r:<период>` — рекорды; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом;
+выбор игрока; `x:close` — удалить сообщение; `r:<период>` — рекорды; `c:<период>` — соревнование чата; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом;
 `tx:<вид>:<аргументы>` — тот же отчёт текстом (кнопка «📝 Текстом» под любой карточкой-картинкой;
 старое `mt:<match_id>:<account_id|0>` = `tx:match:…` понимается для уже отправленных сообщений);
 `mx:<match_id>` — весь матч картинкой (кнопка под оповещением о конце матча).
@@ -28,7 +28,7 @@ CATEGORIES = {
     ]),
     "records": ("🌟 Рекорды и графики", [
         [("🌟 Рекорды", "records"), ("📈 График MMR", "graph")],
-        [("🏅 Достижения", "achv")],
+        [("🏅 Соревнование", "achv")],
     ]),
     "party": ("👥 Пати", [
         [("👥 Игроки", "list"), ("➕ Добавить", "add")],
@@ -66,7 +66,7 @@ def settings_menu(chat) -> InlineKeyboardMarkup:
     ]
     rows += [tz_buttons[i:i + 4] for i in range(0, len(tz_buttons), 4)]
     rows.append([btn(f"🔔 Steam-профиль: {'вкл' if chat.notify_steam else 'выкл'}", "s:steam")])
-    rows.append([btn(f"🎮 Конец матча и достижения: {'вкл' if chat.notify_games else 'выкл'}", "s:games")])
+    rows.append([btn(f"🎮 Конец матча: {'вкл' if chat.notify_games else 'выкл'}", "s:games")])
     rows.append([btn(f"📰 Ежедневная сводка: {'вкл' if chat.notify_digest else 'выкл'}", "s:digest")])
     rows.append([btn(f"📅 Недельная сводка: {'вкл' if chat.notify_weekly else 'выкл'}", "s:weekly")])
     rows.append([btn(f"🖼 Отчёты: {'текстом' if chat.prefer_text else 'картинками'}", "s:images")])
@@ -84,6 +84,15 @@ def records_buttons(current: str) -> InlineKeyboardMarkup:
     """Периоды рекордов (текущий отмечен «•») + навигация; `r:<период>`."""
     row = [
         InlineKeyboardButton(text=f"• {label}" if key == current else label, callback_data=f"r:{key}")
+        for key, label in PERIODS_RECORDS
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
+
+
+def contest_buttons(current: str) -> InlineKeyboardMarkup:
+    """Периоды соревнования (текущий отмечен «•») + навигация; `c:<период>`."""
+    row = [
+        InlineKeyboardButton(text=f"• {label}" if key == current else label, callback_data=f"c:{key}")
         for key, label in PERIODS_RECORDS
     ]
     return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
@@ -181,13 +190,13 @@ def stats_tabs(current: str) -> InlineKeyboardMarkup:
 
 
 def player_actions(account_id: int) -> InlineKeyboardMarkup:
-    """Под карточкой игрока: герои, позиции, Steam, достижения (`pp:<вид>:<account_id>`)."""
+    """Под карточкой игрока: герои, позиции, Steam (`pp:<вид>:<account_id>`)."""
     def btn(text, kind):
         return InlineKeyboardButton(text=text, callback_data=f"pp:{kind}:{account_id}")
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [btn("🦸 Герои", "heroes"), btn("🎯 Позиции", "roles")],
-        [btn("🎭 Steam", "steam"), btn("🏅 Достижения", "achv")],
+        [btn("🎭 Steam", "steam")],
         nav_row(),
     ])
 

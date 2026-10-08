@@ -16,9 +16,9 @@ from typing import Optional
 from mmrbot import avatars, hero_icons, item_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
 from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
-from mmrbot.achievements_image import MAX_PLAYERS as ACHIEVEMENTS_LIMIT, render_achievements_image
+from mmrbot.contest_image import MAX_TABLE as CONTEST_TABLE_LIMIT, render_contest_image
 from mmrbot.card_data import (
-    achievements_caption, achievements_players, award_items, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
+    award_items, contest_caption, contest_view, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
     summary_rows,
 )
@@ -28,7 +28,8 @@ from mmrbot.together_image import render_together_image
 from mmrbot.health import log_network_error, provider_down
 from mmrbot.formatting import (
     outage_note,
-    render_achievements,
+    PERIOD_LABELS,
+    render_contest,
     render_awards,
     render_party_pulse,
     render_compare_table,
@@ -81,7 +82,7 @@ from mmrbot.tracker import (
     build_mmr_series,
     build_period_awards,
     build_records,
-    list_achievements,
+    build_contest,
 )
 
 log = logging.getLogger(__name__)
@@ -455,32 +456,36 @@ async def records_board(
     return board
 
 
-def _achievements_png(players: list, note) -> bytes:
-    """В потоке: аватары (кэш/CDN) + рендер достижений."""
+def _contest_png(period: str, table: list, noms: list, note) -> bytes:
+    """В потоке: аватары (кэш/CDN) + рендер соревнования."""
     avatar_loader = avatars.shared()
-    found = avatar_loader.get_many(p.get("avatar") for p in players[:ACHIEVEMENTS_LIMIT]) if avatar_loader is not None else {}
-    return render_achievements_image(players, found, note)
+    found = avatar_loader.get_many({r.get("avatar") for r in table[:CONTEST_TABLE_LIMIT]}
+                                   | {e.get("avatar") for n in noms for e in n["entries"]}) if avatar_loader is not None else {}
+    return render_contest_image(period, table, noms, found, note)
 
 
-async def achievements_board(
-    storage: Storage, chat_id: int, name: Optional[str] = None, image: Optional[bool] = None,
-) -> Optional[ImageBoard]:
-    """Достижения и антирекорды (по всей пати или одного игрока): текст всегда, картинка — если нарисовалась.
-
-    Считается из БД, сеть не нужна. None — такого игрока нет.
-    """
-    rows = await _build(list_achievements, storage, chat_id, int(time.time()), name)
-    if not rows:
-        return None
-    tz = storage.get_or_create_chat(chat_id).tz
-    board = ImageBoard(render_achievements(rows, tz))
+async def contest_board(
+    storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None, image: Optional[bool] = None,
+) -> ImageBoard:
+    """Соревнование чата за период: текст всегда, картинка с короткой подписью — если нарисовалась."""
+    await refresh_for("records", storage, od, chat_id, stratz)
+    data = await _build(build_contest, storage, chat_id, period_since(period, int(time.time())),
+                        2 if period == "day" else 3)
+    label = PERIOD_LABELS.get(period, "")
+    board = ImageBoard(_with_stale(storage, chat_id, render_contest(label, data["standings"], data["points"]), od))
     if want_image(storage, chat_id, image):
         avatar_of = {p.display_name: p.steam_avatar for p in storage.list_players(chat_id)}
-        players = achievements_players(rows, avatar_of, tz)
-        board.png = await _render_png("достижения", _achievements_png, players, None)
+        table, noms = contest_view(data["standings"], data["points"], avatar_of)
+        note = _stale_line(storage, chat_id, od)
+        badge = PERIOD_BADGES.get(period, "")
+        board.png = await _render_png("соревнование", _contest_png, badge, table, noms, _plain(note))
         if board.png is not None:
-            board.caption = fit_caption(achievements_caption(players))
+            board.caption = fit_caption(contest_caption(label, table, noms) + (f"\n{note}" if note else ""))
     return board
+
+
+async def render_contest_text(storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None) -> str:
+    return (await contest_board(storage, od, chat_id, period, stratz, image=False)).text
 
 
 async def render_records_board(storage: Storage, od: OpenDota, chat_id: int, period: str, stratz=None) -> str:

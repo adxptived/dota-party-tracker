@@ -337,9 +337,14 @@ def weekly_tiles(report: dict) -> list[dict]:
     if best["delta"] > 0:
         tiles.append({"label": "Больше всех поднялся", "value": clean(best["name"]),
                       "sub": f"{signed(best['delta'])} ({best['wins']}–{best['losses']})", "color": GOLD})
-    busiest = max(rows, key=lambda r: r["games"])
-    tiles.append({"label": "Больше всех играл", "value": clean(busiest["name"]), "sub": plural_games(busiest["games"]),
-                  "color": None})
+    champion = report.get("champion")
+    if champion:  # чемпион недели по общему зачёту соревнования занимает место «больше всех играл»
+        tiles.append({"label": "Чемпион недели", "value": clean(champion["player"]),
+                      "sub": f"{champion['points']} очк. в соревновании", "color": GOLD})
+    else:
+        busiest = max(rows, key=lambda r: r["games"])
+        tiles.append({"label": "Больше всех играл", "value": clean(busiest["name"]),
+                      "sub": plural_games(busiest["games"]), "color": None})
     if report.get("streak"):
         name, length = report["streak"]
         tiles.append({"label": "Лучшая серия побед", "value": f"{length} подряд", "sub": clean(name), "color": GOLD})
@@ -428,37 +433,26 @@ def together_caption(result: dict) -> str:
     return caption
 
 
-# --- достижения ----------------------------------------------------------------------------------------
+# --- соревнование чата -------------------------------------------------------------------------------
 
-def achievements_players(rows: list, avatars: dict, tz: str = "UTC") -> list[dict]:
-    """Игроки для карточки достижений: rows [(имя, {code: (ts, деталь)})], avatars {имя: аватар}.
-
-    Неизвестные коды (убранные из каталога) отбрасываются; порядок — по числу значков, затем по имени.
-    """
-    from mmrbot.achievements import CATALOG
-    players = []
-    for name, earned in rows:
-        items = [{"code": code, "detail": detail, "date": fmt_local(ts, tz, "%d.%m.%Y")}
-                 for code, (ts, detail) in sorted(earned.items(), key=lambda kv: kv[1][0]) if code in CATALOG]
-        players.append({"name": name, "avatar": avatars.get(name), "items": items})
-    players.sort(key=lambda p: (-len(p["items"]), p["name"].lower()))
-    return players
+def contest_view(standings: list, points: list, avatars: dict) -> tuple[list[dict], list[dict]]:
+    """Данные карточки соревнования: (общий зачёт, номинации). avatars — {ник: ссылка на аватар}."""
+    table = [{"name": p["player"], "avatar": avatars.get(p["player"]), "points": p["points"], "golds": p["golds"]}
+             for p in points]
+    noms = [{"title": s["title"], "anti": s["anti"], "entries": [
+        {"name": e["player"], "avatar": avatars.get(e["player"]), "place": e["place"], "text": e["text"]}
+        for e in s["entries"]]} for s in standings]
+    return table, noms
 
 
-def achievements_caption(players: list[dict]) -> str:
-    """Короткая подпись к фото: сколько значков у пати и кто впереди."""
-    from mmrbot.achievements import CATALOG
-    head = "🏅 <b>Достижения</b>"
-    counts = [(p["name"], sum(1 for i in p["items"] if not CATALOG[i["code"]].anti),
-               sum(1 for i in p["items"] if CATALOG[i["code"]].anti)) for p in players]
-    good = sum(c[1] for c in counts)
-    anti = sum(c[2] for c in counts)
-    if not good and not anti:
-        return head + " · пока ни у кого нет"
-    line = f"{head}\nвсего {good} достижений"
-    if anti:
-        line += f" и {anti} антирекордов"
-    top = max(counts, key=lambda c: c[1])
-    if top[1]:
-        line += f" · больше всех у <b>{_esc(top[0])}</b> — {top[1]}"
-    return line
+def contest_caption(period: str, table: list[dict], noms: list[dict]) -> str:
+    """Короткая подпись к фото: период, лидер общего зачёта и число номинаций."""
+    head = f"🏅 <b>Соревнование {html.escape(period.lower())}</b>"
+    if not table:
+        return head + " · пока не с кем соревноваться"
+    lead = table[0]
+    line = f"{head}\nлидер: <b>{_esc(lead['name'])}</b> — {lead['points']} очк."
+    if len(table) > 1:
+        line += f" · дальше {_esc(table[1]['name'])} ({table[1]['points']})"
+    good = sum(1 for n in noms if not n["anti"])
+    return line + f"\nноминаций: {good}" + (f" и антирекордов: {len(noms) - good}" if len(noms) > good else "")

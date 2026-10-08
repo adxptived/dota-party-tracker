@@ -26,7 +26,8 @@ from mmrbot.keyboards import alert_buttons
 from mmrbot.opendota import OpenDota
 from mmrbot.backup import backup_db
 from mmrbot.formatting import (
-    render_achievement_alert,
+    PERIOD_LABELS,
+    render_leader_change,
     render_start_alert,
     render_steam_change,
 )
@@ -36,6 +37,7 @@ from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
 from mmrbot.tracker import (
     backfill_opendota,
+    check_contest_leaders,
     backfill_stratz,
     detect_new_games,
     detect_presence,
@@ -264,6 +266,19 @@ def setup_scheduler(
         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
     )
 
+    async def announce_contest_changes(chat: Chat, now: int) -> None:
+        """После новых игр: кто перехватил лидерство в номинациях соревнования за неделю/месяц (текстом)."""
+        try:
+            events = await asyncio.to_thread(check_contest_leaders, storage, chat.chat_id, now)
+            for event in events:
+                text = render_leader_change(PERIOD_LABELS.get(event["period"], ""), event["changes"])
+                await send_board(bot, chat.chat_id, ImageBoard(text), None)
+        except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
+            if not chat_gone(storage, chat.chat_id, exc):
+                log.warning("Объявление о смене лидера в чат %s отклонено Telegram", chat.chat_id, exc_info=True)
+        except Exception:
+            log.warning("Не удалось проверить смену лидеров в чате %s", chat.chat_id, exc_info=True)
+
     async def game_watch() -> None:
         """Оповещения о новых играх и достижениях (по матчам не старше нескольких часов)."""
         now = int(datetime.now(timezone.utc).timestamp())
@@ -279,11 +294,8 @@ def setup_scheduler(
                 continue
             warm = False
             for event in events:
-                if event["kind"] == "match":
-                    board = await alert_board(event, chat.tz, image=not chat.prefer_text, od=od)
-                    markup = alert_buttons(event["match_id"])
-                else:
-                    board, markup = ImageBoard(render_achievement_alert(event)), None
+                board = await alert_board(event, chat.tz, image=not chat.prefer_text, od=od)
+                markup = alert_buttons(event["match_id"])
                 delivered = True
                 try:
                     await send_board(bot, chat.chat_id, board, markup)
@@ -297,9 +309,10 @@ def setup_scheduler(
                     log.warning("Не удалось отправить оповещение в чат %s", chat.chat_id, exc_info=True)
                 if delivered:
                     storage.mark_notified_matches(event.get("pending") or [])
-                    warm = warm or event["kind"] == "match"
+                    warm = True
             if warm:  # пользователь, открывший /stats после оповещения, получает готовое
                 await warm_chat(storage, od, chat.chat_id, stratz)
+                await announce_contest_changes(chat, now)
 
     async def presence_watch() -> None:
         """Оповещения «зашёл в Dota 2» (Steam Web API); без ключа задача не регистрируется."""

@@ -42,27 +42,35 @@ def _kda(match: dict) -> Optional[float]:
     return (kills + assists) / max(deaths, 1)
 
 
-def compute_period_awards(
-    named_matches: list[tuple[str, list[dict]]], step: int = 25, min_games: int = 3
+def compute_standings(
+    named_matches: list[tuple[str, list[dict]]], step: int = 25, min_games: int = 3, top: int = 3
 ) -> list[dict]:
-    """Награды за период. min_games — порог игр у игрока для метрик-средних (винрейт, GPM, урон…)."""
+    """Соревнование за период: по каждой номинации топ-`top` участников.
+
+    → [{key, emoji, title, anti, entries: [{player, place, value, text}]}], entries от лучшего к худшему
+    (у антирекордов «лучший» — самый антигеройский). Места делят при равенстве значений (1, 2, 2, 4).
+    min_games — порог игр у игрока для метрик-средних (винрейт, GPM, урон…); сравнивать нужно минимум двоих
+    с разными значениями, иначе номинации нет.
+    """
     players = {name: sorted(ms, key=lambda m: m["start_time"]) for name, ms in named_matches if ms}
-    awards: list[dict] = []
+    standings: list[dict] = []
 
     def add(key: str, emoji: str, title: str, values: dict[str, float], detail: Callable[[str], str],
-            lowest: bool = False, floor: float = 0) -> None:
+            lowest: bool = False, floor: float = 0, anti: bool = False, keep: Callable[[float], bool] = None) -> None:
         if len(values) < 2:  # сравнивать не с кем
             return
-        pick = min if lowest else max
-        best = pick(values.values())
-        if best == (max if lowest else min)(values.values()):  # у всех одинаково — отличия нет
+        if max(values.values()) == min(values.values()):  # у всех одинаково — отличия нет
             return
-        if not lowest and best < floor:  # порог значимости (например, серия хотя бы из 2 игр)
+        ordered = sorted(values.items(), key=lambda kv: kv[1] if lowest else -kv[1])
+        shown = [(n, v) for n, v in ordered if (v >= floor or lowest) and (keep is None or keep(v))]  # порог значимости
+        if not shown:
             return
-        winners = [n for n, v in values.items() if v == best]
-        if len(winners) > 1:  # делёж первого места — не выдаём (иначе награда «случайная»)
-            return
-        awards.append({"key": key, "emoji": emoji, "title": title, "player": winners[0], "detail": detail(winners[0])})
+        entries, place = [], 1
+        for i, (name, value) in enumerate(shown[:top]):
+            if i and value != shown[i - 1][1]:
+                place = i + 1
+            entries.append({"player": name, "place": place, "value": value, "text": detail(name)})
+        standings.append({"key": key, "emoji": emoji, "title": title, "anti": anti, "entries": entries})
 
     played = {n: ms for n, ms in players.items() if len(ms) >= 1}
     regular = {n: ms for n, ms in played.items() if len(ms) >= min_games}
@@ -72,13 +80,9 @@ def compute_period_awards(
                               sum(not is_win(m["player_slot"], m["radiant_win"]) for m in ms), step)
         for n, ms in played.items()
     }
-    top = deltas
-    add("climb", "🚀", "Больше всех поднялся", top, lambda n: f"{deltas[n]:+d} MMR")
-    if awards and awards[-1]["key"] == "climb" and deltas[awards[-1]["player"]] <= 0:
-        awards.pop()  # «поднялся» с нулём или минусом — не отличие
-    add("drop", "📉", "Больше всех просел", top, lambda n: f"{deltas[n]:+d} MMR", lowest=True)
-    if awards and awards[-1]["key"] == "drop" and deltas[awards[-1]["player"]] >= 0:
-        awards.pop()
+    add("climb", "🚀", "Больше всех поднялся", deltas, lambda n: f"{deltas[n]:+d} MMR", keep=lambda v: v > 0)
+    add("drop", "📉", "Больше всех просел", deltas, lambda n: f"{deltas[n]:+d} MMR", lowest=True, anti=True,
+        keep=lambda v: v < 0)
 
     add("games", "🕹️", "Больше всех играл", {n: len(ms) for n, ms in played.items()},
         lambda n: _games(len(played[n])))
@@ -118,8 +122,71 @@ def compute_period_awards(
     add("win_streak", "🔥", "Лучшая серия побед", streaks, lambda n: f"{streaks[n]} подряд", floor=2)
 
     deaths = averages("deaths")
-    add("deaths", "💀", "Больше всего смертей", deaths, lambda n: f"{deaths[n]:.1f} смертей/игра")
+    add("deaths", "💀", "Больше всего смертей", deaths, lambda n: f"{deaths[n]:.1f} смертей/игра", anti=True)
 
     loss = {n: _longest_loss_streak(ms) for n, ms in played.items()}
-    add("loss_streak", "🧊", "Серия поражений", loss, lambda n: f"{loss[n]} подряд", floor=3)
+    add("loss_streak", "🧊", "Серия поражений", loss, lambda n: f"{loss[n]} подряд", floor=3, anti=True)
+    return standings
+
+
+POINTS_BY_PLACE = {1: 3, 2: 2, 3: 1}
+
+
+def contest_points(standings: list[dict]) -> list[dict]:
+    """Общий зачёт: 3/2/1 очка за 1/2/3 место в обычных номинациях (антирекорды очков не дают).
+
+    → [{player, points, golds}] от лидера; при равенстве очков выше тот, у кого больше первых мест.
+    """
+    table: dict[str, dict] = {}
+    for standing in standings:
+        for entry in standing["entries"]:
+            row = table.setdefault(entry["player"], {"player": entry["player"], "points": 0, "golds": 0})
+            if standing["anti"]:
+                continue
+            row["points"] += POINTS_BY_PLACE.get(entry["place"], 0)
+            row["golds"] += entry["place"] == 1
+    return sorted(table.values(), key=lambda r: (-r["points"], -r["golds"], r["player"]))
+
+
+def compute_period_awards(
+    named_matches: list[tuple[str, list[dict]]], step: int = 25, min_games: int = 3
+) -> list[dict]:
+    """Награды за период — единственный лидер каждой номинации (при делёже первого места награды нет)."""
+    awards = []
+    for standing in compute_standings(named_matches, step, min_games, top=2):
+        first, rest = standing["entries"][0], standing["entries"][1:]
+        if rest and rest[0]["place"] == 1:
+            continue
+        awards.append({"key": standing["key"], "emoji": standing["emoji"], "title": standing["title"],
+                       "player": first["player"], "detail": first["text"]})
     return awards
+
+
+def current_leaders(standings: list[dict]) -> dict[str, str]:
+    """{номинация: единственный лидер} — только обычные номинации и только без дележа первого места."""
+    leaders = {}
+    for standing in standings:
+        if standing["anti"]:
+            continue
+        firsts = [e["player"] for e in standing["entries"] if e["place"] == 1]
+        if len(firsts) == 1:
+            leaders[standing["key"]] = firsts[0]
+    return leaders
+
+
+def leader_changes(standings: list[dict], previous: dict[str, str]) -> list[dict]:
+    """Номинации, где лидера перехватили: [{key, emoji, title, old, new, text}].
+
+    Новые номинации (раньше лидера не было) и антирекорды не считаются — объявляем только «обошёл».
+    """
+    now = current_leaders(standings)
+    by_key = {s["key"]: s for s in standings}
+    changes = []
+    for key, leader in now.items():
+        old = previous.get(key)
+        if old is None or old == leader:
+            continue
+        standing = by_key[key]
+        changes.append({"key": key, "emoji": standing["emoji"], "title": standing["title"], "old": old,
+                        "new": leader, "text": standing["entries"][0]["text"]})
+    return changes

@@ -22,12 +22,12 @@ from mmrbot.formatting import render_player_list, render_settings, render_steam_
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, contest_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
     STATS_MODES,
-    achievements_board,
+    contest_board,
     stats_board,
     compare_board,
     render_compare_board,
@@ -35,6 +35,7 @@ from mmrbot.service import (
     render_hero_board,
     render_graph_board,
     records_board,
+    render_contest_text,
     render_records_board,
     heroes_board,
     render_heroes_board,
@@ -54,7 +55,7 @@ from mmrbot.storage import Storage
 from mmrbot.tags import auto_link_user, clear_member_tag, link_adder, sync_member_tags
 from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
 from mmrbot.ranks import rank_label
-from mmrbot.tracker import build_leaderboard, check_achievements, refresh_player
+from mmrbot.tracker import build_leaderboard, refresh_player
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ BOT_COMMANDS = [
     BotCommand(command="player", description="🪪 Карточка игрока"),
     BotCommand(command="records", description="🌟 Рекорды пати"),
     BotCommand(command="graph", description="📈 График MMR"),
-    BotCommand(command="achievements", description="🏅 Достижения"),
+    BotCommand(command="achievements", description="🏅 Соревнование чата"),
     BotCommand(command="steam", description="🎭 Steam-профиль"),
     BotCommand(command="add", description="➕ Добавить игрока"),
     BotCommand(command="list", description="👥 Список игроков"),
@@ -167,7 +168,7 @@ HELP_TEXT = (
     '/match [id] — разбор матча\n'
     '/together — игры вместе\n'
     '/compare — кто сильнее\n'
-    '/records · /graph · /achievements\n\n'
+    '/records · /graph · /achievements (соревнование чата)\n\n'
     'Управлять: /list · /remove · /setmmr · /settings\n'
     '/menu — всё кнопками, там же «Термины»\n\n'
     '≈MMR — оценка: старт ± шаг за игру, точный MMR Dota не отдаёт.\n'
@@ -466,9 +467,8 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
         log_network_error(log, f"Первая загрузка истории игрока {account_id} не удалась", exc,
                           health=getattr(od, "health", None))
 
-    try:  # история при добавлении — не «новые игры»: помечаем оповещённой и запоминаем достижения молча
+    try:  # история при добавлении — не «новые игры»: помечаем оповещённой, чтобы не завалить чат
         storage.mark_notified(player.id)
-        check_achievements(storage, player, now)
     except Exception:
         logging.getLogger(__name__).warning("Не удалось инициализировать оповещения игрока", exc_info=True)
 
@@ -504,7 +504,7 @@ async def cmd_remove(message: Message, command: CommandObject, storage: Storage,
 async def _confirm_remove(message, player) -> None:
     """Удаление стирает историю — всегда через подтверждение (права проверяются при нажатии «Да»)."""
     await message.answer(
-        f"🗑️ Удалить игрока {player.display_name}? История его матчей и достижения будут стёрты.",
+        f"🗑️ Удалить игрока {player.display_name}? История его матчей будут стёрты.",
         reply_markup=confirm_remove(player.account_id),
     )
 
@@ -806,10 +806,11 @@ async def _text_hero(storage: Storage, od: OpenDota, chat_id: int, args: list[st
     return await render_hero_board(storage, od, chat_id, hero_name(hero_id), args[1], stratz)
 
 
-async def _text_achievements(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
-    """tx:ach[:<account_id>] — достижения текстом."""
-    board = await achievements_board(storage, chat_id, args[0] if args else None, image=False)
-    return board.text if board else None
+async def _text_contest(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:ach:<period> — соревнование чата текстом."""
+    if len(args) != 1 or args[0] not in PERIODS_KEYS:
+        return None
+    return await render_contest_text(storage, od, chat_id, args[0], stratz)
 
 
 async def _text_together(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
@@ -830,7 +831,7 @@ async def _text_records(storage: Storage, od: OpenDota, chat_id: int, args: list
 
 
 TEXT_VIEWS = {"together": _text_together, "compare": _text_compare, "records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
-              "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_achievements}
+              "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_contest}
 
 
 async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
@@ -923,23 +924,11 @@ async def edit_graph(
         logging.getLogger(__name__).exception("Не удалось сменить период графика")
 
 
-async def do_achievements(message: Message, storage: Storage, name) -> None:
-    """Достижения картинкой (под ней «📝 Текстом»); не вышло — текстом."""
-    status = await _progress(message, WAIT, "upload_photo")
-    try:
-        board = await achievements_board(storage, message.chat.id, name)
-    except Exception:
-        log.exception("Ошибка сборки достижений для чата %s", message.chat.id)
-        await _delete(status)
-        await message.answer(FAILED, reply_markup=nav_menu())
-        return
-    if board is None:
-        await _delete(status)
-        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
-        return
-    player = storage.get_player(message.chat.id, name) if name else None
-    arg = player.account_id if player else None
-    await _reply_image(message, board, with_text_button(nav_menu(), "ach", *([arg] if arg else [])), status)
+async def do_contest(message: Message, storage: Storage, od: OpenDota, period: str, stratz=None,
+                     edit: bool = False) -> None:
+    """Соревнование чата картинкой (периоды меняют её на месте, «📝 Текстом» — текстом); не вышло — текстом."""
+    await _image_report(message, contest_board(storage, od, message.chat.id, period, stratz),
+                        with_text_button(contest_buttons(period), "ach", period), "соревнования", edit=edit)
 
 
 async def do_steam(message: Message, storage: Storage, od: OpenDota, name: str) -> None:
@@ -1049,10 +1038,12 @@ async def cmd_graph(message: Message, command: CommandObject, storage: Storage, 
     await do_graph(message, storage, od, period if (command.args or "").strip() else "week", stratz)
 
 
-@router.message(Command("achievements"))
-async def cmd_achievements(message: Message, command: CommandObject, storage: Storage) -> None:
-    name = (command.args or "").strip().lstrip("@").strip() or None
-    await do_achievements(message, storage, name)
+@router.message(Command("achievements", "contest"))
+async def cmd_achievements(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
+    if not await _has_players(message, storage):
+        return
+    _, period = cmd.parse_target_period(command.args or "")
+    await do_contest(message, storage, od, period if (command.args or "").strip() else "week", stratz)
 
 
 @router.message(Command("steam"))
@@ -1179,7 +1170,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "mt", "tx", "mx"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "c", "mt", "tx", "mx"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -1199,6 +1190,12 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         period = args[0] if args else "week"
         if period in {"day", "week", "month", "year", "all"}:
             await do_records(message, storage, od, period, stratz, edit=True)  # меняем период на месте
+        return
+
+    if kind == "c":
+        period = args[0] if args else "week"
+        if period in PERIODS_KEYS:
+            await do_contest(message, storage, od, period, stratz, edit=True)  # меняем период на месте
         return
 
     if kind == "mx":  # «🎮 Весь матч» под оповещением: тот же разбор, что и /match <id>
@@ -1246,7 +1243,7 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await do_graph(message, storage, od, "week", stratz)
         elif action == "achv":
             if await _has_players(message, storage):
-                await do_achievements(message, storage, None)
+                await do_contest(message, storage, od, "week", stratz)
         elif action == "settings":
             chat = storage.get_or_create_chat(message.chat.id)
             await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
@@ -1308,8 +1305,6 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
             else:
                 await _confirm_remove(message, player)
-        elif pick == "achv":
-            await do_achievements(message, storage, account)
         elif pick in {"me", "meoff"}:
             if message.chat.type == "private":
                 await message.answer("🙋 Работает в группе.", reply_markup=nav_menu())

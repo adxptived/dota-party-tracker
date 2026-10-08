@@ -15,9 +15,9 @@ from collections import OrderedDict
 from dataclasses import astuple, dataclass, field
 from typing import Optional, Protocol
 
-from mmrbot import achievements, party, records, stats
+from mmrbot import party, records, stats
 from mmrbot.presence import advance
-from mmrbot.awards import compute_period_awards
+from mmrbot.awards import compute_period_awards, compute_standings, contest_points, current_leaders, leader_changes
 from mmrbot.health import log_network_error
 from mmrbot.health import provider_down as _provider_down
 from mmrbot.ranks import mmr_rank_mismatch, rank_emoji, rank_label
@@ -411,43 +411,6 @@ def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional
     return events
 
 
-ACHIEVEMENT_FRESH_SEC = 86_400  # достижение объявляем, только если его принесла игра не старше суток
-
-
-def check_achievements(storage: Storage, player: Player, now: int) -> list[tuple[str, Optional[str]]]:
-    """Пересчитать достижения игрока; вернуть новые [(code, деталь)] — только заработанные недавно.
-
-    Первая проверка игрока только запоминает уже заработанное (без оповещений, чтобы не «завалить» чат).
-    Дальше объявляется лишь то, что принесла свежая игра: если история доехала позже засева (при /add
-    OpenDota не ответил, профиль был закрыт, бот долго стоял), всё давнее запоминается молча —
-    иначе чат получал десяток «достижений» многолетней давности разом.
-    """
-    earned = achievements.evaluate_timed(storage.get_matches(player.id))
-    known = storage.get_achievements(player.id)
-    if "_seeded" not in known:
-        storage.add_achievements(player.id, {code: detail for code, (_, detail) in earned.items()}, now,
-                                 {code: ts for code, (ts, _) in earned.items()})
-        storage.add_achievements(player.id, {"_seeded": None}, now)
-        return []
-    new = {code: detail for code, (_, detail) in earned.items() if code not in known}
-    if new:
-        storage.add_achievements(player.id, new, now, {code: earned[code][0] for code in new})
-    return [(code, detail) for code, detail in new.items() if now - earned[code][0] <= ACHIEVEMENT_FRESH_SEC]
-
-
-def list_achievements(storage: Storage, chat_id: int, now: int, name: Optional[str] = None) -> list[tuple]:
-    """[(имя, {code: (ts, деталь)})] по игрокам чата (или одному): заработанное сейчас, с датой из БД."""
-    players = storage.list_players(chat_id)
-    if name is not None:
-        player = storage.get_player(chat_id, name)
-        players = [player] if player else []
-    result = []
-    for player in players:
-        earned = achievements.evaluate_timed(storage.get_matches(player.id))
-        result.append((player.display_name, dict(earned)))  # дата — матч, на котором порог достигнут
-    return result
-
-
 def shared_games_since(storage: Storage, chat_id: int, since_ts: int) -> dict:
     """Совместные игры пати (≥2 игрока на одной стороне) начиная с since_ts: games/wins/losses."""
     named = [(p.display_name, storage.get_match_sides(p.id, since_ts=since_ts)) for p in storage.list_players(chat_id)]
@@ -516,9 +479,6 @@ def detect_new_games(
                 "imp": match.get("imp"), "leaver_status": match.get("leaver_status"),
                 "rank_tier": player.last_rank_tier,
             })
-        new_ach = check_achievements(storage, player, now)
-        if new_ach:
-            events.append({"kind": "achievement", "chat_id": chat.chat_id, "name": player.display_name, "items": new_ach})
     matches_events = sorted(by_match.values(), key=lambda e: e["start_time"])
     for entry in matches_events:
         if len(entry["rows"]) >= 2:
@@ -574,6 +534,50 @@ def build_period_awards(storage: Storage, chat_id: int, since_ts: int, min_games
     return compute_period_awards(named, chat.mmr_step, min_games)
 
 
+def build_contest(storage: Storage, chat_id: int, since_ts: Optional[int], min_games: int = 3) -> dict:
+    """Соревнование чата за период (из кэша БД; since_ts=None — за всё время): номинации с топ-3 и общий зачёт."""
+    players = storage.list_players(chat_id)
+    if len(players) < 2:
+        return {"standings": [], "points": []}
+    chat = storage.get_or_create_chat(chat_id)
+    named = [(p.display_name, storage.get_matches(p.id, since_ts=since_ts)) for p in players]
+    standings = compute_standings(named, chat.mmr_step, min_games)
+    return {"standings": standings, "points": contest_points(standings)}
+
+
+CONTEST_ANNOUNCE_PERIODS = ("week", "month")  # за сутки лидеры меняются слишком часто — не спамим
+
+
+def check_contest_leaders(storage: Storage, chat_id: int, now: int) -> list[dict]:
+    """Смена лидеров номинаций за неделю и месяц: [{period, changes}] — только новое с прошлой проверки.
+
+    Первая проверка периода только запоминает лидеров (без объявлений). Лидеры хранятся в БД, поэтому
+    одну и ту же смену чат услышит один раз; при дележе первого места прежний лидер остаётся прежним.
+    """
+    events = []
+    for period in CONTEST_ANNOUNCE_PERIODS:
+        data = build_contest(storage, chat_id, stats.period_since(period, now))
+        previous = storage.get_contest_leaders(chat_id, period)
+        leaders = current_leaders(data["standings"])
+        if previous:
+            changes = leader_changes(data["standings"], previous)
+            if changes:
+                events.append({"period": period, "changes": changes})
+        # дележ первого места не стирает прежнего лидера, а исчезнувшая номинация — забывается
+        keep = {k: v for k, v in previous.items() if k not in leaders and k in {s["key"] for s in data["standings"]}}
+        storage.set_contest_leaders(chat_id, period, {**keep, **leaders})
+    return events
+
+
+def contest_champion(points: list[dict]) -> Optional[dict]:
+    """Чемпион периода — единственный лидер общего зачёта (при равенстве очков и первых мест — никого)."""
+    if not points or points[0]["points"] <= 0:
+        return None
+    if len(points) > 1 and (points[0]["points"], points[0]["golds"]) == (points[1]["points"], points[1]["golds"]):
+        return None
+    return points[0]
+
+
 def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
     """Итоги недели чата из кэша БД: таблица периода, герой недели, лучшая серия, совместные игры."""
     chat = storage.get_or_create_chat(chat_id)
@@ -598,6 +602,7 @@ def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
         hero = {"hero_id": hero_id, "games": games, "wins": wins}
     return {
         "rows": rows,
+        "champion": contest_champion(build_contest(storage, chat_id, since)["points"]),
         "hero": hero,
         "streak": best_streak if best_streak[1] >= 2 else None,
         "shared": party.together_summary(named),

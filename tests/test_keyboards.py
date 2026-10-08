@@ -95,7 +95,7 @@ def test_stats_tabs_mark_current():
 
 def test_player_actions_and_list_actions():
     data = {b.callback_data for b in _flat(player_actions(1001))}
-    assert {"pp:heroes:1001", "pp:roles:1001", "pp:steam:1001", "pp:achv:1001", "m:menu"} <= data
+    assert {"pp:heroes:1001", "pp:roles:1001", "pp:steam:1001", "m:menu"} <= data
     data = {b.callback_data for b in _flat(list_actions())}
     assert {"m:add", "m:setmmr", "m:remove", "m:menu"} <= data
 

@@ -287,13 +287,6 @@ def test_alert_stays_pending_when_telegram_is_down(tmp_path, monkeypatch):
     assert marked == []  # не отправлено — уйдёт в следующем опросе
 
 
-def test_achievement_alert_stays_text(tmp_path, monkeypatch):
-    bot = _AlertBot()
-    event = {"kind": "achievement", "chat_id": 5, "name": "Вася", "items": [("first_blood", None)], "pending": []}
-    _run_game_watch(tmp_path, monkeypatch, bot, event)
-    assert not bot.photos and len(bot.texts) == 1
-
-
 # --- недельная сводка и дайджест уходят картинкой ----------------------------------------------
 
 class _PhotoBot:
@@ -384,3 +377,28 @@ def test_warm_chat_swallows_errors(tmp_path, monkeypatch):
 
     monkeypatch.setattr(service, "stats_board", boom)
     asyncio.run(service.warm_chat(Storage(str(tmp_path / "w.db")), _Provider(), 5))  # не бросает
+
+
+def test_contest_leader_change_is_announced_after_new_games(tmp_path, monkeypatch):
+    import time
+    bot = _AlertBot()
+    storage = Storage(str(tmp_path / "c.db"))
+    storage.get_or_create_chat(5)
+    a, b = storage.add_player(5, 1, "Вася", None, 0, 0), storage.add_player(5, 2, "Петя", None, 0, 0)
+    now = int(time.time())
+
+    def games(player, base, gpm, start):
+        storage.add_matches(player.id, [{"match_id": base + i, "start_time": start - 3600 * i, "player_slot": 0,
+                                         "radiant_win": True, "lobby_type": 7, "kills": 5, "deaths": 3, "assists": 7,
+                                         "hero_id": 1, "duration": 2400, "gpm": gpm} for i in range(1, 4)])
+    games(a, 100, 700, now)
+    games(b, 200, 400, now)
+    monkeypatch.setattr(sched, "detect_new_games", lambda *a, **kw: [_alert_event()])
+    monkeypatch.setattr(storage, "mark_notified_matches", lambda pending: None)
+    scheduler = sched.setup_scheduler(bot, storage, _Provider())
+    jobs = {job.func.__name__: job.func for job in scheduler.get_jobs()}
+    asyncio.run(jobs["game_watch"]())                       # первый проход: лидеры только запоминаются
+    assert not any("Смена лидера" in t for _, t, *_ in bot.texts)
+    games(b, 300, 1500, now - 10)                           # Петя перехватил GPM
+    asyncio.run(jobs["game_watch"]())
+    assert any("Смена лидера" in t and "Петя" in t and "Вася" in t for _, t, *_ in bot.texts)
