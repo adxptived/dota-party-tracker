@@ -38,9 +38,15 @@ class HeroIcons:
         self._misses: dict[str, float] = {}
         self._lock = threading.Lock()
 
+    ICON_URL = ICON_URL
+
+    def _slug(self, key) -> Optional[str]:
+        """Ключ иконки (hero_id) → имя файла; наследники (иконки предметов) подставляют своё."""
+        return hero_slug(key)
+
     def get(self, hero_id) -> Optional[bytes]:
         """PNG-байты иконки героя | None (неизвестный герой, нет сети)."""
-        slug = hero_slug(hero_id)
+        slug = self._slug(hero_id)
         if slug is None:
             return None
         with self._lock:
@@ -65,7 +71,7 @@ class HeroIcons:
 
     def get_many(self, hero_ids) -> dict[int, bytes]:
         """{hero_id: PNG} для найденных иконок (не найденные пропускаются)."""
-        ids = list(dict.fromkeys(hid for hid in hero_ids if hero_slug(hid)))
+        ids = list(dict.fromkeys(hid for hid in hero_ids if self._slug(hid)))
         if not ids:
             return {}
         with ThreadPoolExecutor(min(FETCH_THREADS, len(ids))) as pool:
@@ -87,7 +93,7 @@ class HeroIcons:
 
     def _download(self, slug: str) -> Optional[bytes]:
         try:
-            resp = self._session.get(ICON_URL.format(slug=slug), timeout=self.timeout)
+            resp = self._session.get(self.ICON_URL.format(slug=slug), timeout=self.timeout)
         except Exception as exc:
             self.health.failure(exc)
             log.warning("Иконка героя %s не скачалась: %s", slug, exc)  # без трейсбека: 10 иконок — 10 простыней

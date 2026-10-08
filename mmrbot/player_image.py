@@ -1,5 +1,5 @@
 """Карточка игрока картинкой (/player): шапка с аватаром, рангом и ≈MMR, плитки показателей, динамика MMR и форма,
-соло против группы, топ-герои, лучшая игра, профиль навыков, предупреждения плашкой.
+соло против группы, топ-герои, последняя игра, профиль навыков, предупреждения плашкой.
 
 Чистая функция: данные приходят словарём (его собирает card_data.player_card), иконки героев и аватар — готовыми
 байтами; сети и БД здесь нет. Ключи словаря — в card_data.player_card.
@@ -55,9 +55,9 @@ def render_player_image(card: dict, icons: Optional[dict] = None, avatars: Optio
     if card.get("series") or card.get("form") or card.get("split") or card.get("hours"):
         y = _draw_trend_row(img, draw, y, card) + GAP
 
-    heroes, best = card.get("heroes") or [], card.get("best_game")
-    if heroes or best:
-        y = _draw_heroes_row(img, draw, y, heroes, best, icons) + GAP
+    heroes, last = card.get("heroes") or [], card.get("last_game")
+    if heroes or last:
+        y = _draw_heroes_row(img, draw, y, heroes, last, icons) + GAP
 
     skills = card.get("skills") or []
     if skills:
@@ -138,7 +138,7 @@ def _draw_trend_row(img, draw, y: int, card: dict) -> int:
     return y + h
 
 
-def _draw_heroes_row(img, draw, y: int, heroes: list, best: Optional[dict], icons: dict) -> int:
+def _draw_heroes_row(img, draw, y: int, heroes: list, last: Optional[dict], icons: dict) -> int:
     h = 56 + max(len(heroes), 1) * HERO_ROW_H + 12
     x0, y0 = _section(img, draw, (PAD, y, PAD + LEFT_W, y + h), "Топ героев")
     for i, hero in enumerate(heroes[:3]):
@@ -153,14 +153,15 @@ def _draw_heroes_row(img, draw, y: int, heroes: list, best: Optional[dict], icon
         draw_text(draw, (right, top + 52), f"{round(hero['winrate'] * 100)}%", 24, FG, bold=True, anchor="rm")
 
     rx = PAD + LEFT_W + GAP
-    x1, y1 = _section(img, draw, (rx, y, rx + RIGHT_W, y + h), "Лучшая игра")
-    if best:
-        cards.paste(img, cards.hero_icon(icons.get(best["hero_id"]), best["hero_id"]), x1, y1 + 4)
-        draw_text(draw, (x1 + ICON_W + 20, y1 + 20), clean(best["name"]), 24, FG, bold=True, anchor="lm", max_w=RIGHT_W - ICON_W - 70)
-        draw_text(draw, (x1 + ICON_W + 20, y1 + 52), f"KDA {best['kda']:.1f}", 22, GOLD, bold=True, anchor="lm")
-        cards.kda(draw, rx + RIGHT_W / 2, y1 + 118, best["kills"], best["deaths"], best["assists"], 44)
+    x1, y1 = _section(img, draw, (rx, y, rx + RIGHT_W, y + h), "Последняя игра")
+    if last:
+        cards.paste(img, cards.hero_icon(icons.get(last["hero_id"]), last["hero_id"]), x1, y1 + 4)
+        draw_text(draw, (x1 + ICON_W + 20, y1 + 20), clean(last["name"]), 24, FG, bold=True, anchor="lm", max_w=RIGHT_W - ICON_W - 70)
+        draw_text(draw, (x1 + ICON_W + 20, y1 + 52), "победа" if last.get("won") else "поражение", 22,
+                  WIN if last.get("won") else LOSS, bold=True, anchor="lm")
+        cards.kda(draw, rx + RIGHT_W / 2, y1 + 118, last["kills"], last["deaths"], last["assists"], 44)
     else:
-        draw_text(draw, (x1, y1 + 30), "пока нет подходящих игр", 22, MUTED, anchor="lm")
+        draw_text(draw, (x1, y1 + 30), "пока нет игр", 22, MUTED, anchor="lm")
     return y + h
 
 

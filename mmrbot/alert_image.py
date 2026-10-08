@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import html
+import io
+from functools import lru_cache
 from typing import Optional
 
 from mmrbot import cards
@@ -13,7 +15,7 @@ from mmrbot.boards import CAPTION_LIMIT
 from mmrbot.cards import (
     ACCENT, BG, FG, GOLD, ICON_H, ICON_W, LOSS, MUTED, PAD, PANEL, WIDTH, WIN, clean, draw_text, signed,
 )
-from mmrbot.formatting import _mvp_name, _thousands, fmt_local, plural_games
+from mmrbot.formatting import _k, _mvp_name, _thousands, fmt_local, plural_games
 from mmrbot.heroes import hero_name
 from mmrbot.ranks import rank_label
 
@@ -24,6 +26,11 @@ NAME_MAX_W = 360
 KDA_X = 760
 RIGHT = WIDTH - PAD - 24
 FOOT_H = 76
+STRIP_H = 52  # полоса под строкой игрока: билд, апгрейды, фарм, ранг (только если есть что показать)
+TIME_H = 18  # + подписи времени покупки под иконками предметов
+ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
+BADGE = 40
+STRIP_TEXT_X = 840  # фарм и урон по зданиям — правее билда и значков апгрейдов
 
 
 def _outcome(rows: list) -> tuple[str, str]:
@@ -40,14 +47,58 @@ def _delta(row: dict) -> int:
     return step if row.get("won") else -step
 
 
-def render_alert_image(event: dict, tz: str = "UTC", icons: Optional[dict] = None, avatars: Optional[dict] = None) -> bytes:
+def clock(seconds) -> str:
+    """Время игры м:сс (покупка до старта — 0:00); не число — пустая строка."""
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return ""
+    seconds = max(int(seconds), 0)
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _has_strip(row: dict) -> bool:
+    return bool(row.get("items") or row.get("neutral_item") or row.get("rank_tier") or row.get("shard")
+                or row.get("scepter") or row.get("tower_damage"))
+
+
+def _times(row: dict) -> list:
+    """Подписи времени покупки по слотам билда ('' — неизвестно)."""
+    return [clock(t) for t in (row.get("item_times") or [])[: len(row.get("items") or [])]]
+
+
+def _row_h(row: dict) -> int:
+    if not _has_strip(row):
+        return ROW_H
+    return ROW_H + STRIP_H + (TIME_H if any(_times(row)) else 0)
+
+
+@lru_cache(maxsize=512)
+def _item_icon(data: Optional[bytes], w: int = ITEM_W, h: int = ITEM_H, radius: int = 6):
+    """Иконка предмета со скруглением; нет/битая — тёмная плашка."""
+    from PIL import Image
+    icon = None
+    if data:
+        try:
+            icon = Image.open(io.BytesIO(data)).convert("RGBA").resize((w, h), Image.LANCZOS)
+        except Exception:
+            icon = None
+    if icon is None:
+        icon = Image.new("RGBA", (w, h), cards.GRID)
+    icon.putalpha(cards._rr_mask(w, h, radius))
+    return icon
+
+
+def render_alert_image(
+    event: dict, tz: str = "UTC", icons: Optional[dict] = None, avatars: Optional[dict] = None,
+    item_icons: Optional[dict] = None,
+) -> bytes:
     """Событие `detect_new_games` (kind="match") → PNG-байты.
 
-    icons: {hero_id: PNG-байты}; avatars: {url: байты}; отсутствующие рисуются заглушками.
+    icons: {hero_id: PNG-байты}; avatars: {url: байты}; item_icons: {item_id: PNG-байты};
+    отсутствующие рисуются заглушками.
     """
-    icons, avatars = icons or {}, avatars or {}
+    icons, avatars, item_icons = icons or {}, avatars or {}, item_icons or {}
     rows = event.get("rows") or []
-    canvas = cards.Canvas(260 + len(rows) * (ROW_H + ROW_GAP) + FOOT_H + 100)
+    canvas = cards.Canvas(260 + sum(_row_h(r) + ROW_GAP for r in rows) + FOOT_H + 100)
     img, draw = canvas.img, canvas.draw
 
     when = fmt_local(event.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
@@ -66,8 +117,8 @@ def render_alert_image(event: dict, tz: str = "UTC", icons: Optional[dict] = Non
 
     mvp = _mvp_name(rows)
     for row in rows:
-        _draw_row(img, draw, y, row, icons, avatars, mvp)
-        y += ROW_H + ROW_GAP
+        _draw_row(img, draw, y, row, icons, avatars, mvp, item_icons)
+        y += _row_h(row) + ROW_GAP
 
     shared = event.get("shared")
     if shared and shared.get("games"):
@@ -76,11 +127,13 @@ def render_alert_image(event: dict, tz: str = "UTC", icons: Optional[dict] = Non
     return canvas.png(y)
 
 
-def _draw_row(img, draw, y: int, row: dict, icons: dict, avatars: dict, mvp: Optional[str]) -> None:
+def _draw_row(
+    img, draw, y: int, row: dict, icons: dict, avatars: dict, mvp: Optional[str], item_icons: Optional[dict] = None,
+) -> None:
     won = bool(row.get("won"))
     accent = WIN if won else LOSS
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), cards.mix(PANEL, accent, 0.09), radius=16)
-    cards.stripe(img, PAD, y, y + ROW_H, accent)
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + _row_h(row)), cards.mix(PANEL, accent, 0.09), radius=16)
+    cards.stripe(img, PAD, y, y + _row_h(row), accent)
     mid = y + ROW_H / 2
 
     name = clean(row.get("name")) or "Игрок"
@@ -127,6 +180,41 @@ def _draw_row(img, draw, y: int, row: dict, icons: dict, avatars: dict, mvp: Opt
         is_win = row.get("streak_type") == "W"
         text = f"▲ {streak} подряд" if is_win else f"▼ {streak} подряд"
         cards.pill(img, draw, RIGHT, mid + 26, text, BG, WIN if is_win else LOSS, size=18, pad=12, align="right")
+    if _has_strip(row):
+        _draw_strip(img, draw, y + ROW_H + STRIP_H / 2 - 2, row, item_icons or {})
+
+
+def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
+    """Билд (6 слотов + нейтралка) слева, фарм посередине, ранг справа."""
+    x = PAD + 22
+    times = _times(row)
+    for i, item_id in enumerate(row.get("items") or []):
+        cards.paste(img, _item_icon(item_icons.get(item_id)), x, mid - ITEM_H / 2)
+        if i < len(times) and times[i]:
+            draw_text(draw, (x + ITEM_W / 2, mid + ITEM_H / 2 + 11), times[i], 15, MUTED, anchor="mm")
+        x += ITEM_W + ITEM_GAP
+    if row.get("neutral_item"):
+        x += 10
+        cards.paste(img, _item_icon(item_icons.get(row["neutral_item"])), x, mid - ITEM_H / 2)
+        x += ITEM_W
+    x += 14
+    for key, label, color in (("shard", "ШАРД", ACCENT), ("scepter", "СКИПЕТР", GOLD)):
+        if row.get(key):
+            when = clock(row.get(f"{key}_time"))
+            x += cards.pill(img, draw, x, mid, f"{label} {when}".strip(), BG, color, size=16, pad=10) + 8
+    farm = []
+    if row.get("net_worth"):
+        farm.append(f"NW {_k(row['net_worth'])}")
+    if row.get("last_hits") is not None:
+        farm.append(f"{row['last_hits']}/{row.get('denies') or 0}")
+    lines = ["  ·  ".join(farm)] if farm else []
+    if isinstance(row.get("tower_damage"), (int, float)) and row["tower_damage"]:
+        lines.append(f"{_k(row['tower_damage'])} по зданиям")
+    for i, line in enumerate(lines):
+        draw_text(draw, (STRIP_TEXT_X, mid + (i - (len(lines) - 1) / 2) * 24), line, 18, MUTED, anchor="lm")
+    if row.get("rank_tier"):
+        cards.paste(img, cards.rank_badge(row["rank_tier"], BADGE), RIGHT - BADGE, mid - BADGE / 2)
+        draw_text(draw, (RIGHT - BADGE - 10, mid), rank_label(row["rank_tier"]), 20, FG, anchor="rm")
 
 
 def _draw_shared(img, draw, y: int, shared: dict) -> None:

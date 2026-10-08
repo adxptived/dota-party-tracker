@@ -75,3 +75,57 @@ def test_caption_escapes_names_and_fits_many_players():
 def test_caption_for_loss_and_win():
     assert "Поражение" in alert_caption(_event([_row("A", False)]))
     assert "Победа" in alert_caption(_event([_row("A")]))
+
+
+def _png(color=(200, 50, 50)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (88, 64), color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_build_strip_adds_height_only_for_rows_with_build_or_rank():
+    plain = _open(render_alert_image(_event(), "UTC"))
+    built = _open(render_alert_image(_event([_row("A", items=[1, 2, 3])]), "UTC"))
+    ranked = _open(render_alert_image(_event([_row("A", rank_tier=75)]), "UTC"))
+    assert built.height > plain.height + 30 and ranked.height > plain.height + 30
+
+
+def test_build_icons_and_neutral_are_drawn_and_junk_does_not_break():
+    row = _row("A", items=[1, 2, 3, 4, 5, 6], neutral_item=9, net_worth=21400, last_hits=312, denies=14,
+               rank_tier=75)
+    event = _event([row])
+    placeholders = render_alert_image(event, "UTC")
+    with_icons = render_alert_image(event, "UTC", item_icons={1: _png(), 9: _png((50, 200, 50))})
+    junk = _open(render_alert_image(event, "UTC", item_icons={1: b"junk", 2: b""}))
+    assert with_icons != placeholders and junk.width == WIDTH
+
+
+def test_row_without_data_for_build_is_unchanged_by_item_icons():
+    event = _event()
+    assert render_alert_image(event, "UTC") == render_alert_image(event, "UTC", item_icons={1: _png()})
+
+
+def test_clock_formats_purchase_time():
+    from mmrbot.alert_image import clock
+    assert clock(0) == "0:00" and clock(-30) == "0:00" and clock(65) == "1:05" and clock(1450) == "24:10"
+    assert clock(4510) == "75:10" and clock(None) == ""
+
+
+def test_purchase_times_shard_scepter_and_tower_damage_are_drawn():
+    base = _row("A", items=[1, 2, 3], rank_tier=75)
+    timed = dict(base, item_times=[300, 1100, None])
+    full = dict(timed, shard=True, shard_time=1450, scepter=True, scepter_time=2000, tower_damage=6589,
+                net_worth=21400, last_hits=300, denies=5)
+    plain_png = render_alert_image(_event([base]), "UTC")
+    timed_png = render_alert_image(_event([timed]), "UTC")
+    full_png = render_alert_image(_event([full]), "UTC")
+    assert len({plain_png, timed_png, full_png}) == 3
+    assert _open(timed_png).height > _open(plain_png).height  # подписи времени под иконками
+
+
+def test_tower_damage_alone_or_upgrades_alone_make_a_strip():
+    plain = _open(render_alert_image(_event(), "UTC"))
+    assert _open(render_alert_image(_event([_row("A", tower_damage=5000)]), "UTC")).height > plain.height
+    assert _open(render_alert_image(_event([_row("A", shard=True)]), "UTC")).height > plain.height
+    junk = _row("A", items=[1], item_times=["x", None], shard=True, shard_time="bad", tower_damage="много")
+    assert _open(render_alert_image(_event([junk]), "UTC")).width == WIDTH  # странные данные не роняют рендер

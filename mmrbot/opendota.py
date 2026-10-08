@@ -13,6 +13,7 @@ from typing import Optional
 import requests
 
 from .health import ProviderHealth, ProviderUnavailable
+from .items import item_slug
 from .ranks import average_rank_tier
 
 BASE_URL = "https://api.opendota.com/api"
@@ -20,6 +21,7 @@ _RETRY_STATUSES = {429, 500, 502, 503, 504}
 RANKED_LOBBY = 7
 
 
+_ITEM_SLOTS = tuple(f"item_{i}" for i in range(6))  # основные слоты; рюкзак и нейтралка — отдельно
 _MAX_RETRY_AFTER = 30.0
 _INLINE_WAIT = 10.0  # дольше этого лимит не пережидаем в запросе — сразу отдаём кэш из БД
 _MAX_BLOCK = 900.0  # потолок паузы после 429 (сек): дальше пробуем снова
@@ -42,6 +44,31 @@ def _retry_after(resp, default: float) -> float:
     """Пауза из заголовка Retry-After (секунды), ограниченная сверху; иначе default."""
     value = _retry_after_raw(resp)
     return default if value is None else min(value, _MAX_RETRY_AFTER)
+
+
+def _purchase_times(player: dict) -> dict:
+    """Ключ предмета → время (сек) его последней покупки по purchase_log. Матч без разбора (лога нет) → пусто."""
+    bought: dict = {}
+    for entry in player.get("purchase_log") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("key"), str) and isinstance(entry.get("time"), (int, float)):
+            bought[entry["key"]] = max(bought.get(entry["key"], entry["time"]), entry["time"])
+    return bought
+
+
+def _player_build(player: dict) -> dict:
+    """Билд игрока из матча OpenDota: предметы, время их покупки, нейтралка, шард и скипетр (с временем)."""
+    bought = _purchase_times(player)
+    items = [player[slot] for slot in _ITEM_SLOTS if player.get(slot)]
+    return {
+        "items": items,
+        "item_times": [bought.get(item_slug(item_id)) for item_id in items],  # None — время неизвестно
+        "neutral_item": player.get("item_neutral") or None,
+        "shard": bool(player.get("aghanims_shard")) or "aghanims_shard" in bought,
+        "shard_time": bought.get("aghanims_shard"),
+        "scepter": bool(player.get("aghanims_scepter")) or "ultimate_scepter" in bought,
+        "scepter_time": bought.get("ultimate_scepter"),
+        "bought": bought,  # {предмет: время последней покупки} — для предметов медведя Лон Друида
+    }
 
 
 def _party_size(players: list, me: dict) -> Optional[int]:
@@ -106,6 +133,7 @@ class OpenDota:
         self._match_cache: "OrderedDict[int, tuple[float, dict]]" = OrderedDict()
         self._match_locks: dict[int, threading.Lock] = {}
         self._refresh_at: dict[int, float] = {}
+        self._parse_requested: set[int] = set()  # матчи, на разбор которых уже просили OpenDota
         # Лок защищает только резервирование «слота» запроса (троттлинг): сами HTTP-запросы идут
         # параллельно — ожидание сети перекрывается между потоками, частота остаётся в лимите.
         self._lock = threading.Lock()
@@ -251,10 +279,46 @@ class OpenDota:
                 self.health.release()
             return False
 
+    def request_parse(self, match_id: int) -> bool:
+        """Попросить OpenDota разобрать реплей матча (POST /request/{id}): без разбора нет таймингов покупок.
+
+        Разбор идёт у OpenDota несколько минут. На один матч просим один раз; best-effort, ошибок не бросает.
+        """
+        with self._lock:
+            if match_id in self._parse_requested:
+                return False
+            self._parse_requested.add(match_id)
+        if not self.health.allow():
+            with self._lock:
+                self._parse_requested.discard(match_id)
+            return False
+        self._throttle()
+        try:
+            resp = self._session.post(f"{BASE_URL}/request/{match_id}", timeout=self.timeout, **self._auth(), **self._net())
+            self._note_quota(resp)
+            if getattr(resp, "status_code", 200) < 500:
+                self.health.success()
+            else:
+                self.health.release()
+            return True
+        except Exception as exc:
+            with self._lock:
+                self._parse_requested.discard(match_id)  # не дошло — в следующий раз попробуем снова
+            if isinstance(exc, requests.ConnectionError):
+                self.health.failure(exc)
+            else:
+                self.health.release()
+            return False
+
     def get_heroes(self) -> list[dict]:
         """Справочник героев /heroes: [{id, localized_name, ...}] (пусто при сбое формата)."""
         data = self._get("/heroes")
         return data if isinstance(data, list) else []
+
+    def get_item_ids(self) -> dict:
+        """Справочник предметов /constants/item_ids: {"1": "blink", ...} (пусто при сбое формата)."""
+        data = self._get("/constants/item_ids")
+        return data if isinstance(data, dict) else {}
 
     def get_profile(self, account_id: int) -> dict:
         data = self._get(f"/players/{account_id}") or {}
@@ -339,6 +403,14 @@ class OpenDota:
                         self._match_cache.popitem(last=False)
             return match
 
+    def get_match_builds(self, match_id: int) -> dict:
+        """Билды всех игроков матча {hero_id: билд} из того же (кэшируемого) /matches/{id}.
+
+        Игроков сопоставляем по герою: он уникален в матче, а у скрытых профилей account_id обнулён.
+        """
+        players = self.get_match(match_id).get("players") or []
+        return {p["hero_id"]: _player_build(p) for p in players if p.get("hero_id")}
+
     def get_match_player_stats(
         self, match_id: int, account_id: int, player_slot: Optional[int] = None
     ) -> Optional[dict]:
@@ -355,6 +427,7 @@ class OpenDota:
         if player is None:
             return None
         result = {out: player.get(src) for src, out in self._MATCH_FIELDS.items()}
+        result.update(_player_build(player))
         result["party_size"] = _party_size(players, player)
         # average_rank из OpenDota врёт на высоких лобби (Immortal-лобби → Divine 5), считаем сами по игрокам.
         result["average_rank"] = average_rank_tier([p.get("rank_tier") for p in players])

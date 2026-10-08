@@ -105,8 +105,8 @@ def _full_summary(**extra):
     base = dict(
         steam_name="shinoame_steam", avg_perf=0.73, streak_type="W", streak_len=4, avg_gpm_window=540.0,
         avg_net_worth_window=18200.0, avg_hero_damage_window=21050.0, detail_games=40, avg_duration_min=36.4,
-        solo=(20, 12), party=(36, 23), best_hour=(21, 0.7), worst_hour=(3, 0.3), best_game={
-            "hero_id": 12, "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0},
+        solo=(20, 12), party=(36, 23), best_hour=(21, 0.7), worst_hour=(3, 0.3), last_game={
+            "hero_id": 12, "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": True},
         lobby_rank=55, skill={"gold_per_min": 0.8, "xp_per_min": 0.6, "hero_damage_per_min": 0.3, "kills_per_min": 0.5},
         top_heroes=[{"hero_id": 12, "games": 12, "wins": 8, "winrate": 8 / 12}],
     )
@@ -124,7 +124,7 @@ def test_player_card_has_header_tiles_charts_and_blocks():
     assert card["series"] == [5025, 5000, 5025, 5050] and "последние 4 игры" in card["series_label"]
     assert card["split"] == [{"label": "Соло", "wins": 12, "losses": 8}, {"label": "В группе", "wins": 23, "losses": 13}]
     assert card["hours"] == {"best": "21:00 · 70%", "worst": "03:00 · 30%"}
-    assert card["heroes"][0]["name"] and card["best_game"]["kda"] == 15.0
+    assert card["heroes"][0]["name"] and card["last_game"]["kda"] == 15.0 and card["last_game"]["won"] is True
     assert {s["label"] for s in card["skills"]} == {"Фарм", "Урон", "Участие в боях"} and card["skills"][0]["pct"] == 0.7
     assert card["lobby_rank"] == 55 and card["lobby_text"] == "Legend 5"
     assert card["standing"] == "#2 из 5 в чате по силе" and card["note"] == "заметка" and card["warnings"] == []
@@ -132,13 +132,13 @@ def test_player_card_has_header_tiles_charts_and_blocks():
 
 def test_player_card_warnings_and_missing_data():
     card = cd.player_card(_full_summary(mmr_drift=True, history_closed=True, current_mmr=None, anchor_mmr=None,
-                                        avg_perf=None, avg_gpm_window=None, best_hour=None, best_game=None,
+                                        avg_perf=None, avg_gpm_window=None, best_hour=None, last_game=None,
                                         skill={}, lobby_rank=None, solo=(0, 0), party=(0, 0), top_heroes=[],
                                         streak_len=0), None, [3, -3])
     assert any("расходится" in w for w in card["warnings"]) and any("закрыта" in w for w in card["warnings"])
     assert card["mmr_text"] == "≈ ?" and card["perf"] is None and card["streak"] is None
     assert card["tiles"][2]["value"] == "—" and card["series"] == [3, -3] and "±MMR" in card["series_label"]
-    assert not card["split"] and "hours" not in card and "best_game" not in card and card["skills"] == []
+    assert not card["split"] and "hours" not in card and "last_game" not in card and card["skills"] == []
     assert "standing" not in card and "lobby_rank" not in card
 
 

@@ -7,6 +7,8 @@
 *.sqlite3
 backups/
 hero_icons/
+item_icons/
+rank_icons/
 avatars/
 
 # python

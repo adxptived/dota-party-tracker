@@ -16,7 +16,7 @@ def _full():
         "split": [{"label": "Соло", "wins": 3, "losses": 2}, {"label": "В группе", "wins": 0, "losses": 0}],
         "hours": {"best": "21:00 · 70%", "worst": "03:00 · 30%"},
         "heroes": [{"hero_id": 12, "name": "Phantom Lancer", "games": 12, "wins": 8, "winrate": 0.66}] * 3,
-        "best_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0},
+        "last_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": False},
         "skills": [{"label": "Фарм", "pct": 0.78}, {"label": "Урон", "pct": 1.4}, {"label": "Бои", "pct": -1}],
         "lobby_rank": 55, "lobby_text": "Legend 5", "standing": "#2 из 5", "note": "заметка",
     }
@@ -41,7 +41,7 @@ def test_blocks_are_optional_and_card_shrinks():
 def test_strange_names_and_values_do_not_break():
     card = _full()
     card.update(name="😀" * 3 + "x" * 90 + "\x00", steam_name="y" * 90, series=[5], form=[], tiles=[{}],
-                warnings=["z" * 300], heroes=[], best_game=None, split=[], hours=None, skills=[], mmr_delta=None,
+                warnings=["z" * 300], heroes=[], last_game=None, split=[], hours=None, skills=[], mmr_delta=None,
                 streak=("L", 6))
     assert _open(render_player_image(card)).width == WIDTH
     card["series"] = [7] * 30  # плоская линия

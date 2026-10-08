@@ -87,7 +87,7 @@ class PlayerSummary:
     best_hour: Optional[tuple] = None
     worst_hour: Optional[tuple] = None
     recent_form: list = field(default_factory=list)
-    best_game: Optional[dict] = None
+    last_game: Optional[dict] = None
     longest_win_streak: int = 0
     avg_perf: Optional[float] = None
     enriched_games: int = 0
@@ -298,6 +298,87 @@ def refresh_heroes(client: OpenDotaClient) -> int:
     return update_heroes(client.get_heroes())
 
 
+def refresh_items(client: OpenDotaClient) -> int:
+    """Подтянуть справочник предметов с OpenDota (для иконок билда). Вернуть число новых предметов."""
+    from mmrbot import items
+    added = items.update_items(client.get_item_ids())
+    if added and items.CACHE_PATH:
+        items.save_items(items.CACHE_PATH)
+    return added
+
+
+_ALERT_FIELDS = (
+    "items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time",
+    "net_worth", "last_hits", "denies", "hero_healing", "tower_damage",
+)
+
+
+def enrich_alert_items(client: OpenDotaClient, event: dict) -> None:
+    """Дополнить строки оповещения билдом и фармом из /matches/{id} (матч общий на пати — один запрос).
+
+    Best-effort: предохранитель закрыт или сеть отказала — строки остаются как были, оповещение не задерживается.
+    Уже заполненные поля строки не затираются.
+    """
+    for row in event.get("rows") or []:
+        if _provider_down(client) or not row.get("account_id"):
+            return
+        try:
+            found = client.get_match_player_stats(event["match_id"], row["account_id"])
+        except Exception as exc:
+            log_network_error(log, f"Билд матча {event.get('match_id')} не получен", exc,
+                              health=getattr(client, "health", None))
+            return
+        for key in _ALERT_FIELDS:
+            if found and found.get(key) is not None and row.get(key) is None:
+                row[key] = found[key]
+        if found and found.get("items") and not any(t is not None for t in found.get("item_times") or []):
+            _request_parse(client, event.get("match_id"))  # матч не разобран — времён покупок пока нет
+
+
+from mmrbot.items import item_slug  # noqa: E402
+
+BUILD_FIELDS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time")
+
+
+def enrich_match_builds(client: OpenDotaClient, match: dict) -> None:
+    """Дописать каждому игроку матча (формат Stratz.get_match) билд из OpenDota: предметы, времена, шард, скипетр.
+
+    Один запрос на весь матч. Best-effort: сеть или предохранитель отказали — таблица остаётся без билда.
+    Матч не разобран (времён покупок нет) — просим OpenDota разобрать, времена появятся в следующих показах.
+    """
+    players = match.get("players") or []
+    if not players or _provider_down(client):
+        return
+    if any(t is not None for p in players for t in p.get("item_times") or []):
+        return  # билды с временами уже есть (матч из кэша Stratz)
+    try:
+        builds = client.get_match_builds(match["match_id"])
+    except Exception as exc:
+        log_network_error(log, f"Билды матча {match.get('match_id')} не получены", exc,
+                          health=getattr(client, "health", None))
+        return
+    for player in players:
+        build = builds.get(player.get("hero_id"))
+        if build:
+            player.update({key: build[key] for key in BUILD_FIELDS if key in build})
+            if player.get("bear_items"):  # лог покупок общий на героя и медведя: датируем предметы медведя по нему
+                bought = build.get("bought") or {}
+                player["bear_item_times"] = [bought.get(item_slug(i)) for i in player["bear_items"]]
+    if builds and not any(t is not None for b in builds.values() for t in b.get("item_times") or []):
+        _request_parse(client, match.get("match_id"))
+
+
+def _request_parse(client: OpenDotaClient, match_id) -> None:
+    """Просим OpenDota разобрать матч: тайминги появятся в следующих показах (best-effort)."""
+    request = getattr(client, "request_parse", None)
+    if request is None or match_id is None:
+        return
+    try:
+        request(match_id)
+    except Exception:
+        log.debug("Запрос разбора матча %s не удался", match_id, exc_info=True)
+
+
 def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional[int] = None) -> list[dict]:
     """Обойти всех игроков, обновить сохранённые ник/аватарку Steam и вернуть смены для оповещений.
 
@@ -433,6 +514,7 @@ def detect_new_games(
                 "streak_type": summary.streak_type, "streak_len": summary.streak_len,
                 "gpm": match.get("gpm"), "hero_damage": match.get("hero_damage"), "position": match.get("position"),
                 "imp": match.get("imp"), "leaver_status": match.get("leaver_status"),
+                "rank_tier": player.last_rank_tier,
             })
         new_ach = check_achievements(storage, player, now)
         if new_ach:
@@ -797,7 +879,7 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         form_long=stats.recent_form(all_matches, 10),
         rank_tier=player.last_rank_tier,
         avatar=player.steam_avatar,
-        best_game=stats.best_game(all_matches),
+        last_game=stats.last_game(all_matches),
         longest_win_streak=stats.longest_win_streak(all_matches),
         avg_perf=avg_perf,
         enriched_games=len(enriched),

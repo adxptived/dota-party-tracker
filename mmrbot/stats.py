@@ -221,6 +221,19 @@ def recent_form(matches: list[dict], n: int = 5) -> list[bool]:
 BEST_GAME_MIN_KA = 10  # меньше убийств+помощи игра «лучшей» не бывает (0 смертей при 2 помощи — не рекорд)
 
 
+def last_game(matches: list[dict]) -> Optional[dict]:
+    """Последний по времени матч: исход, герой, K/D/A и KDA (смертей 0 — делим на 1). None — матчей нет."""
+    if not matches:
+        return None
+    match = max(matches, key=lambda m: m.get("start_time") or 0)
+    kills, deaths, assists = match.get("kills") or 0, match.get("deaths") or 0, match.get("assists") or 0
+    return {
+        "match_id": match.get("match_id"), "start_time": match.get("start_time"), "hero_id": match.get("hero_id"),
+        "kills": kills, "deaths": deaths, "assists": assists, "kda": (kills + assists) / max(deaths, 1),
+        "won": is_win(match["player_slot"], match["radiant_win"]),
+    }
+
+
 def best_game(matches: list[dict]) -> Optional[dict]:
     """Матч с максимальным KDA среди содержательных игр (k+a >= порога). kills/deaths/assists/hero_id/kda или None."""
     best = None

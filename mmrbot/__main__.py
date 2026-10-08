@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import ErrorEvent
 
 import mmrbot.bot as botmod
-from mmrbot import avatars, cards, hero_icons, service
+from mmrbot import avatars, cards, hero_icons, item_icons, items, rank_icons, service
 import mmrbot.tracker as tracker
 from mmrbot.access import ChatGateMiddleware
 from mmrbot.bot import PerfMiddleware, router, set_bot_commands
@@ -46,6 +46,11 @@ async def main() -> None:
     data_dir = Path(config.db_path).resolve().parent
     icons = hero_icons.setup(str(data_dir / "hero_icons"))  # иконки для картинок
     avatars.setup(str(data_dir / "avatars"), health=icons.health)  # аватары Steam; общий предохранитель CDN
+    item_icons.setup(str(data_dir / "item_icons"), health=icons.health)  # иконки предметов для билда в оповещениях
+    items.CACHE_PATH = str(data_dir / "item_icons" / "item_ids.json")
+    items.load_items(items.CACHE_PATH)  # справочник предметов с диска: билды видны и при недоступном OpenDota
+    ranks = rank_icons.setup(str(data_dir / "rank_icons"))  # настоящие значки рангов
+    cards.rank_icon_source = ranks.get
     steam = Steam(config.steam_api_key) if config.steam_api_key else None
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(link_preview_is_disabled=True))

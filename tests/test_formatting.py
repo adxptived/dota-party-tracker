@@ -207,12 +207,12 @@ def test_render_player_card_windowed_records():
     s = summary(
         display_name="Вася",
         recent_form=[True, False, True],
-        best_game={"kills": 10, "deaths": 1, "assists": 10, "hero_id": 8, "kda": 20.0},
+        last_game={"kills": 10, "deaths": 1, "assists": 10, "hero_id": 8, "kda": 20.0, "won": True},
         longest_win_streak=3,
     )
     text = render_player_card(s)
     assert "🟢🔴🟢" in text                    # форма
-    assert "10/1/10" in text                    # лучшая игра
+    assert "10/1/10" in text and "Последняя игра" in text and "Лучшая игра" not in text
     assert "3" in text                          # макс серия
 
 

@@ -434,3 +434,22 @@ def test_best_game_ignores_low_activity_games():
 
 def test_best_game_none_when_no_game_reaches_threshold():
     assert best_game([make(0, True, k=1, d=0, a=1)]) is None
+
+
+# --- last_game ----------------------------------------------------------
+
+def test_last_game_is_the_latest_match_with_result():
+    from mmrbot.stats import last_game
+    old = dict(make(0, True, 20, 1, 5), start_time=100, match_id=1, hero_id=1)
+    new = dict(make(128, True, 3, 7, 4), start_time=900, match_id=2, hero_id=8)  # Dire при победе Radiant — поражение
+    game = last_game([old, new])
+    assert game["match_id"] == 2 and game["hero_id"] == 8 and game["won"] is False
+    assert (game["kills"], game["deaths"], game["assists"]) == (3, 7, 4)
+    assert game["kda"] == 1.0
+
+
+def test_last_game_empty_and_zero_deaths():
+    from mmrbot.stats import last_game
+    assert last_game([]) is None
+    game = last_game([dict(make(0, True, 2, 0, 3), start_time=5, match_id=9, hero_id=1)])
+    assert game["kda"] == 5.0  # смертей 0 — делим на 1, как в best_game

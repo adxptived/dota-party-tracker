@@ -107,16 +107,25 @@ def _rgb(color: str) -> tuple[int, int, int]:
 class Canvas:
     """Тёмный холст шириной 1280 px. Рисуем на высоком, в конце `png(bottom)` обрезает по низу содержимого."""
 
-    def __init__(self, height: int = 2400) -> None:
+    def __init__(self, height: int = 2400, width: int = WIDTH) -> None:
         from PIL import Image, ImageDraw
-        self.img = Image.new("RGB", (WIDTH, max(int(height), 1)), BG)
+        self.width = width
+        self.img = Image.new("RGB", (width, max(int(height), 1)), BG)
         self.draw = ImageDraw.Draw(self.img)
 
-    def png(self, bottom: Optional[int] = None) -> bytes:
+    def png(self, bottom: Optional[int] = None, fmt: str = "PNG") -> bytes:
+        """Байты картинки (обрезка по низу содержимого). fmt="JPEG" — лёгкий файл: Telegram пережимает фото сам."""
         img = self.img
         if bottom is not None:
-            img = img.crop((0, 0, WIDTH, min(max(int(bottom) + PAD, 1), img.height)))
-        return to_png(img)
+            img = img.crop((0, 0, self.width, min(max(int(bottom) + PAD, 1), img.height)))
+        return to_jpeg(img) if fmt == "JPEG" else to_png(img)
+
+
+def to_jpeg(img, quality: int = 86) -> bytes:
+    # 4:2:0 и q86 — как раз то, во что Telegram пережмёт фото; файл втрое легче PNG (на медленной сети это секунды).
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality, subsampling=2, optimize=True)
+    return buf.getvalue()
 
 
 def to_png(img) -> bytes:
@@ -272,8 +281,38 @@ def _star_points(cx: float, cy: float, outer: float, inner: float, points: int =
     return out
 
 
-@lru_cache(maxsize=64)
+# Источник настоящих значков рангов: name ("rank_icon_5", "rank_star_3") -> PNG | None. Ставится при старте
+# (`__main__`, см. rank_icons.py); без него или без значка рисуем свою медаль.
+rank_icon_source = None
+
+
+@lru_cache(maxsize=128)
+def _real_badge(medal_png: bytes, star_png: Optional[bytes], size: int):
+    from PIL import Image
+    badge = Image.open(io.BytesIO(medal_png)).convert("RGBA").resize((size, size), Image.LANCZOS)
+    if star_png:
+        stars = Image.open(io.BytesIO(star_png)).convert("RGBA").resize((size, size), Image.LANCZOS)
+        badge.alpha_composite(stars)
+    return badge
+
+
 def rank_badge(rank_tier: Optional[int], size: int = 64):
+    """Значок ранга: настоящая медаль со звёздами (если загружена), иначе нарисованная."""
+    source = rank_icon_source
+    medal, stars = (rank_tier // 10, rank_tier % 10) if rank_tier else (0, 0)
+    if source is not None and 0 <= medal <= 8:
+        try:
+            medal_png = source(f"rank_icon_{medal}")
+            star_png = source(f"rank_star_{stars}") if 1 <= medal <= 7 and 1 <= stars <= 5 else None
+            if medal_png:
+                return _real_badge(medal_png, star_png, size)
+        except Exception:
+            log.warning("Значок ранга %s не собрался, рисуем свой", rank_tier, exc_info=True)
+    return _drawn_badge(rank_tier, size)
+
+
+@lru_cache(maxsize=64)
+def _drawn_badge(rank_tier: Optional[int], size: int = 64):
     """Нарисованная медаль ранга (цвет тира, звезда, точки-звёзды 1–5); без ранга — серое кольцо. Без сети."""
     from PIL import Image, ImageDraw
     ss = 4

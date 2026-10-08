@@ -131,6 +131,7 @@ BOT_COMMANDS = [
     BotCommand(command="menu", description="📋 Меню"),
     BotCommand(command="heroes", description="🦸 Герои и позиции"),
     BotCommand(command="roles", description="🧭 Позиции игрока"),
+    BotCommand(command="last", description="🏁 Последний матч"),
     BotCommand(command="match", description="🎮 Разбор матча"),
     BotCommand(command="player", description="🪪 Карточка игрока"),
     BotCommand(command="records", description="🌟 Рекорды пати"),
@@ -162,6 +163,7 @@ HELP_TEXT = (
     '/stats — рейтинг и награды (сегодня, неделя, месяц)\n'
     '/player имя — карточка игрока\n'
     '/heroes [имя или герой] — герои\n'
+    '/last [игрок] — последний матч\n'
     '/match [id] — разбор матча\n'
     '/together — игры вместе\n'
     '/compare — кто сильнее\n'
@@ -1010,10 +1012,15 @@ async def cmd_heroes(message: Message, command: CommandObject, storage: Storage,
 
 
 @router.message(Command("match"))
+@router.message(Command("last"))  # /last [игрок] — последний матч: то же, что /match без id
 async def cmd_match(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
     match_id, name = cmd.parse_match_args(command.args or "")
     if match_id is None and not await _has_players(message, storage):
         return
+    if command.command == "last" and match_id is None and name is None:  # /last без аргументов — игра того, кто спросил
+        user = getattr(message, "from_user", None)
+        mine = next((p for p in storage.list_players(message.chat.id) if user and p.tg_user_id == user.id), None)
+        name = mine.display_name if mine else None  # не привязан (/me) — последний матч пати, как у /match
     await do_match(message, storage, od, name, match_id, stratz)
 
 

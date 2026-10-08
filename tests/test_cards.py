@@ -107,6 +107,26 @@ def test_rank_badge_each_tier_distinct_and_uncalibrated_neutral():
     assert cards.rank_badge(99, 48).size == (48, 48)  # неизвестная медаль — не падаем
 
 
+def test_rank_badge_uses_real_icons_when_available(monkeypatch):
+    import io
+    from PIL import Image
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGBA", (20, 20), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = {"rank_icon_5": png((255, 0, 0, 255)), "rank_star_3": png((0, 0, 0, 0))}
+    monkeypatch.setattr(cards, "rank_icon_source", files.get)
+    badge = cards.rank_badge(53, 40)
+    assert badge.size == (40, 40) and badge.getpixel((20, 20))[:3] == (255, 0, 0)
+    drawn = cards._drawn_badge(53, 40)
+    assert cards.rank_badge(62, 40).tobytes() == cards._drawn_badge(62, 40).tobytes()  # нет значка — своя медаль
+    assert badge.tobytes() != drawn.tobytes()
+    monkeypatch.setattr(cards, "rank_icon_source", lambda name: 1 / 0)
+    assert cards.rank_badge(53, 40).tobytes() == drawn.tobytes()  # сбой загрузчика — не падаем
+
+
 def test_kda_and_form_dots_draw_without_error():
     canvas = Canvas(120)
     cards.kda(canvas.draw, 300, 40, 12, 3, None)

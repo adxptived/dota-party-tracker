@@ -128,7 +128,7 @@ def build() -> dict[str, bytes]:
     out["player.png"] = render_player_image(sample_player(), icons, avatars)
     card = sample_player()
     card.update(warnings=[], steam_name=None, perf=None, streak=None, series=[], split=[], hours=None, skills=[],
-                heroes=[], best_game=None, lobby_rank=None, standing=None)
+                heroes=[], last_game=None, lobby_rank=None, standing=None)
     out["player_sparse.png"] = render_player_image(card)
     out.update(sample_heroes(icons, avatars))
     out.update(sample_records(icons))
@@ -247,7 +247,7 @@ def sample_player() -> dict:
         "heroes": [{"hero_id": 12, "name": "Phantom Lancer", "games": 12, "wins": 8, "winrate": 8 / 12},
                    {"hero_id": 1, "name": "Anti-Mage", "games": 9, "wins": 4, "winrate": 4 / 9},
                    {"hero_id": 26, "name": "Lion", "games": 5, "wins": 1, "winrate": 0.2}],
-        "best_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0},
+        "last_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": True},
         "skills": [{"label": "Фарм", "pct": 0.78}, {"label": "Урон", "pct": 0.41}, {"label": "Участие в боях", "pct": 0.22},
                    {"label": "Поддержка", "pct": 0.55}],
         "lobby_rank": 55, "lobby_text": "Legend 5", "standing": "#2 из 5 в чате по силе", "note": "данные обновлены 12:30",

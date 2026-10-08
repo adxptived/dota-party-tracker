@@ -13,7 +13,7 @@ import time
 import weakref
 from typing import Optional
 
-from mmrbot import avatars, hero_icons, perf
+from mmrbot import avatars, hero_icons, item_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
 from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
 from mmrbot.achievements_image import MAX_PLAYERS as ACHIEVEMENTS_LIMIT, render_achievements_image
@@ -25,7 +25,7 @@ from mmrbot.card_data import (
 from mmrbot.cards import ACCENT
 from mmrbot.compare_image import render_compare_image
 from mmrbot.together_image import render_together_image
-from mmrbot.health import log_network_error
+from mmrbot.health import log_network_error, provider_down
 from mmrbot.formatting import (
     outage_note,
     render_achievements,
@@ -65,6 +65,8 @@ from mmrbot.stats_image import render_stats_image
 from mmrbot.storage import Storage
 from mmrbot.tracker import (
     FRESH_ENOUGH,
+    enrich_alert_items,
+    enrich_match_builds,
     finish_refresh,
     build_chat_comparison,
     build_hero_view,
@@ -539,7 +541,7 @@ async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, st
 def _player_png(card: dict) -> bytes:
     """В потоке: иконки героев и аватар (кэш/CDN) + рендер карточки игрока."""
     icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
-    hero_ids = [h["hero_id"] for h in card.get("heroes") or []] + ([card["best_game"]["hero_id"]] if card.get("best_game") else [])
+    hero_ids = [h["hero_id"] for h in card.get("heroes") or []] + ([card["last_game"]["hero_id"]] if card.get("last_game") else [])
     icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
     found = avatar_loader.get_many([card.get("avatar")]) if avatar_loader is not None else {}
     return render_player_image(card, icons, found)
@@ -725,17 +727,24 @@ async def render_roles_board(
 
 def _alert_png(event: dict, tz: str) -> bytes:
     """В потоке: иконки героев и аватары (кэш/CDN) + рендер картинки оповещения."""
-    icons, loader = hero_icons.shared(), avatars.shared()
+    icons, loader, gear = hero_icons.shared(), avatars.shared(), item_icons.shared()
     rows = event.get("rows") or []
     found_icons = icons.get_many(r.get("hero_id") for r in rows) if icons is not None else {}
     found_avatars = loader.get_many(r.get("avatar") for r in rows) if loader is not None else {}
-    return render_alert_image(event, tz, found_icons, found_avatars)
+    item_ids = [i for r in rows for i in (r.get("items") or []) + [r.get("neutral_item")]]
+    found_items = gear.get_many(item_ids) if gear is not None else {}
+    return render_alert_image(event, tz, found_icons, found_avatars, found_items)
 
 
-async def alert_board(event: dict, tz: str, image: bool = True) -> ImageBoard:
-    """Оповещение о конце матча: текст всегда, картинка с короткой подписью — если нарисовалась."""
+async def alert_board(event: dict, tz: str, image: bool = True, od=None) -> ImageBoard:
+    """Оповещение о конце матча: текст всегда, картинка с короткой подписью — если нарисовалась.
+
+    od — клиент OpenDota: для картинки подтягивает билд и фарм из матча (best-effort, без сети — картинка без билда).
+    """
     board = ImageBoard(render_game_alert(event))
     if image:
+        if od is not None:
+            await asyncio.to_thread(enrich_alert_items, od, event)
         board.png = await asyncio.to_thread(build_png, "оповещение о матче", lambda: _alert_png(event, tz))
         if board.png is not None:
             board.caption = alert_caption(event)
@@ -754,14 +763,30 @@ def _cached_as_match(view: dict) -> dict:
             "radiant_win": bool(row["radiant_win"]), "players": [me]}
 
 
+def _warm_match(od, match_id: int) -> None:
+    """В потоке: прогреть кэш матча OpenDota (билды игроков для картинки) — пока идёт запрос к Stratz."""
+    if provider_down(od):
+        return
+    try:
+        od.get_match(match_id)
+    except Exception:
+        log.debug("Прогрев матча %s в OpenDota не удался", match_id, exc_info=True)
+
+
 MATCH_REFRESH_WAIT = 6.0  # сек: «последний матч» ждёт обновление дольше обычных команд — он про свежую игру
 
 
-def _render_match_png(match: dict, tracked: dict, focus, tz: str, icons) -> bytes:
-    """В потоке: иконки (кэш/CDN) + рендер картинки."""
+def _render_match_png(match: dict, tracked: dict, focus, tz: str, icons, od=None) -> bytes:
+    """В потоке: билды игроков (OpenDota, best-effort) + иконки героев и предметов (кэш/CDN) + рендер картинки."""
+    if od is not None:
+        enrich_match_builds(od, match)
     source = icons if icons is not None else hero_icons.shared()
     found = source.get_many(p.get("hero_id") for p in match["players"]) if source is not None else {}
-    return render_match_image(match, tracked, focus, tz, found)
+    gear = item_icons.shared()
+    item_ids = [i for p in match["players"]
+                for i in (p.get("items") or []) + [p.get("neutral_item")] + (p.get("bear_items") or []) + [p.get("bear_neutral")]]
+    found_items = gear.get_many(item_ids) if gear is not None and item_ids else {}
+    return render_match_image(match, tracked, focus, tz, found, found_items, fmt="JPEG")
 
 
 async def match_board(
@@ -795,11 +820,16 @@ async def match_board(
         focus = target.account_id
 
     full = None
+    warm = None
     if stratz is not None:
+        if want_image(storage, chat_id, image):  # билды для картинки берём у OpenDota параллельно со Stratz
+            warm = asyncio.create_task(asyncio.to_thread(_warm_match, od, match_id))
         try:
             full = await asyncio.to_thread(stratz.get_match, match_id)
         except Exception as exc:
             log_network_error(log, f"Stratz: не удалось получить матч {match_id}", exc, health=getattr(stratz, "health", None))
+        if warm is not None:
+            await warm
     if full is None and cached is None and name:  # матч своего игрока по id — без Stratz из кэша БД
         cached = await _build(build_match_view, storage, chat_id, name, match_id)
     tz = storage.get_or_create_chat(chat_id).tz
@@ -817,7 +847,7 @@ async def match_board(
         return MatchBoard(f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт).")
     if want_image(storage, chat_id, image):
         try:
-            board.png = await _render(_render_match_png, match, tracked, focus, tz, icons)
+            board.png = await _render(_render_match_png, match, tracked, focus, tz, icons, od)
             board.caption = render_match_caption(match, tracked, focus, tz)
         except Exception:
             log.exception("Не удалось нарисовать матч %s — отвечаем текстом", match_id)

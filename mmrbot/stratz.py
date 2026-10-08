@@ -37,6 +37,7 @@ query {
       steamAccountId isRadiant heroId position role lane kills deaths assists imp
       goldPerMinute experiencePerMinute networth heroDamage towerDamage heroHealing
       numLastHits numDenies level
+      additionalUnit { item0Id item1Id item2Id item3Id item4Id item5Id neutral0Id }
       steamAccount { name }
     }
   }
@@ -239,6 +240,11 @@ class Stratz:
             }
             for src, out in _FIELD_MAP.items():
                 player[out] = row.get(src)
+            unit = row.get("additionalUnit")  # второй инвентарь: медведь Лон Друида (у остальных героев null)
+            if isinstance(unit, dict):
+                bear = [unit.get(f"item{i}Id") for i in range(6)]
+                player["bear_items"] = [i for i in bear if i]
+                player["bear_neutral"] = unit.get("neutral0Id") or None
             players.append(player)
         match = {
             "match_id": raw.get("id", match_id),

@@ -41,6 +41,7 @@ from mmrbot.tracker import (
     detect_presence,
     detect_steam_changes,
     refresh_heroes,
+    refresh_items,
 )
 
 log = logging.getLogger(__name__)
@@ -210,6 +211,10 @@ def setup_scheduler(
             added = await asyncio.to_thread(refresh_heroes, od)
             if added:
                 log.info("Справочник героев пополнен: +%d", added)
+            # предметы — для иконок билда; отдельно, чтобы сбой героев/предметов не блокировал друг друга
+            new_items = await asyncio.to_thread(refresh_items, od)
+            if new_items:
+                log.info("Справочник предметов пополнен: +%d", new_items)
         except Exception as exc:
             log_network_error(log, "Обновление справочника героев не удалось", exc, health=getattr(od, "health", None))
             retry_heroes_in_an_hour()
@@ -275,7 +280,7 @@ def setup_scheduler(
             warm = False
             for event in events:
                 if event["kind"] == "match":
-                    board = await alert_board(event, chat.tz, image=not chat.prefer_text)
+                    board = await alert_board(event, chat.tz, image=not chat.prefer_text, od=od)
                     markup = alert_buttons(event["match_id"])
                 else:
                     board, markup = ImageBoard(render_achievement_alert(event)), None

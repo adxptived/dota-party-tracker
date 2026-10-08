@@ -242,7 +242,7 @@ def test_summary_includes_form_and_records(store):
     s = build_player_summary(store, chat, p, now=now)
     assert s.recent_form == [True, True, False, True]
     assert s.longest_win_streak == 2
-    assert s.best_game is not None
+    assert s.last_game is not None and s.last_game["kills"] == 8 and s.last_game["won"] is True
 
 
 def test_summary_includes_solo_party_and_totals(store):

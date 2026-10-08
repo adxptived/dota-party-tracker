@@ -207,10 +207,10 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
     from mmrbot.heroes import hero_name
     card["heroes"] = [{"hero_id": h["hero_id"], "name": hero_name(h["hero_id"]), "games": h["games"], "wins": h["wins"],
                        "winrate": h["winrate"]} for h in s.top_heroes]
-    if s.best_game:
-        bg = s.best_game
-        card["best_game"] = {"hero_id": bg["hero_id"], "name": hero_name(bg["hero_id"]), "kills": bg["kills"],
-                             "deaths": bg["deaths"], "assists": bg["assists"], "kda": bg["kda"]}
+    if s.last_game:
+        lg = s.last_game
+        card["last_game"] = {"hero_id": lg["hero_id"], "name": hero_name(lg["hero_id"]), "kills": lg["kills"],
+                             "deaths": lg["deaths"], "assists": lg["assists"], "kda": lg["kda"], "won": lg["won"]}
     skills = []
     for label, metrics in SKILL_GROUPS:
         pcts = [s.skill[m] for m in metrics if m in (s.skill or {})]

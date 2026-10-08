@@ -2,7 +2,7 @@ import io
 
 from PIL import Image
 
-from mmrbot.cards import WIDTH as WIDTH_PX
+from mmrbot.match_image import MATCH_WIDTH as WIDTH_PX
 from mmrbot.match_image import render_match_image
 
 
@@ -66,3 +66,63 @@ def test_tracked_row_is_highlighted():
     marked = _open(render_match_image(match, {1: "Вася"}, None, "UTC", {})).convert("RGB")
     assert plain.size == marked.size
     assert plain.tobytes() != marked.tobytes()
+
+
+def test_every_players_build_is_drawn_in_the_row_without_growing_the_table():
+    plain = render_match_image(_full_match(), {1: "Вася"}, focus=1)
+    match = _full_match()
+    for p in match["players"]:
+        p.update(items=[1, 2, 3, 4, 5, 6], item_times=[300, 900, None, 120, 2000, 60], neutral_item=9,
+                 shard=p["account_id"] % 2 == 0, shard_time=1450, scepter=p["account_id"] % 3 == 0)
+    built = render_match_image(match, {1: "Вася"}, focus=1, item_icons={1: _icon(), 9: _icon((50, 200, 50))})
+    assert _open(built).size == _open(plain).size  # билд лежит в строке, высота таблицы та же
+    assert built != plain and built != render_match_image(match, {1: "Вася"}, focus=1)  # иконки предметов отрисованы
+    match["players"][0].update(item_times=["x"], shard_time="bad", items=[1, "junk", None])
+    assert _open(render_match_image(match, {1: "Вася"}, focus=1, item_icons={1: b"junk"})).width == WIDTH_PX
+
+
+def test_players_without_build_keep_the_old_layout():
+    match = _full_match()
+    assert render_match_image(match, {}, focus=1) == render_match_image(match, {}, focus=1, item_icons={1: _icon()})
+
+
+def test_tower_damage_is_shown_under_hero_damage():
+    match = _full_match()
+    plain = render_match_image(match, {}, focus=1)
+    for p in match["players"]:
+        p["tower_damage"] = 6589
+    assert render_match_image(match, {}, focus=1) != plain
+
+
+def test_match_image_is_wider_than_a_card_so_columns_do_not_overlap():
+    from mmrbot.cards import WIDTH
+    assert WIDTH_PX > WIDTH
+    assert _open(render_match_image(_full_match(), {}, focus=1)).width == WIDTH_PX
+
+
+def test_lone_druid_shows_both_inventories_in_a_taller_row():
+    match = _full_match()
+    for p in match["players"]:
+        p.update(items=[1, 2, 3], item_times=[100, 200, 300])
+    base = _open(render_match_image(match, {}, focus=1, item_icons={1: _icon()}))
+    druid = match["players"][0]
+    druid.update(hero_id=80, bear_items=[1, 2, 3, 4, 5, 6], bear_item_times=[600, 700, None, 900, 1000, 1100],
+                 bear_neutral=9)
+    two = _open(render_match_image(match, {}, focus=1, item_icons={1: _icon()}))
+    assert two.height > base.height + 30  # у медведя своя строка предметов
+    druid.update(bear_items=["x", None], bear_item_times=["bad"], bear_neutral="junk")
+    assert _open(render_match_image(match, {}, focus=1, item_icons={1: b"junk"})).width == WIDTH_PX
+    druid.update(bear_items=[])
+    assert _open(render_match_image(match, {}, focus=1)).height == base.height  # пустой инвентарь медведя — обычная строка
+
+
+def test_match_image_can_be_encoded_as_small_jpeg():
+    match = _full_match()
+    noisy = io.BytesIO()
+    Image.effect_noise((256, 144), 80).convert("RGB").save(noisy, format="PNG")  # иконки героев — «фотографические»
+    icons = {p["hero_id"]: noisy.getvalue() for p in match["players"]}
+    png = render_match_image(match, {}, focus=1, icons=icons)
+    jpeg = render_match_image(match, {}, focus=1, icons=icons, fmt="JPEG")
+    assert jpeg[:3] == b"\xff\xd8\xff" and len(jpeg) < len(png)  # Telegram всё равно пережимает фото — шлём лёгкий файл
+    img = Image.open(io.BytesIO(jpeg))
+    assert img.size == _open(png).size and img.format == "JPEG"

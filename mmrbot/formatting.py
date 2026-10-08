@@ -510,10 +510,11 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
             f"⚔️ KDA в победах: {win['avg_kda']:.1f} (смертей {win['avg_deaths']:.0f}) · "
             f"в поражениях: {loss['avg_kda']:.1f} (смертей {loss['avg_deaths']:.0f})"
         )
-    if s.best_game:
-        bg = s.best_game
+    if s.last_game:
+        lg = s.last_game
         lines.append(
-            f"⭐ Лучшая игра: {_esc(hero_name(bg['hero_id']))} {bg['kills']}/{bg['deaths']}/{bg['assists']}"
+            f"🕹️ Последняя игра: {_esc(hero_name(lg['hero_id']))} {lg['kills']}/{lg['deaths']}/{lg['assists']} · "
+            f"{'🏆 победа' if lg['won'] else '💀 поражение'}"
         )
     if s.longest_win_streak >= 2:
         lines.append(f"🔥 Наибольшая серия побед: {s.longest_win_streak}")

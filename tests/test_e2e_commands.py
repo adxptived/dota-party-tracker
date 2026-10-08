@@ -101,7 +101,7 @@ class FakeMessage:
         self.sent.append((text, kwargs))
 
     async def answer_photo(self, photo, caption=None, **kwargs):
-        assert photo.data[:8] == b"\x89PNG\r\n\x1a\n"
+        assert photo.data[:8] == b"\x89PNG\r\n\x1a\n" or photo.data[:3] == b"\xff\xd8\xff"  # PNG либо JPEG (матч)
         self.sent.append((caption, dict(kwargs, photo=photo)))
 
     async def edit_reply_markup(self, reply_markup=None, **kwargs):
@@ -514,3 +514,63 @@ def test_close_button_deletes_message(env):
     assert cb.message.deleted and not cb.message.sent
 
 
+
+
+def test_last_is_alias_of_match_with_menu_entry_and_help():
+    names = {c for h in botmod.router.message.handlers if h.callback is botmod.cmd_match
+             for f in h.filters if hasattr(f.callback, "commands") for c in f.callback.commands}
+    assert {"match", "last"} <= names  # /last — тот же разбор последнего матча, что и /match без аргументов
+    assert "last" in [c.command for c in botmod.BOT_COMMANDS]
+    msg = FakeMessage()
+    run(botmod.cmd_help(msg))
+    assert "/last" in msg.texts
+
+
+def _last_name(env, monkeypatch, command, args, user_id):
+    """Какого игрока обработчик /last (/match) просит показать: имя, переданное в do_match."""
+    from types import SimpleNamespace
+    storage, od, sz = env
+    seen = {}
+
+    async def fake_do_match(message, storage, od, name, match_id, stratz=None):
+        seen.update(name=name, match_id=match_id)
+
+    monkeypatch.setattr(botmod, "do_match", fake_do_match)
+    msg = FakeMessage()
+    msg.from_user = SimpleNamespace(id=user_id)
+    run(botmod.cmd_match(msg, cmdobj(command, args), storage, od, sz))
+    return seen
+
+
+def test_last_without_args_shows_game_of_the_sender(env, monkeypatch):
+    storage = env[0]
+    storage.link_user(100, storage.get_player(100, "shinoame").id, 777)
+    assert _last_name(env, monkeypatch, "last", None, 777)["name"] == "shinoame"  # свой последний матч
+    assert _last_name(env, monkeypatch, "last", None, 555)["name"] is None  # не привязан — последний в чате
+    assert _last_name(env, monkeypatch, "last", "Вася", 777)["name"] == "Вася"  # явный игрок важнее
+    assert _last_name(env, monkeypatch, "match", None, 777)["name"] is None  # /match без аргументов — как раньше
+    seen = _last_name(env, monkeypatch, "last", "9100000005", 777)
+    assert seen["match_id"] == 9100000005 and seen["name"] is None  # конкретный матч — не подменяем
+
+
+def test_match_board_warms_opendota_build_in_parallel_with_stratz(env):
+    """Матч целиком из OpenDota запрашивается параллельно со Stratz (а не после него) — ответ приходит быстрее."""
+    import threading
+    storage, od, sz = env
+    order = []
+    inside = threading.Event()
+
+    class SlowStratz(FakeStratz):
+        def get_match(self, match_id):
+            order.append("stratz:start")
+            assert inside.wait(5), "OpenDota-запрос не стартовал, пока шёл Stratz"  # параллельно, а не после
+            return super().get_match(match_id)
+
+    def warm_get_match(match_id):
+        order.append("od:get_match")
+        inside.set()
+        return {}
+
+    od.get_match = warm_get_match
+    run(botmod.cmd_match(FakeMessage(), cmdobj("match", "9100000005"), storage, od, SlowStratz()))
+    assert "od:get_match" in order

@@ -117,6 +117,22 @@ def test_get_match_returns_full_match():
     assert "match(id: 77)" in session.calls[0]["json"]["query"]
 
 
+def test_get_match_reads_lone_druid_bear_inventory():
+    druid = dict(_full_player(1, True, 80), item0Id=240, item1Id=16,
+                 additionalUnit={"item0Id": 1, "item1Id": 158, "item2Id": 0, "item3Id": None, "item4Id": 116,
+                                 "item5Id": None, "neutral0Id": 1168})
+    other = dict(_full_player(2, False, 5), additionalUnit=None)
+    payload = {"data": {"match": {"id": 78, "durationSeconds": 2000, "didRadiantWin": True, "startDateTime": 1,
+                                  "players": [druid, other, _full_player(3, False, 6)]}}}
+    session = FakeSession([payload])
+    match = Stratz("k", session=session, min_interval=0).get_match(78)
+    first, second, third = match["players"]
+    assert first["bear_items"] == [1, 158, 116] and first["bear_neutral"] == 1168  # пустые слоты не берём
+    assert "bear_items" not in second and "bear_items" not in third  # у других героев второго инвентаря нет
+    query = session.calls[0]["json"]["query"]
+    assert "additionalUnit" in query and "item0Id" in query
+
+
 def test_get_match_missing_returns_none():
     session = FakeSession([{"data": {"match": None}}])
     assert Stratz("k", session=session, min_interval=0).get_match(1) is None
