@@ -87,6 +87,19 @@ class Season:
     renew: bool = True  # после окончания начинать такой же следующий сезон
 
 
+@dataclass
+class Gather:
+    """Сбор пати (/go): сообщение чата с кнопками. closed — заменён новым сбором или закончился."""
+    id: int
+    chat_id: int
+    message_id: Optional[int]
+    created_ts: int
+    by_user: Optional[int]
+    by_name: Optional[str]
+    note: Optional[str]
+    closed: bool = False
+
+
 class _Connection(sqlite3.Connection):
     """`with conn:` дополнительно закрывает соединение (стандартное только коммитит) — без утечек дескрипторов."""
 
@@ -205,6 +218,7 @@ class Storage:
             conn.execute("UPDATE players SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
             conn.execute("DELETE FROM seasons WHERE chat_id = ?", (new_chat_id,))
             conn.execute("UPDATE seasons SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+            conn.execute("UPDATE gather_calls SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
         return True
 
     def set_chat_notify_games(self, chat_id: int, enabled: bool) -> None:
@@ -1003,6 +1017,79 @@ class Storage:
                 "WHERE s.end_ts IS NULL AND s.planned_end_ts <= ? AND c.active = 1 ORDER BY s.id", (now,)
             ).fetchall()
         return [self._season_from_row(r) for r in rows]
+
+    # --- сбор пати --------------------------------------------------------------
+
+    GATHER_KEEP_SEC = 7 * 86_400  # старые сборы и ответы удаляем при создании нового
+
+    @staticmethod
+    def _gather_from_row(row: sqlite3.Row) -> Gather:
+        return Gather(
+            id=row["id"], chat_id=row["chat_id"], message_id=row["message_id"], created_ts=row["created_ts"],
+            by_user=row["by_user"], by_name=row["by_name"], note=row["note"], closed=bool(row["closed"]),
+        )
+
+    def create_gather(self, chat_id: int, now: int, by_user: Optional[int], by_name: Optional[str],
+                      note: Optional[str]) -> Gather:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM gather_calls WHERE created_ts < ?", (now - self.GATHER_KEEP_SEC,))
+            conn.execute("DELETE FROM gather_votes WHERE call_id NOT IN (SELECT id FROM gather_calls)")
+            cursor = conn.execute(
+                "INSERT INTO gather_calls (chat_id, created_ts, by_user, by_name, note) VALUES (?, ?, ?, ?, ?)",
+                (chat_id, now, by_user, by_name, note),
+            )
+            row = conn.execute("SELECT * FROM gather_calls WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        return self._gather_from_row(row)
+
+    def get_gather(self, call_id: int) -> Optional[Gather]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM gather_calls WHERE id = ?", (call_id,)).fetchone()
+        return self._gather_from_row(row) if row else None
+
+    def current_gather(self, chat_id: int) -> Optional[Gather]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM gather_calls WHERE chat_id = ? AND closed = 0 ORDER BY id DESC LIMIT 1", (chat_id,)
+            ).fetchone()
+        return self._gather_from_row(row) if row else None
+
+    def set_gather_message(self, call_id: int, message_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE gather_calls SET message_id = ? WHERE id = ?", (message_id, call_id))
+
+    def close_gather(self, call_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE gather_calls SET closed = 1 WHERE id = ?", (call_id,))
+
+    def close_gathers(self, chat_id: int) -> list[Gather]:
+        """Закрыть все открытые сборы чата → они же (нужен message_id, чтобы убрать кнопки)."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM gather_calls WHERE chat_id = ? AND closed = 0", (chat_id,)).fetchall()
+            conn.execute("UPDATE gather_calls SET closed = 1 WHERE chat_id = ? AND closed = 0", (chat_id,))
+        return [self._gather_from_row(r) for r in rows]
+
+    def vote_gather(self, call_id: int, user_id: int, name: str, choice: str, now: int) -> Optional[str]:
+        """Ответ участника: тот же ответ повторно снимает голос (→ None), другой — меняет. → итоговый ответ."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT choice FROM gather_votes WHERE call_id = ? AND user_id = ?", (call_id, user_id)
+            ).fetchone()
+            if row is not None and row["choice"] == choice:
+                conn.execute("DELETE FROM gather_votes WHERE call_id = ? AND user_id = ?", (call_id, user_id))
+                return None
+            conn.execute(
+                "INSERT INTO gather_votes (call_id, user_id, name, choice, ts) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(call_id, user_id) DO UPDATE SET name = excluded.name, choice = excluded.choice, ts = excluded.ts",
+                (call_id, user_id, name, choice, now),
+            )
+        return choice
+
+    def gather_votes(self, call_id: int) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT user_id, name, choice, ts FROM gather_votes WHERE call_id = ? ORDER BY ts, user_id", (call_id,)
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # --- история матчей: кэш в памяти по аккаунту ------------------------------
 

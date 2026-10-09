@@ -448,6 +448,24 @@ def _m010_seasons(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_seasons_chat ON seasons (chat_id, end_ts)")
 
 
+# --- 11: сбор пати --------------------------------------------------------------------------------------------------
+
+def _m011_gather(conn: sqlite3.Connection) -> None:
+    """Сбор пати (/go): сообщение с кнопками «иду / через 15 минут / пас» и ответы участников.
+
+    Состояние в базе, а не в памяти: кнопки должны работать и после перезапуска бота. В чате открыт один сбор.
+    """
+    conn.execute(
+        "CREATE TABLE gather_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, message_id INTEGER, "
+        "created_ts INTEGER NOT NULL, by_user INTEGER, by_name TEXT, note TEXT, closed INTEGER NOT NULL DEFAULT 0)"
+    )
+    conn.execute("CREATE INDEX idx_gather_chat ON gather_calls (chat_id, closed)")
+    conn.execute(
+        "CREATE TABLE gather_votes (call_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, "
+        "choice TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (call_id, user_id)) WITHOUT ROWID"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -459,6 +477,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (8, _m008_match_lineups),
     (9, _m009_lanes_and_wards),
     (10, _m010_seasons),
+    (11, _m011_gather),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

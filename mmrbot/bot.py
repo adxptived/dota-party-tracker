@@ -141,6 +141,7 @@ BOT_COMMANDS = [
     BotCommand(command="records", description="🌟 Рекорды пати"),
     BotCommand(command="graph", description="📈 График MMR"),
     BotCommand(command="achievements", description="🏅 Соревнование чата"),
+    BotCommand(command="go", description="🎮 Позвать пати играть"),
     BotCommand(command="season", description="🏆 Сезон соревнования"),
     BotCommand(command="hall", description="🏛 Зал славы"),
     BotCommand(command="steam", description="🎭 Steam-профиль"),
@@ -176,7 +177,8 @@ HELP_TEXT = (
     '/together — игры вместе\n'
     '/compare — кто сильнее\n'
     '/records · /graph · /achievements (соревнование чата)\n'
-    '/season — сезон соревнования, /hall — зал славы\n\n'
+    '/season — сезон соревнования, /hall — зал славы\n'
+    '/go [текст] — позвать пати играть (кнопки «иду / через 15 мин / пас»)\n\n'
     'Управлять: /list · /remove · /setmmr · /settings\n'
     '/double [имя] — игра с дабл-дауном (±2 шага MMR)\n'
     '/menu — всё кнопками, там же «Термины»\n\n'
@@ -1470,6 +1472,7 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
 
 # --- разделы в своих модулях ------------------------------------------------
 # Подключаются к этому роутеру: на них действуют те же middleware (удаление сообщения с командой, автопривязка).
-from mmrbot import doubles  # noqa: E402
+from mmrbot import doubles, gather  # noqa: E402
 
 router.include_router(doubles.router)
+router.include_router(gather.router)
