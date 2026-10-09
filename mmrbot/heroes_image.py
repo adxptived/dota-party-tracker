@@ -160,7 +160,7 @@ def render_hero_image(
     cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id, big_w, big_h, 14), PAD, PAD)
     draw_text(draw, (PAD + big_w + 28, PAD + 38), clean(hero_title), 44, FG, bold=True, anchor="lm", max_w=640)
     draw_text(draw, (PAD + big_w + 28, PAD + 90), "кто из пати играл на этом герое", 24, MUTED, anchor="lm")
-    cards.pill(img, draw, WIDTH - PAD, PAD + 30, period_label.upper(), cards.BG, ACCENT, size=26, align="right", pad=22)
+    cards.chip(img, draw, WIDTH - PAD, PAD + 30, period_label.upper(), ACCENT, size=22, align="right", pad=18)
     y = PAD + big_h + 28
     if not rows:
         cards.panel(img, (PAD, y, WIDTH - PAD, y + 110), PANEL, radius=18)

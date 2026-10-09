@@ -1,7 +1,7 @@
 """График MMR: закрепление цветов за игроками, читаемость подписей, рендер разных сценариев."""
 import logging
 
-from mmrbot.charts import PALETTE, _ink_on, color_slots, render_mmr_chart
+from mmrbot.charts import BG, PALETTE, _ink_on, color_slots, render_mmr_chart
 
 NOW = 1_791_400_000
 
@@ -31,7 +31,7 @@ def test_ink_on_fill_picks_readable_text():
     assert _ink_on("#ffffff") != "#ffffff"
     assert _ink_on("#000000") == "#ffffff"
     for color in PALETTE:  # любой цвет палитры даёт читаемую подпись
-        assert _ink_on(color) in {"#ffffff", "#0b1118"}
+        assert _ink_on(color) in {"#ffffff", BG}
 
 
 def test_palette_is_eight_distinct_colors():

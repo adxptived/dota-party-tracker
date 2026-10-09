@@ -18,6 +18,53 @@ def _icon_bytes(color=(200, 50, 50)) -> bytes:
     return buf.getvalue()
 
 
+def test_text_falls_back_for_glyphs_missing_in_inter_and_tracks_small_caps():
+    assert cards.font(24).getname()[0].startswith("Inter") and cards.font(40, True).getname()[0].startswith("Inter")
+    assert len(cards._runs("Вася ok 123", 24, False)) == 1
+    mixed = cards._runs("Вася 日本", 24, False)  # иероглифов в Inter нет — их рисует запасной шрифт
+    assert len(mixed) == 2 and mixed[0][0] is not mixed[1][0]
+    assert cards.text_width("Вася 日本", 24) > cards.text_width("Вася ", 24)
+    # мелкие подписи заглавными — с разрядкой; значения с числами и крупный текст — без
+    plain = cards.text_width("ИГРОК", 18, track=False)
+    assert cards.text_width("ИГРОК", 18) > plain and cards.text_width("ИГРОК", 28) == cards.text_width("ИГРОК", 28, track=False)
+    assert cards.text_width("+75 MMR", 18) == cards.text_width("+75 MMR", 18, track=False)
+    canvas = Canvas(120)
+    cards.draw_text(canvas.draw, (600, 40), "Вася 日本", 24, anchor="rm")
+    cards.draw_text(canvas.draw, (600, 80), "ПОСЛЕДНИЕ 20 ИГР", 18, anchor="mm", max_w=120)
+    assert canvas.img.getpixel((620, 40)) == _hex(cards.BG)  # правее якоря "r" ничего не нарисовано
+
+
+def test_backdrop_glows_only_where_canvas_is_empty():
+    canvas = Canvas(800)
+    cards.panel(canvas.img, (100, 100, 300, 200), "#ff0000", radius=0, outline="#ff0000")
+    plain, red = _open(canvas.png()), _open(Canvas(800, accent=cards.LOSS).png())
+    assert plain.getpixel((200, 150)) == (255, 0, 0)  # нарисованное не тронуто
+    assert sum(plain.getpixel((40, 10))) > sum(plain.getpixel((40, 390)))  # сверху фон светлее
+    assert plain.getpixel((1200, 700)) == _hex(cards.BG)  # ниже свечения — ровный фон
+    seam = zip(plain.getpixel((40, cards.GLOW_H - 1)), _hex(cards.BG))
+    assert all(abs(a - b) <= 2 for a, b in seam)  # свечение сходит на нет без видимой границы
+    assert red.getpixel((60, 20))[0] > plain.getpixel((60, 20))[0]  # свечение берёт цвет акцента
+    assert canvas.img.getpixel((40, 10)) == _hex(cards.BG)  # сам холст остаётся ровным
+
+
+def test_value_and_delta_text_split_mark_from_number():
+    canvas = Canvas(200)
+    wide = cards.value_text(canvas.draw, (600, 50), "≈5420", 38)
+    assert wide > cards.value_text(canvas.draw, (600, 100), "5420", 38) > 0
+    cards.delta_text(canvas.draw, (600, 150), "+75 за 56 игр", 20, cards.WIN)
+    cards.delta_text(canvas.draw, (600, 180), "нет игр", 20, cards.MUTED, max_w=40)
+    colors = {canvas.img.getpixel((x, 150)) for x in range(440, 600)}
+    assert _hex(cards.WIN) in colors and _hex(cards.MUTED) in colors  # число — цветом, пояснение — приглушённо
+
+
+def test_chip_is_tinted_and_header_uses_it_for_non_outcome_badges():
+    canvas = Canvas(200)
+    width = cards.chip(canvas.img, canvas.draw, 100, 50, "ЗА НЕДЕЛЮ", cards.ACCENT)
+    assert width > 100 and canvas.img.getpixel((100 + width // 2, 34)) not in (_hex(cards.BG), _hex(cards.ACCENT))
+    cards.header(canvas.img, canvas.draw, "Рейтинг", None, ("ПОБЕДА", cards.WIN), y=100)
+    assert _hex(cards.WIN) in {canvas.img.getpixel((x, 130)) for x in range(1100, 1248)}  # исход — залитая таблетка
+
+
 def test_canvas_png_has_telegram_width_and_is_cropped_to_content():
     canvas = Canvas(1000)
     img = _open(canvas.png(bottom=300))
@@ -131,10 +178,14 @@ def test_kda_and_form_dots_draw_without_error():
     canvas = Canvas(120)
     cards.kda(canvas.draw, 300, 40, 12, 3, None)
     width = cards.form_dots(canvas.img, 20, 90, [True, False, True, None], r=8, gap=6)
-    assert width == 4 * 22 - 6
+    assert width == 4 * 16 - 6  # штрих шириной 10 + зазор 6
     assert cards.form_dots(canvas.img, 20, 90, []) == 0
-    assert canvas.img.getpixel((20 + 8, 90)) == _hex(cards.WIN)
-    assert canvas.img.getpixel((20 + 8 + 22, 90)) == _hex(cards.LOSS)
+    # победа — зелёный штрих выше середины, поражение — красный ниже: исход виден и по высоте
+    assert canvas.img.getpixel((20 + 5, 80)) == _hex(cards.WIN)
+    assert canvas.img.getpixel((20 + 5, 101)) == _hex(cards.BG)
+    assert canvas.img.getpixel((20 + 16 + 5, 100)) == _hex(cards.LOSS)
+    assert canvas.img.getpixel((20 + 16 + 5, 79)) == _hex(cards.BG)
+    assert canvas.img.getpixel((20 + 48 + 5, 90)) == _hex(cards.GRID)  # исход неизвестен — серый по центру
 
 
 def test_winrate_bar_proportions():

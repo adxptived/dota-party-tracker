@@ -4,9 +4,11 @@ K/D/A, форма, полоска винрейта, спарклайн, плит
 Все карточки бота (матч, рейтинг, игрок, рекорды…) собираются из этих функций, чтобы выглядеть одинаково:
 единая тёмная палитра (как у графиков, charts.py), ширина 1280 px, шрифт не мельче 18 px (на телефоне
 картинка показывается втрое мельче), победа — зелёный, поражение — красный, свои игроки — золото.
-Рисуем на Pillow, шрифт DejaVu берём из matplotlib (в нём есть кириллица). Скруглённые фигуры и круги
-сглажены (маска рисуется в крупном масштабе и ужимается). Здесь нет ни сети, ни БД — иконки и аватары
-приходят готовыми байтами; нет данных или файл битый — рисуется аккуратная заглушка.
+Рисуем на Pillow. Шрифт — Inter из assets/fonts (подмножество с кириллицей и табличными цифрами: столбцы чисел
+стоят ровно); крупные жирные надписи — Inter Display. Символы, которых в Inter нет (редкие знаки в никах),
+рисуются запасным DejaVu из matplotlib. Скруглённые фигуры и круги сглажены (маска рисуется в крупном масштабе
+и ужимается). Панели — с тонкой светлой кромкой, фон — с мягким свечением акцентного цвета сверху (см. Canvas).
+Здесь нет ни сети, ни БД — иконки и аватары приходят готовыми байтами; нет данных или файл битый — заглушка.
 """
 from __future__ import annotations
 
@@ -22,12 +24,13 @@ from mmrbot.charts import BG, FG, GRID, LOSS, MUTED, PALETTE, PANEL, WIDTH_PX, W
 from mmrbot.heroes import hero_name
 
 # --- палитра и размеры ---------------------------------------------------------------------------
-PANEL_HI = "#1c2a3a"  # приподнятая плитка поверх PANEL
+PANEL_HI = "#1a2535"  # приподнятая плитка поверх PANEL
 EDGE = "#26364a"  # тонкая рамка панелей
-MINE_PANEL = "#1f2f40"  # строка своего игрока
-GOLD = "#f0b429"
+MINE_PANEL = "#1d2a3d"  # строка своего игрока
+GOLD = "#f5b83d"
 SILVER = "#c9d3de"
 BRONZE = "#d9904f"
+BG_TOP = "#121a27"  # верх фона: к низу холста плавно уходит в BG
 ACCENT = PALETTE[0]
 RADIANT, DIRE = "#5cc46a", "#e5553f"
 log = logging.getLogger(__name__)
@@ -41,19 +44,73 @@ PLACE_COLORS = {1: GOLD, 2: SILVER, 3: BRONZE}
 
 # --- текст ---------------------------------------------------------------------------------------
 
-@lru_cache(maxsize=32)
+FONT_DIR = os.path.join(os.path.dirname(__file__), "assets", "fonts")
+DISPLAY_FROM = 30  # жирный текст от этого кегля — Inter Display (плотнее и выразительнее в крупных числах)
+TRACK_MAX_SIZE = 20  # мелкие подписи ЗАГЛАВНЫМИ разряжаем — так они читаются как подписи, а не как текст
+TRACKING = 0.07  # разрядка в долях кегля
+
+
+@lru_cache(maxsize=96)
 def font(size: int, bold: bool = False):
+    from PIL import ImageFont
+    name = ("InterDisplay-ExtraBold.otf" if size >= DISPLAY_FROM else "Inter-Bold.otf") if bold else "Inter-Medium.otf"
+    try:  # BASIC: одинаковая раскладка текста с libraqm и без него (в Docker-образе его может не быть)
+        return ImageFont.truetype(os.path.join(FONT_DIR, name), size, layout_engine=ImageFont.Layout.BASIC)
+    except Exception:
+        return _spare_font(size, bold)
+
+
+@lru_cache(maxsize=96)
+def _spare_font(size: int, bold: bool = False):
+    """Запасной шрифт DejaVu из matplotlib: в нём есть редкие символы, которых нет в Inter."""
     from PIL import ImageFont
     try:
         import matplotlib
         name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
-        return ImageFont.truetype(os.path.join(matplotlib.get_data_path(), "fonts", "ttf", name), size)
+        return ImageFont.truetype(os.path.join(matplotlib.get_data_path(), "fonts", "ttf", name), size,
+                                  layout_engine=ImageFont.Layout.BASIC)
     except Exception:
         return ImageFont.load_default(size)
 
 
+@lru_cache(maxsize=1)
+def _covered() -> Optional[frozenset]:
+    """Коды символов, которые есть в Inter (None — узнать не удалось, тогда всё рисуем основным шрифтом)."""
+    try:
+        from fontTools.ttLib import TTFont
+        with TTFont(os.path.join(FONT_DIR, "Inter-Medium.otf"), lazy=True) as ttf:
+            return frozenset(ttf.getBestCmap())
+    except Exception:
+        return None
+
+
+def _runs(text: str, size: int, bold: bool) -> list:
+    """Текст кусками [(шрифт, строка)]: символы, которых нет в Inter, идут отдельными кусками запасным шрифтом."""
+    main = font(size, bold)
+    covered = _covered()
+    if covered is None or text.isascii() or all(ord(ch) in covered for ch in text):
+        return [(main, text)]
+    spare = _spare_font(size, bold)
+    runs: list = []
+    for ch in text:
+        fnt = main if ord(ch) in covered else spare
+        if runs and runs[-1][0] is fnt:
+            runs[-1][1] += ch
+        else:
+            runs.append([fnt, ch])
+    return [(fnt, part) for fnt, part in runs]
+
+
+def _tracked(text: str, size: int) -> bool:
+    """Мелкая подпись заглавными («ИГРОК», «НАГРАДЫ», «K / D / A») — её рисуем с разрядкой."""
+    if size > TRACK_MAX_SIZE or len(text) < 3 or not text.isupper():
+        return False
+    digits = sum(ch.isdigit() for ch in text)  # «ПОСЛЕДНИЕ 20 ИГР» — подпись; «+75 MMR», «KDA 3.4» — значения, их не трогаем
+    return digits == 0 or (digits <= 3 and sum(ch.isalpha() for ch in text) >= 6)
+
+
 def clean(text) -> str:
-    """Убираем управляющие символы и эмодзи вне BMP — в DejaVu их нет, рисовались бы квадраты."""
+    """Убираем управляющие символы и эмодзи вне BMP — в шрифтах карточек их нет, рисовались бы квадраты."""
     return "".join(ch for ch in str(text or "") if ch.isprintable() and ord(ch) <= 0xFFFF).strip()
 
 
@@ -66,13 +123,39 @@ def fit(text: str, fnt, max_w: float) -> str:
     return text.rstrip() + "…"
 
 
-def text_width(text: str, size: int, bold: bool = False) -> float:
-    return font(size, bold).getlength(text)
+def text_width(text: str, size: int, bold: bool = False, track: Optional[bool] = None) -> float:
+    """Ширина текста в пикселях. track: разрядка (None — по правилу `_tracked`, False — никогда)."""
+    width = sum(fnt.getlength(part) for fnt, part in _runs(text, size, bold))
+    tracked = _tracked(text, size) if track is None else track
+    return width + size * TRACKING * (len(text) - 1) if tracked else width
 
 
-def draw_text(draw, xy, text: str, size: int, fill=FG, bold: bool = False, anchor: str = "la", max_w: Optional[float] = None) -> None:
-    fnt = font(size, bold)
-    draw.text(xy, fit(text, fnt, max_w) if max_w else text, font=fnt, fill=fill, anchor=anchor)
+def _fit(text: str, size: int, bold: bool, max_w: float) -> str:
+    if text_width(text, size, bold) <= max_w:
+        return text
+    while text and text_width(text + "…", size, bold) > max_w:
+        text = text[:-1]
+    return text.rstrip() + "…"
+
+
+def draw_text(draw, xy, text: str, size: int, fill=FG, bold: bool = False, anchor: str = "la",
+              max_w: Optional[float] = None, track: Optional[bool] = None) -> None:
+    if max_w:
+        text = _fit(text, size, bold, max_w)
+    tracked = _tracked(text, size) if track is None else track
+    runs = _runs(text, size, bold)
+    if len(runs) == 1 and not tracked:
+        draw.text(xy, text, font=runs[0][0], fill=fill, anchor=anchor)
+        return
+    # Несколько шрифтов или разрядка: рисуем по кускам слева направо, сами считая начало по якорю.
+    if tracked:
+        runs = [(fnt, ch) for fnt, part in runs for ch in part]
+    gap = size * TRACKING if tracked else 0.0
+    total = sum(fnt.getlength(part) for fnt, part in runs) + gap * (len(runs) - 1)
+    x = xy[0] - (total if anchor[0] == "r" else total / 2 if anchor[0] == "m" else 0)
+    for fnt, part in runs:
+        draw.text((x, xy[1]), part, font=fnt, fill=fill, anchor="l" + anchor[1])
+        x += fnt.getlength(part) + gap
 
 
 def signed(value, zero: str = "0") -> str:
@@ -105,11 +188,16 @@ def _rgb(color: str) -> tuple[int, int, int]:
 # --- холст ---------------------------------------------------------------------------------------
 
 class Canvas:
-    """Тёмный холст шириной 1280 px. Рисуем на высоком, в конце `png(bottom)` обрезает по низу содержимого."""
+    """Тёмный холст шириной 1280 px. Рисуем на высоком, в конце `png(bottom)` обрезает по низу содержимого.
 
-    def __init__(self, height: int = 2400, width: int = WIDTH) -> None:
+    Рисуем по ровному BG, а при выдаче картинки пустой фон заменяется подложкой: сверху он чуть светлее и
+    подсвечен цветом `accent` (синий по умолчанию; карточка исхода матча ставит зелёный или красный).
+    """
+
+    def __init__(self, height: int = 2400, width: int = WIDTH, accent: str = ACCENT) -> None:
         from PIL import Image, ImageDraw
         self.width = width
+        self.accent = accent
         self.img = Image.new("RGB", (width, max(int(height), 1)), BG)
         self.draw = ImageDraw.Draw(self.img)
 
@@ -118,7 +206,46 @@ class Canvas:
         img = self.img
         if bottom is not None:
             img = img.crop((0, 0, self.width, min(max(int(bottom) + PAD, 1), img.height)))
+        img = _with_backdrop(img, self.accent)
         return to_jpeg(img) if fmt == "JPEG" else to_png(img)
+
+
+GLOW_H = 560  # высота свечения сверху, px
+GLOW_STRENGTH = 0.13  # доля акцентного цвета в самой яркой точке
+
+
+@lru_cache(maxsize=16)
+def _glow(width: int, accent: str):
+    """Верх подложки (width × GLOW_H): вертикальный переход BG_TOP → BG и пятно акцентного цвета из левого верхнего угла."""
+    from PIL import Image
+    cols, rows = 48, 24
+    small = Image.new("RGB", (cols, rows))
+    pixels = []
+    for j in range(rows):
+        fy = j / (rows - 1)
+        base = mix(BG_TOP, BG, fy ** 0.8)
+        for i in range(cols):
+            fx = i / (cols - 1)
+            dist = math.hypot((fx - 0.08) / 0.75, fy / 0.95)
+            pixels.append(_rgb(mix(base, accent, GLOW_STRENGTH * max(0.0, 1 - dist) ** 2)))
+    small.putdata(pixels)
+    return small.resize((width, GLOW_H), Image.BICUBIC)
+
+
+def _with_backdrop(img, accent: str):
+    """Заменяет пустой фон (пиксели ровно цвета BG) подложкой со свечением; всё нарисованное остаётся как есть."""
+    from PIL import Image, ImageChops
+    try:
+        glow = _glow(img.width, accent)
+        top = img.crop((0, 0, img.width, min(GLOW_H, img.height)))
+        flat = Image.new("RGB", top.size, BG)
+        empty = ImageChops.difference(top, flat).convert("L").point(lambda v: 0 if v else 255)
+        out = img.copy()
+        out.paste(glow.crop((0, 0, top.width, top.height)), (0, 0), empty)
+        return out
+    except Exception:
+        log.warning("Подложка карточки не собралась, отдаём ровный фон", exc_info=True)
+        return img
 
 
 def to_jpeg(img, quality: int = 86) -> bytes:
@@ -168,13 +295,23 @@ def _circle_mask(d: int):
     return _rr_mask(d, d, d // 2)
 
 
+RIM_MIN = 44  # панели не меньше этого размера получают светлую кромку (мелкие таблетки и полоски — нет)
+RIM = 0.07  # насколько кромка светлее заливки
+
+
 def panel(img, box, fill: str = PANEL, radius: int = 16, outline: Optional[str] = None) -> None:
-    """Скруглённая панель со сглаженными углами; outline — рамка в 1 px."""
+    """Скруглённая панель со сглаженными углами; outline — рамка в 1 px.
+
+    Без outline панель крупнее RIM_MIN получает едва заметную светлую кромку — она отделяет панель от фона
+    и соседних панелей лучше, чем одна разница заливок.
+    """
     x0, y0, x1, y1 = (round(v) for v in box)
     w, h = x1 - x0, y1 - y0
     if w <= 0 or h <= 0:
         return
     r = max(0, min(radius, w // 2, h // 2))
+    if outline is None and w >= RIM_MIN and h >= RIM_MIN and isinstance(fill, str):
+        outline = mix(fill, "#ffffff", RIM)
     if outline and w > 2 and h > 2:
         img.paste(outline, (x0, y0), _rr_mask(w, h, r))
         img.paste(fill, (x0 + 1, y0 + 1), _rr_mask(w - 2, h - 2, max(r - 1, 0)))
@@ -208,10 +345,10 @@ def pill(img, draw, x: float, cy: float, text: str, fg: str = BG, bg: str = GOLD
     """Таблетка с текстом; x — левый край (align='right' — правый, 'center' — середина). Возвращает ширину."""
     text = clean(text)
     h = size + 16
-    w = round(text_width(text, size, bold) + pad * 2)
+    w = round(text_width(text, size, bold, track=False) + pad * 2)
     left = x if align == "left" else x - w if align == "right" else x - w / 2
     panel(img, (left, cy - h / 2, left + w, cy + h / 2), bg, radius=h // 2)
-    draw_text(draw, (left + w / 2, cy), text, size, fg, bold, anchor="mm")
+    draw_text(draw, (left + w / 2, cy), text, size, fg, bold, anchor="mm", track=False)
     return w
 
 
@@ -358,55 +495,97 @@ def _drawn_badge(rank_tier: Optional[int], size: int = 64):
 
 def kda(draw, cx: float, cy: float, kills, deaths, assists, size: int = 28, bold: bool = True) -> None:
     """K / D / A по центру в cx: смерти — красным, чтобы читалось с одного взгляда."""
-    parts = [(str(kills or 0), FG), (" / ", MUTED), (str(deaths or 0), LOSS), (" / ", MUTED), (str(assists or 0), FG)]
+    sep = font(max(size * 3 // 4, 14), False)  # косые черты мельче и тоньше цифр — цифры остаются главным
     fnt = font(size, bold)
-    x = cx - sum(fnt.getlength(text) for text, _ in parts) / 2
-    for text, color in parts:
-        draw.text((x, cy), text, font=fnt, fill=color, anchor="lm")
-        x += fnt.getlength(text)
+    parts = [(str(kills or 0), FG, fnt), (" / ", mix(MUTED, PANEL, 0.35), sep), (str(deaths or 0), LOSS, fnt),
+             (" / ", mix(MUTED, PANEL, 0.35), sep), (str(assists or 0), FG, fnt)]
+    x = cx - sum(f.getlength(text) for text, _, f in parts) / 2
+    for text, color, f in parts:
+        draw.text((x, cy), text, font=f, fill=color, anchor="lm")
+        x += f.getlength(text)
+
+
+def value_text(draw, xy, text: str, size: int, fill=FG, anchor: str = "rm") -> float:
+    """Крупное число. Знак «≈» перед ним (оценка MMR) рисуется мельче и приглушённо: главное — цифры.
+
+    anchor — только "lm" или "rm". Возвращает ширину нарисованного.
+    """
+    text = clean(text)
+    approx = text.startswith("≈") and len(text) > 1
+    body = text[1:] if approx else text
+    mark_size = max(size * 2 // 3, 18)
+    body_w = text_width(body, size, True)
+    mark_w = text_width("≈", mark_size, True) + size * 0.06 if approx else 0
+    x = xy[0] - (body_w + mark_w if anchor[0] == "r" else 0)
+    if approx:
+        draw_text(draw, (x, xy[1] + size * 0.02), "≈", mark_size, mix(MUTED, BG, 0.15), bold=True, anchor="lm")
+    draw_text(draw, (x + mark_w, xy[1]), body, size, fill, bold=True, anchor="lm")
+    return body_w + mark_w
+
+
+def delta_text(draw, xy, text: str, size: int, color: str = MUTED, anchor: str = "rm", max_w: Optional[float] = None) -> None:
+    """Строка «+75 за 56 игр»: число со знаком — цветом color, пояснение после него — приглушённо."""
+    text = clean(text)
+    if max_w:
+        text = _fit(text, size, False, max_w)
+    head, _, tail = text.partition(" ")
+    if not tail or head[:1] not in "+−-":
+        draw_text(draw, xy, text, size, color, anchor=anchor)
+        return
+    tail = " " + tail
+    head_w, tail_w = text_width(head, size, True), text_width(tail, size)
+    x = xy[0] - (head_w + tail_w if anchor[0] == "r" else 0)
+    draw_text(draw, (x, xy[1]), head, size, color, bold=True, anchor="l" + anchor[1])
+    draw_text(draw, (x + head_w, xy[1]), tail, size, MUTED, anchor="l" + anchor[1])
 
 
 def form_dots(img, x: float, cy: float, results: Sequence[Optional[bool]], r: int = 8, gap: int = 6) -> float:
-    """Форма: кружки слева направо от старых игр к новым (True — победа). Возвращает ширину."""
-    step = r * 2 + gap
+    """Форма: штрихи слева направо от старых игр к новым. Победа — зелёный штрих выше середины, поражение —
+    красный ниже: исход читается и по высоте, не только по цвету. r задаёт размер, gap — зазор. Возвращает ширину."""
+    w, h, shift = max(6, round(r * 1.25)), max(12, round(r * 2.25)), max(3, round(r * 0.55))
+    step = w + gap
     for i, won in enumerate(results):
         color = GRID if won is None else WIN if won else LOSS
-        dot(img, x + r + i * step, cy, r, color)
+        top = cy - h / 2 + (0 if won is None else -shift if won else shift)
+        left = round(x + i * step)
+        img.paste(color, (left, round(top)), _rr_mask(w, h, w // 2))
     return max(len(results) * step - gap, 0)
 
 
 def winrate_bar(img, box, wins: int, losses: int, radius: Optional[int] = None) -> None:
-    """Полоска винрейта: зелёная доля побед, остальное — приглушённый красный; нет игр — серая."""
-    from PIL import Image
+    """Полоска винрейта: зелёная доля побед, после зазора — приглушённый красный; нет игр — серая."""
     x0, y0, x1, y1 = (round(v) for v in box)
     w, h = x1 - x0, y1 - y0
     if w <= 0 or h <= 0:
         return
+    r = radius if radius is not None else h // 2
     total = wins + losses
-    bar = Image.new("RGB", (w, h), GRID if total == 0 else mix(LOSS, BG, 0.45))
-    if total:
-        green = round(w * wins / total)
-        if green:
-            bar.paste(WIN, (0, 0, green, h))
-    img.paste(bar, (x0, y0), _rr_mask(w, h, radius if radius is not None else h // 2))
+    lose = mix(LOSS, BG, 0.5)
+    if total == 0 or wins == 0 or losses == 0 or w < h * 3:
+        img.paste(GRID if total == 0 else WIN if losses == 0 else lose, (x0, y0), _rr_mask(w, h, min(r, w // 2)))
+        return
+    gap = 3
+    green = min(max(round(w * wins / total), h), w - h - gap)  # обе части видны даже при 1 из 100
+    img.paste(WIN, (x0, y0), _rr_mask(green, h, min(r, green // 2)))
+    rest = w - green - gap
+    img.paste(lose, (x0 + green + gap, y0), _rr_mask(rest, h, min(r, rest // 2)))
 
 
 def bar(img, box, frac: float, color: str = ACCENT, track: str = GRID, marker: Optional[float] = None) -> None:
     """Горизонтальная полоска заполнения (0–1) на тёмной дорожке; marker — риска-ориентир (например, 0.5 — «средний игрок»)."""
-    from PIL import Image
     x0, y0, x1, y1 = (round(v) for v in box)
     w, h = x1 - x0, y1 - y0
     if w <= 0 or h <= 0:
         return
     frac = max(0.0, min(1.0, float(frac or 0)))
-    strip = Image.new("RGB", (w, h), track)
+    img.paste(track, (x0, y0), _rr_mask(w, h, h // 2))
     filled = round(w * frac)
     if filled:
-        strip.paste(color, (0, 0, filled, h))
+        filled = min(max(filled, h), w)  # короче высоты скруглённую полоску не нарисовать
+        img.paste(color, (x0, y0), _rr_mask(filled, h, h // 2))
     if marker is not None and 0 < marker < 1:
-        mx = round(w * marker)
-        strip.paste(FG, (max(mx - 1, 0), 0, min(mx + 1, w), h))
-    img.paste(strip, (x0, y0), _rr_mask(w, h, h // 2))
+        mx = x0 + round(w * marker)
+        img.paste(FG, (max(mx - 1, x0), y0, min(mx + 1, x1), y1))
 
 
 def sparkline(img, box, values: Sequence[float], color: str = ACCENT, fill: bool = True, last_dot: bool = True,
@@ -444,27 +623,48 @@ def tile(img, draw, box, label: str, value: str, sub: Optional[str] = None, colo
     """Плитка показателя: мелкая подпись сверху, крупное значение, необязательная строка под ним."""
     x0, y0, x1, y1 = box
     panel(img, box, fill, radius=16)
-    inner = x1 - x0 - 36
-    draw_text(draw, (x0 + 18, y0 + 14), clean(label), 18, MUTED, anchor="la", max_w=inner)
-    value_y = y0 + 40 + (0 if sub else (y1 - y0 - 40 - value_size) / 2 - 2)
-    draw_text(draw, (x0 + 18, value_y), clean(value), value_size, color, bold=True, anchor="la", max_w=inner)
+    inner = x1 - x0 - 40
+    draw_text(draw, (x0 + 20, y0 + 16), clean(label), 18, MUTED, anchor="la", max_w=inner)
+    value_mid = (y0 + 42 + (y1 - 40 if sub else y1 - 14)) / 2  # между подписью и нижней строкой
+    draw_text(draw, (x0 + 20, value_mid), clean(value), value_size, color, bold=True, anchor="lm", max_w=inner)
     if sub:
-        draw_text(draw, (x0 + 18, y1 - 14), clean(sub), 18, MUTED, anchor="ld", max_w=inner)
+        draw_text(draw, (x0 + 20, y1 - 16), clean(sub), 18, MUTED, anchor="ld", max_w=inner)
+
+
+SOLID_BADGES = (WIN, LOSS, RADIANT, DIRE)  # исход матча — главное на карточке, такая таблетка залита целиком
+
+
+def chip(img, draw, x: float, cy: float, text: str, color: str = ACCENT, size: int = 22, pad: int = 16,
+         align: str = "left", base: str = BG) -> float:
+    """Спокойная метка: тонированный фон, рамка и текст одного цвета (период, число участников). Возвращает ширину."""
+    text = clean(text)
+    h = size + 20
+    w = round(text_width(text, size, True, track=False) + pad * 2)
+    left = x if align == "left" else x - w if align == "right" else x - w / 2
+    panel(img, (left, cy - h / 2, left + w, cy + h / 2), mix(base, color, 0.16), radius=h // 2, outline=mix(base, color, 0.45))
+    draw_text(draw, (left + w / 2, cy), text, size, mix(color, "#ffffff", 0.25), bold=True, anchor="mm", track=False)
+    return w
 
 
 def header(img, draw, title: str, subtitle: Optional[str] = None, badge: Optional[tuple[str, str]] = None, y: int = PAD) -> int:
-    """Шапка карточки: заголовок, строка под ним, справа таблетка (текст, цвет). Возвращает y под шапкой."""
+    """Шапка карточки: заголовок, строка под ним, справа метка (текст, цвет). Возвращает y под шапкой.
+
+    Метка исхода (цвет победы/поражения/стороны) — залитая таблетка; остальные (период и т. п.) — спокойный chip.
+    """
     right = WIDTH - PAD
     if badge:
-        w = pill(img, draw, right, y + 30, badge[0], BG, badge[1], size=26, align="right", pad=22)
+        if badge[1] in SOLID_BADGES:
+            w = pill(img, draw, right, y + 30, badge[0], BG, badge[1], size=26, align="right", pad=22)
+        else:
+            w = chip(img, draw, right, y + 30, badge[0], badge[1], size=22, align="right", pad=18)
         right -= w + 24
-    draw_text(draw, (PAD, y), clean(title), 40, FG, bold=True, max_w=right - PAD)
+    draw_text(draw, (PAD, y - 4), clean(title), 46, FG, bold=True, max_w=right - PAD)
     if subtitle:
-        draw_text(draw, (PAD, y + 54), clean(subtitle), 24, MUTED, max_w=WIDTH - 2 * PAD)
+        draw_text(draw, (PAD, y + 56), clean(subtitle), 22, MUTED, max_w=WIDTH - 2 * PAD)
     return y + (54 + 36 if subtitle else 54) + 18
 
 
 def footer(draw, y: int, text: str) -> int:
     """Мелкая приглушённая строка под карточкой (когда обновлено, пояснение к цифрам). Возвращает y под ней."""
-    draw_text(draw, (PAD, y + 8), clean(text), 18, MUTED, max_w=WIDTH - 2 * PAD)
+    draw_text(draw, (PAD, y + 8), clean(text), 18, mix(MUTED, BG, 0.25), max_w=WIDTH - 2 * PAD)
     return y + 8 + 26

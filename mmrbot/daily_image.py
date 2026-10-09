@@ -152,7 +152,7 @@ def _draw_banner(img, draw, y: int, view: dict) -> int:
     cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + BANNER_H), mix(PANEL, ACCENT, 0.34), PANEL, radius=24, outline=EDGE)
     x = PAD + 40
     badge_text, badge_color = view.get("badge") or ("24 ЧАСА", ACCENT)
-    cards.pill(img, draw, x, y + 40, badge_text, BG, badge_color, size=20, pad=16)
+    cards.chip(img, draw, x, y + 40, badge_text, badge_color, size=20, pad=16, base=mix(PANEL, ACCENT, 0.3))
     draw_text(draw, (x, y + 76), clean(view.get("title")), 46, FG, bold=True, max_w=640)
     draw_text(draw, (x, y + 140), clean(view.get("window")), 22, mix(FG, MUTED, 0.4), max_w=700)
     draw_text(draw, (x, y + 170), clean(view.get("span")), 22, MUTED, max_w=700)
@@ -187,9 +187,12 @@ def _draw_table(img, draw, y: int, rows: list, icons: dict, avatars: dict) -> in
 
 
 def _draw_row(img, draw, y: int, place: int, row: dict, icons: dict, avatars: dict, leader: bool = False) -> None:
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), PANEL, radius=16)
-    if leader:
-        cards.stripe(img, PAD, y, y + ROW_H, GOLD)
+    box = (PAD, y, WIDTH - PAD, y + ROW_H)
+    if leader:  # как у лидера рейтинга: золотой отсвет слева и полоса
+        cards.gradient_panel(img, box, mix(PANEL, GOLD, 0.2), PANEL, radius=16, outline=mix(PANEL, GOLD, 0.3))
+        cards.stripe(img, PAD, y + 14, y + ROW_H - 14, GOLD)
+    else:
+        cards.panel(img, box, PANEL, radius=16)
     mid = y + ROW_H / 2
     _place(img, draw, PAD + 44, mid, place)
 
@@ -203,13 +206,13 @@ def _draw_row(img, draw, y: int, place: int, row: dict, icons: dict, avatars: di
     cards.paste(img, cards.rank_badge(row.get("rank_tier"), 32), NAME_X, mid + 2)
     draw_text(draw, (NAME_X + 42, mid + 18), clean(row.get("rank_text")), 20, MUTED, anchor="lm", max_w=NAME_MAX_W - 42)
 
-    draw_text(draw, (BIG_RIGHT, mid - 12), clean(row.get("big")), 36, row.get("big_color") or FG, bold=True, anchor="rm")
+    cards.value_text(draw, (BIG_RIGHT, mid - 13), row.get("big"), 38, row.get("big_color") or FG)
     draw_text(draw, (BIG_RIGHT, mid + 22), clean(row.get("sub")), 20, MUTED, anchor="rm", max_w=250)
 
     wins, losses = row.get("wins") or 0, row.get("losses") or 0
     games = wins + losses
     draw_text(draw, (WL_X, mid - 14), f"{wins}–{losses}", 28, FG, bold=True, anchor="lm")
-    cards.winrate_bar(img, (WL_X, mid + 10, WL_X + BAR_W, mid + 22), wins, losses)
+    cards.winrate_bar(img, (WL_X, mid + 12, WL_X + BAR_W, mid + 22), wins, losses)
     draw_text(draw, (WL_X + BAR_W + 10, mid + 16), f"{round(wins * 100 / games)}%" if games else "", 20, MUTED, anchor="lm")
 
     series = list(row.get("series") or [])
@@ -267,7 +270,9 @@ def _draw_timeline(img, draw, y: int, timeline: dict, avatars: dict) -> int:
     for ts, label in timeline.get("ticks") or []:  # сетка по часам чата и подписи оси
         gx = round(at(ts))
         draw.line([(gx, y + top - 6), (gx, y + top + lanes_h + 6)], fill=mix(PANEL_HI, MUTED, 0.35), width=1)
-        draw_text(draw, (gx, y + top + lanes_h + 28), label, 18, MUTED, anchor="mm")
+        half = cards.text_width(label, 18) / 2  # крайние подписи не вылезают за панель
+        lx = min(max(gx, PAD + 16 + half), WIDTH - PAD - 16 - half)
+        draw_text(draw, (lx, y + top + lanes_h + 28), label, 18, MUTED, anchor="mm")
     for lane, ly in zip(lanes, lane_y):
         name = clean(lane.get("name")) or "Игрок"
         cards.paste(img, cards.avatar(avatars.get(lane.get("avatar")), name, 26), PAD + 24, ly + (LANE_H - 26) / 2)

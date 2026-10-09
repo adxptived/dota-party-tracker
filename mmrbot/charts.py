@@ -16,7 +16,7 @@ import pytz
 # Категориальная палитра для тёмной поверхности: восемь оттенков в фиксированном порядке. Порядок —
 # часть защиты от неразличимости при дальтонизме (соседние слоты проверены), поэтому не переставлять.
 PALETTE = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
-BG, PANEL, FG, MUTED, GRID = "#0b1118", "#16202b", "#e8eef5", "#8f9dac", "#243140"
+BG, PANEL, FG, MUTED, GRID = "#0a0f16", "#141d29", "#eef2f8", "#8f9dac", "#243140"
 CARD_EDGE = "#202c3a"  # тёмная тема Telegram
 WIN, LOSS = "#3ddc84", "#ff5c5c"  # исход игры (статус) — не используются как цвет игрока
 MAX_POINTS = 300  # длиннее — прореживаем (история в тысячи игр рисовалась бы долго и выглядела кашей)
@@ -108,8 +108,17 @@ def _font_family() -> tuple[str, ...]:
     Проверяем наличие сами: иначе matplotlib на каждый текст пишет в лог «Font family not found»
     (в Docker-образе нет ни Inter, ни Segoe UI).
     """
+    import os
+
     from matplotlib import font_manager
 
+    # Тот же Inter, что на карточках (cards.py): лежит в assets/fonts, от шрифтов системы график не зависит.
+    fonts_dir = os.path.join(os.path.dirname(__file__), "assets", "fonts")
+    for name in ("Inter-Medium.otf", "Inter-Bold.otf"):
+        try:
+            font_manager.fontManager.addfont(os.path.join(fonts_dir, name))
+        except Exception:
+            pass
     installed = {font.name for font in font_manager.fontManager.ttflist}
     first = next((name for name in FONTS if name in installed), "DejaVu Sans")
     return (first,) if first == "DejaVu Sans" else (first, "DejaVu Sans")
@@ -215,7 +224,7 @@ def render_mmr_chart(
     back.axis("off")
     gradient = np.linspace(0, 1, 256).reshape(-1, 1)
     back.imshow(gradient, extent=(0, W, 0, H), aspect="auto", zorder=-10, origin="upper",
-                cmap=LinearSegmentedColormap.from_list("bg", ["#131d28", BG]))
+                cmap=LinearSegmentedColormap.from_list("bg", ["#121a27", BG]))
 
     def text(x, y, value, **kwargs):
         kwargs.setdefault("va", "center")

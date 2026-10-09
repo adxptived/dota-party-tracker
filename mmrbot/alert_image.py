@@ -100,22 +100,10 @@ def render_alert_image(
     """
     icons, avatars, item_icons = icons or {}, avatars or {}, item_icons or {}
     rows = event.get("rows") or []
-    canvas = cards.Canvas(260 + sum(_row_h(r) + ROW_GAP for r in rows) + FOOT_H + 100)
-    img, draw = canvas.img, canvas.draw
-
-    when = fmt_local(event.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
-    sub = when + (f"  ·  {event['duration'] // 60} мин" if event.get("duration") else "")
     label, color = _outcome(rows) if rows else ("МАТЧ", ACCENT)
-    y = cards.header(img, draw, "Матч завершён", sub, (label, color))
-
-    if event.get("average_rank"):
-        cards.paste(img, cards.rank_badge(event["average_rank"], 48), PAD, y - 4)
-        draw_text(draw, (PAD + 62, y + 20), f"Лобби · {rank_label(event['average_rank'])}", 24, FG, anchor="lm")
-        draw_text(draw, (WIDTH - PAD, y + 20), f"ID матча {event.get('match_id')}", 20, MUTED, anchor="rm")
-        y += 64
-    else:
-        draw_text(draw, (WIDTH - PAD, y + 8), f"ID матча {event.get('match_id')}", 20, MUTED, anchor="rm")
-        y += 34
+    canvas = cards.Canvas(260 + sum(_row_h(r) + ROW_GAP for r in rows) + FOOT_H + 100, accent=color)
+    img, draw = canvas.img, canvas.draw
+    y = _draw_banner(img, draw, PAD, event, tz, label, color) + 14
 
     mvp = _mvp_name(rows)
     for row in rows:
@@ -129,13 +117,45 @@ def render_alert_image(
     return canvas.png(y)
 
 
+BANNER_H = 136
+
+
+def _draw_banner(img, draw, y: int, event: dict, tz: str, label: str, color: str) -> int:
+    """Шапка-плашка: исход крупно цветом (это главное в оповещении), под ним «Матч завершён · дата · длительность»,
+    справа — средний ранг лобби и ID матча. Возвращает y под плашкой."""
+    box = (PAD, y, WIDTH - PAD, y + BANNER_H)
+    cards.gradient_panel(img, box, cards.mix(PANEL, color, 0.34), cards.mix(PANEL, color, 0.04), radius=20,
+                         outline=cards.mix(PANEL, color, 0.42))
+    cards.stripe(img, PAD, y + 20, y + BANNER_H - 20, color)
+    when = fmt_local(event.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
+    sub = "Матч завершён  ·  " + when + (f"  ·  {event['duration'] // 60} мин" if event.get("duration") else "")
+    right = WIDTH - PAD - 28
+    rank = event.get("average_rank")
+    side_w = 300 if rank else 240
+    draw_text(draw, (PAD + 32, y + 52), label, 56, cards.mix(color, "#ffffff", 0.12), bold=True, anchor="lm",
+              max_w=WIDTH - 2 * PAD - 60 - side_w)
+    draw_text(draw, (PAD + 34, y + 104), sub, 22, cards.mix(MUTED, "#ffffff", 0.25), anchor="lm",
+              max_w=WIDTH - 2 * PAD - 60 - side_w)
+    match_id = f"ID {event.get('match_id')}"
+    if rank:
+        cards.paste(img, cards.rank_badge(rank, 64), right - 64, y + 20)
+        draw_text(draw, (right - 78, y + 38), "ЛОББИ", 18, cards.mix(MUTED, "#ffffff", 0.2), bold=True, anchor="rm")
+        draw_text(draw, (right - 78, y + 66), rank_label(rank), 24, FG, bold=True, anchor="rm", max_w=side_w - 90)
+        draw_text(draw, (right, y + 108), match_id, 18, cards.mix(MUTED, "#ffffff", 0.1), anchor="rm")
+    else:
+        draw_text(draw, (right, y + BANNER_H / 2), match_id, 20, cards.mix(MUTED, "#ffffff", 0.1), anchor="rm")
+    return y + BANNER_H
+
+
 def _draw_row(
     img, draw, y: int, row: dict, icons: dict, avatars: dict, mvp: Optional[str], item_icons: Optional[dict] = None,
 ) -> None:
     won = bool(row.get("won"))
     accent = WIN if won else LOSS
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + _row_h(row)), cards.mix(PANEL, accent, 0.09), radius=16)
-    cards.stripe(img, PAD, y, y + _row_h(row), accent)
+    fill = cards.mix(PANEL, accent, 0.05)
+    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + _row_h(row)), cards.mix(PANEL, accent, 0.16), fill, radius=16,
+                         outline=cards.mix(fill, "#ffffff", 0.07))
+    cards.stripe(img, PAD, y + 16, y + ROW_H - 16, accent)
     mid = y + ROW_H / 2
 
     name = clean(row.get("name")) or "Игрок"
@@ -165,23 +185,23 @@ def _draw_row(
     if extra:
         draw_text(draw, (NAME_X, mid + 28), "  ·  ".join(extra), 18, MUTED, anchor="lm", max_w=NAME_MAX_W + 60)
 
-    cards.kda(draw, KDA_X, mid - 6, row.get("kills"), row.get("deaths"), row.get("assists"), 34)
+    cards.kda(draw, KDA_X, mid - 8, row.get("kills"), row.get("deaths"), row.get("assists"), 36)
+    draw_text(draw, (KDA_X, mid + 26), "K / D / A", 18, cards.mix(MUTED, PANEL, 0.25), anchor="mm")
 
     delta = _delta(row)
     mmr = row.get("current_mmr")
+    streak = row.get("streak_len") or 0
+    top = mid - 12 if streak >= 3 else mid
     x = RIGHT
     if mmr is not None:
-        mmr_text = f"≈{mmr}"
-        draw_text(draw, (x, mid - 10), mmr_text, 34, FG, bold=True, anchor="rm")
-        x -= cards.text_width(mmr_text, 34, True) + 14
-        draw_text(draw, (x, mid - 10), "→", 26, MUTED, anchor="rm")
-        x -= cards.text_width("→", 26) + 14
-    draw_text(draw, (x, mid - 10), signed(delta), 34, cards.delta_color(delta), bold=True, anchor="rm")
-    streak = row.get("streak_len") or 0
+        x -= cards.value_text(draw, (x, top), f"≈{mmr}", 36, FG) + 12
+        draw_text(draw, (x, top), "→", 24, cards.mix(MUTED, PANEL, 0.3), anchor="rm")
+        x -= cards.text_width("→", 24) + 12
+    draw_text(draw, (x, top), signed(delta), 36, cards.delta_color(delta), bold=True, anchor="rm")
     if streak >= 3:
         is_win = row.get("streak_type") == "W"
         text = f"▲ {streak} подряд" if is_win else f"▼ {streak} подряд"
-        cards.pill(img, draw, RIGHT, mid + 26, text, BG, WIN if is_win else LOSS, size=18, pad=12, align="right")
+        cards.chip(img, draw, RIGHT, mid + 28, text, WIN if is_win else LOSS, size=18, pad=12, align="right", base=fill)
     if _has_strip(row):
         _draw_strip(img, draw, y + ROW_H + STRIP_H / 2 - 2, row, item_icons or {})
 
@@ -228,14 +248,16 @@ def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
 def _draw_shared(img, draw, y: int, shared: dict) -> None:
     cards.panel(img, (PAD, y + 6, WIDTH - PAD, y + FOOT_H - 6), cards.PANEL_HI, radius=16)
     mid = y + FOOT_H / 2
-    text = f"Сегодня вместе: {plural_games(shared['games'])}"
-    draw_text(draw, (PAD + 24, mid), text, 26, FG, bold=True, anchor="lm")
+    draw_text(draw, (PAD + 24, mid), "СЕГОДНЯ ВМЕСТЕ", 18, MUTED, bold=True, anchor="lm")
+    x = PAD + 24 + cards.text_width("СЕГОДНЯ ВМЕСТЕ", 18, True) + 20
+    text = plural_games(shared["games"])
+    draw_text(draw, (x, mid), text, 26, FG, bold=True, anchor="lm")
     score = f"{shared.get('wins', 0)}–{shared.get('losses', 0)}"
-    draw_text(draw, (WIDTH - PAD - 24, mid), score, 30, GOLD, bold=True, anchor="rm")
+    draw_text(draw, (WIDTH - PAD - 24, mid), score, 30, FG, bold=True, anchor="rm")
     bar_x1 = WIDTH - PAD - 24 - cards.text_width(score, 30, True) - 24
-    bar_x0 = PAD + 24 + cards.text_width(text, 26, True) + 28
+    bar_x0 = x + cards.text_width(text, 26, True) + 28
     if bar_x1 - bar_x0 > 80:
-        cards.winrate_bar(img, (bar_x0, mid - 8, bar_x1, mid + 8), shared.get("wins", 0), shared.get("losses", 0))
+        cards.winrate_bar(img, (bar_x0, mid - 6, bar_x1, mid + 6), shared.get("wins", 0), shared.get("losses", 0))
 
 
 

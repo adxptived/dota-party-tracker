@@ -65,8 +65,8 @@ def test_form_and_hero_headers_only_when_rows_have_them():
     for column, (x0, x1) in {"form": (FORM_X, FORM_X + 90), "hero": (HERO_X - 10, HERO_X + 90)}.items():
         empty = _header_extrema(render_stats_image("Рейтинг", None, None, [bare]), x0, x1)
         filled = _header_extrema(render_stats_image("Рейтинг", None, None, [with_both]), x0, x1)
-        assert all(lo == hi for lo, hi in empty), column  # только фон — подписи нет
-        assert any(lo != hi for lo, hi in filled), column
+        assert all(hi - lo <= 12 for lo, hi in empty), column  # только фон с мягким свечением — подписи нет
+        assert any(hi - lo > 60 for lo, hi in filled), column
 
 
 def test_big_label_is_drawn_and_single_record_tile_is_wide():
