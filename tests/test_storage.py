@@ -347,13 +347,15 @@ def test_has_matches_latest_and_data_version(store):
     a = store.add_player(100, 1, "A", None, 0, 0)
     b = store.add_player(100, 2, "B", None, 0, 0)
     assert store.has_matches(a.id) is False and store.latest_match_time(a.id) is None
-    assert store.data_version(100) == (0, None) and store.last_activity(100) is None
+    assert store.data_version(100) == (0, None, 0) and store.last_activity(100) is None
     store.add_matches(a.id, [match(1, 100), {**match(2, 300), "duration": 60}])
     store.add_matches(b.id, [match(3, 200)])
     assert store.has_matches(a.id) and store.latest_match_time(a.id) == 300
-    assert store.data_version(100) == (3, 300)
+    assert store.data_version(100) == (3, 300, 0)
+    store.set_player_anchor(a.id, 5000, 10)                       # правка MMR тоже меняет отпечаток (график перерисуется)
+    assert store.data_version(100) == (3, 300, 1)
     assert store.last_activity(100) == 360
-    assert store.data_version(999) == (0, None)                   # чужой чат не влияет
+    assert store.data_version(999) == (0, None, 0)                 # чужой чат не влияет
 
 
 def test_get_latest_match_across_players_and_by_id(store):

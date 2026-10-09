@@ -146,14 +146,17 @@ def test_cache_is_bounded(tmp_path):
     assert sum(len(v[1]) for v in storage._matches_cache.values()) <= 10
 
 
-def test_unnotified_query_uses_partial_index(env):
-    """B9: поиск кандидатов на оповещение не сканирует всю историю игрока."""
+def test_unnotified_query_does_not_scan_history(env):
+    """B9: поиск кандидатов на оповещение идёт от очереди pending_notices, а не сканирует историю матчей."""
     storage, player, _ = env
     with storage._conn() as conn:
         plan = " ".join(r[3] for r in conn.execute(
-            "EXPLAIN QUERY PLAN SELECT * FROM matches WHERE player_id = ? AND notified = 0 "
-            "AND start_time + COALESCE(duration, 0) >= ? ORDER BY start_time", (player.id, 0)))
-    assert "idx_matches_unnotified" in plan
+            "EXPLAIN QUERY PLAN SELECT m.* FROM pending_notices n JOIN players p ON p.id = n.player_id "
+            "JOIN matches m ON m.account_id = p.account_id AND m.match_id = n.match_id "
+            "WHERE n.player_id = ? AND m.start_time + COALESCE(m.duration, 0) >= ? ORDER BY m.start_time",
+            (player.id, 0)))
+    assert "SCAN m" not in plan and "SCAN matches" not in plan
+    assert "SEARCH n" in plan
 
 
 def test_light_selects_use_warm_cache_and_stay_correct(env):

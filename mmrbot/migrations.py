@@ -214,10 +214,164 @@ def _m003_drop_dead_player_columns(conn: sqlite3.Connection) -> None:
     _v2_data_ver_triggers(conn)
 
 
+# --- 4: аккаунт Steam отдельно от участия в чате -------------------------------------------------------------
+
+_ACCOUNTS_V4 = """
+    account_id            INTEGER PRIMARY KEY,
+    last_rank_tier        INTEGER,
+    last_leaderboard_rank INTEGER,
+    updated_ts            INTEGER,
+    profile_ts            INTEGER,
+    history_ts            INTEGER,
+    steam_name            TEXT,
+    steam_avatar          TEXT,
+    fh_unavailable        INTEGER NOT NULL DEFAULT 0,
+    ingame_since          INTEGER,
+    ingame_misses         INTEGER NOT NULL DEFAULT 0,
+    data_ver              INTEGER NOT NULL DEFAULT 0
+"""
+
+_PLAYERS_V4 = """
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id      INTEGER NOT NULL,
+    account_id   INTEGER NOT NULL,
+    display_name TEXT    NOT NULL,
+    anchor_mmr   INTEGER,
+    anchor_ts    INTEGER NOT NULL,
+    created_ts   INTEGER NOT NULL,
+    tg_user_id   INTEGER,
+    last_tag     TEXT,
+    rev          INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(chat_id, account_id)
+"""
+
+_MATCHES_V4 = """
+    account_id    INTEGER NOT NULL,
+    match_id      INTEGER NOT NULL,
+    start_time    INTEGER NOT NULL,
+    player_slot   INTEGER NOT NULL,
+    radiant_win   INTEGER NOT NULL,
+    lobby_type    INTEGER,
+    kills         INTEGER NOT NULL DEFAULT 0,
+    deaths        INTEGER NOT NULL DEFAULT 0,
+    assists       INTEGER NOT NULL DEFAULT 0,
+    hero_id       INTEGER,
+    duration      INTEGER,
+    party_size    INTEGER,
+    average_rank  INTEGER,
+    gpm           REAL,
+    xpm           REAL,
+    last_hits     INTEGER,
+    denies        INTEGER,
+    hero_damage   INTEGER,
+    tower_damage  INTEGER,
+    hero_healing  INTEGER,
+    net_worth     INTEGER,
+    level         INTEGER,
+    perf_score    REAL,
+    bench_json    TEXT,
+    enriched      INTEGER NOT NULL DEFAULT 0,
+    position      INTEGER,
+    role          TEXT,
+    lane          TEXT,
+    imp           INTEGER,
+    stratz_done   INTEGER NOT NULL DEFAULT 0,
+    stratz_tries  INTEGER NOT NULL DEFAULT 0,
+    enrich_tries  INTEGER NOT NULL DEFAULT 0,
+    stratz_next_ts INTEGER NOT NULL DEFAULT 0,
+    leaver_status INTEGER,
+    PRIMARY KEY (account_id, match_id)
+"""
+
+# Поля матча, которые у копий одного матча в разных чатах могли быть заполнены по-разному: берём первое непустое.
+_MATCH_FILL_V4 = (
+    "lobby_type", "hero_id", "duration", "party_size", "average_rank", "gpm", "xpm", "last_hits", "denies",
+    "hero_damage", "tower_damage", "hero_healing", "net_worth", "level", "perf_score", "bench_json",
+    "position", "role", "lane", "imp", "leaver_status",
+)
+_MATCH_PLAIN_V4 = ("match_id", "start_time", "player_slot", "radiant_win", "kills", "deaths", "assists")
+_MATCH_FLAGS_V4 = ("enriched", "stratz_done", "stratz_tries", "enrich_tries", "stratz_next_ts")
+
+
+def _v4_data_ver_triggers(conn: sqlite3.Connection) -> None:
+    """«Версия данных» аккаунта: любое изменение его матчей (кроме служебных счётчиков) двигает accounts.data_ver."""
+    bump = "UPDATE accounts SET data_ver = data_ver + 1 WHERE account_id = {}.account_id"
+    conn.execute(f"CREATE TRIGGER matches_bump_ins AFTER INSERT ON matches BEGIN {bump.format('NEW')}; END")
+    conn.execute(f"CREATE TRIGGER matches_bump_del AFTER DELETE ON matches BEGIN {bump.format('OLD')}; END")
+    conn.execute(
+        "CREATE TRIGGER matches_bump_upd AFTER UPDATE ON matches "
+        "WHEN OLD.enrich_tries IS NEW.enrich_tries AND OLD.stratz_tries IS NEW.stratz_tries "
+        f"AND OLD.stratz_next_ts IS NEW.stratz_next_ts BEGIN {bump.format('NEW')}; END"
+    )
+
+
+def _m004_accounts(conn: sqlite3.Connection) -> None:
+    """Один аккаунт Steam — одна история матчей и одно состояние опроса, сколько бы чатов его ни отслеживало.
+
+    Было: матчи и ранг/ник/«обновлён» лежали в строке игрока чата — аккаунт в двух чатах хранился и опрашивался дважды.
+    Стало: `accounts` (состояние аккаунта) и `matches` с ключом (account_id, match_id); `players` — только участие
+    в чате (ник, стартовый MMR, привязка к Telegram). «Не оповещён» переезжает из колонки matches.notified
+    в таблицу `pending_notices` (игрок чата × матч): у каждого чата свои оповещения об общем матче.
+    """
+    drop_triggers(conn, "matches_bump_ins", "matches_bump_del", "matches_bump_upd")
+    conn.execute(f"CREATE TABLE accounts ({_ACCOUNTS_V4})")
+    account_fields = (
+        "last_rank_tier", "last_leaderboard_rank", "updated_ts", "profile_ts", "history_ts", "steam_name",
+        "steam_avatar", "fh_unavailable", "ingame_since", "ingame_misses", "data_ver",
+    )
+    listed = ", ".join(account_fields)
+    # Состояние берём у самой свежей строки аккаунта (её обновляли последней).
+    conn.execute(
+        f"INSERT INTO accounts (account_id, {listed}) SELECT p.account_id, {', '.join('p.' + f for f in account_fields)} "
+        "FROM players p WHERE p.id = (SELECT q.id FROM players q WHERE q.account_id = p.account_id "
+        "ORDER BY COALESCE(q.updated_ts, -1) DESC, COALESCE(q.profile_ts, -1) DESC, q.id LIMIT 1)"
+    )
+    for field in ("last_rank_tier", "last_leaderboard_rank", "steam_name", "steam_avatar"):  # пусто у свежей — берём у другой
+        conn.execute(
+            f"UPDATE accounts SET {field} = (SELECT q.{field} FROM players q WHERE q.account_id = accounts.account_id "
+            f"AND q.{field} IS NOT NULL ORDER BY COALESCE(q.profile_ts, -1) DESC LIMIT 1) WHERE {field} IS NULL"
+        )
+    conn.execute(
+        "UPDATE accounts SET data_ver = (SELECT MAX(q.data_ver) FROM players q WHERE q.account_id = accounts.account_id) + 1"
+    )
+
+    conn.execute(
+        "CREATE TABLE pending_notices (player_id INTEGER NOT NULL, match_id INTEGER NOT NULL, "
+        "PRIMARY KEY (player_id, match_id)) WITHOUT ROWID"
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO pending_notices (player_id, match_id) "
+        "SELECT m.player_id, m.match_id FROM matches m JOIN players p ON p.id = m.player_id WHERE m.notified = 0"
+    )
+
+    columns = _MATCH_PLAIN_V4 + _MATCH_FILL_V4 + _MATCH_FLAGS_V4
+    merge = ", ".join(f"{f} = COALESCE({f}, excluded.{f})" for f in _MATCH_FILL_V4)
+    conn.execute(f"CREATE TABLE matches__new ({_MATCHES_V4})")
+    conn.execute(
+        f"INSERT INTO matches__new (account_id, {', '.join(columns)}) "
+        f"SELECT p.account_id, {', '.join('m.' + c for c in columns)} FROM matches m JOIN players p ON p.id = m.player_id "
+        "WHERE true ORDER BY m.enriched DESC, m.stratz_done DESC, m.player_id "
+        f"ON CONFLICT(account_id, match_id) DO UPDATE SET {merge}, "
+        "enriched = MAX(enriched, excluded.enriched), stratz_done = MAX(stratz_done, excluded.stratz_done), "
+        "enrich_tries = MIN(enrich_tries, excluded.enrich_tries), stratz_tries = MIN(stratz_tries, excluded.stratz_tries), "
+        "stratz_next_ts = MIN(stratz_next_ts, excluded.stratz_next_ts)"
+    )
+    conn.execute("DROP TABLE matches")
+    conn.execute("ALTER TABLE matches__new RENAME TO matches")
+    conn.execute("CREATE INDEX idx_matches_account_time ON matches (account_id, start_time)")
+
+    rebuild_table(conn, "players", _PLAYERS_V4, [
+        "id", "chat_id", "account_id", "display_name", "anchor_mmr", "anchor_ts", "created_ts", "tg_user_id", "last_tag",
+    ])
+    conn.execute("CREATE INDEX idx_players_account ON players (account_id)")
+    _v4_data_ver_triggers(conn)
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
     (3, _m003_drop_dead_player_columns),
+    (4, _m004_accounts),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

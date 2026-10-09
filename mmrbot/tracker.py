@@ -393,6 +393,7 @@ def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional
     now = int(time.time()) if now is None else now
     events: list[dict] = []
     profiles: dict[int, Optional[dict]] = {}
+    changed: dict[int, dict] = {}  # ник и аватарка общие для аккаунта: смену считаем один раз, сообщаем каждому чату
     for chat in storage.list_chats():
         for player in storage.list_players(chat.chat_id):
             if player.account_id not in profiles:
@@ -405,12 +406,14 @@ def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional
                     log_network_error(log, f"Не удалось получить Steam-профиль {player.account_id}", exc,
                                       health=getattr(client, "health", None))
                     profiles[player.account_id] = None
+                profile = profiles[player.account_id]
+                if profile:
+                    _store_profile(storage, player, profile, now)
+                    changed[player.account_id] = storage.update_player_steam(
+                        player.id, profile.get("personaname"), profile.get("avatarfull"))
             profile = profiles[player.account_id]
-            if not profile:
-                continue
-            _store_profile(storage, player, profile, now)
-            changes = storage.update_player_steam(player.id, profile.get("personaname"), profile.get("avatarfull"))
-            if changes and chat.notify_steam:
+            changes = changed.get(player.account_id)
+            if profile and changes and chat.notify_steam:
                 events.append({"chat_id": chat.chat_id, "player": player, "changes": changes, "profile": profile})
     return events
 
