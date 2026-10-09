@@ -766,7 +766,6 @@ def render_weekly(report: dict) -> str:
 # --- ежедневная сводка: скользящие 24 часа до отправки ----------------------------------------------
 
 _MONTHS = ("янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
-DAILY_DUPLICATES = _WEEKLY_DUPLICATES  # эти итоги суток уже есть в шапке сводки (лидер, серия, «больше всех играл»)
 DAILY_RECORD_ORDER = ("kills", "kda", "gpm", "hero_damage", "imp", "assists", "last_hits", "net_worth",
                       "tower_damage", "hero_healing", "duration")
 
@@ -824,6 +823,76 @@ def daily_record_picks(records: list[dict], limit: int = 6) -> list[dict]:
     """Рекорды суток для сводки: сначала самые наглядные (убийства, KDA, GPM…), без антирекордов, не больше limit."""
     by_key = {r["key"]: r for r in records if not r.get("anti")}
     return [by_key[key] for key in DAILY_RECORD_ORDER if key in by_key][:limit]
+
+
+def best_game_stats(match: dict) -> list[tuple[str, str]]:
+    """Показатели лучшей игры суток, которые известны: [(подпись, значение)] — нетворс, GPM/XPM, урон, IMP, длительность."""
+    out: list[tuple[str, str]] = []
+    if match.get("net_worth"):
+        out.append(("Нетворс", _k(match["net_worth"])))
+    gpm, xpm = match.get("gpm"), match.get("xpm")
+    if gpm is not None:
+        out.append(("GPM / XPM", f"{gpm:.0f} / {xpm:.0f}" if xpm is not None else f"{gpm:.0f}"))
+    if match.get("hero_damage"):
+        out.append(("Урон по героям", _k(match["hero_damage"])))
+    if match.get("tower_damage"):
+        out.append(("Урон по зданиям", _k(match["tower_damage"])))
+    if match.get("hero_healing"):
+        out.append(("Лечение", _k(match["hero_healing"])))
+    if match.get("imp") is not None:
+        out.append(("IMP", f"{match['imp']:+.0f}"))
+    if match.get("duration"):
+        out.append(("Длительность", f"{match['duration'] // 60}:{match['duration'] % 60:02d}"))
+    return out
+
+
+def item_title(item_id) -> str:
+    """id предмета → читаемое имя из внутреннего («black_king_bar» → «Black King Bar»); неизвестный — пустая строка."""
+    from mmrbot.items import item_slug
+    slug = item_slug(item_id) if isinstance(item_id, int) and not isinstance(item_id, bool) else None
+    return slug.replace("_", " ").title() if slug else ""
+
+
+def best_game_build_line(build: Optional[dict]) -> str:
+    """Билд одной строкой: предметы со временем покупки, нейтралка, шард и скипетр. Пусто — билд неизвестен."""
+    if not build:
+        return ""
+    times = build.get("item_times") if isinstance(build.get("item_times"), list) else []
+    parts = []
+    for i, item_id in enumerate(build.get("items") or []):
+        name = item_title(item_id)
+        if name:
+            when = times[i] if i < len(times) and isinstance(times[i], (int, float)) and not isinstance(times[i], bool) else None
+            parts.append(f"{name} {int(when) // 60}:{int(when) % 60:02d}" if when is not None else name)
+    line = " → ".join(parts)
+    neutral = item_title(build.get("neutral_item"))
+    extra = [f"нейтралка: {neutral}"] if neutral else []
+    for key, label in (("shard", "Шард"), ("scepter", "Скипетр")):
+        if build.get(key):
+            when = build.get(f"{key}_time")
+            extra.append(f"{label} {int(when) // 60}:{int(when) % 60:02d}" if isinstance(when, (int, float)) and not isinstance(when, bool) else label)
+    return " · ".join(x for x in [line] + extra if x)
+
+
+def render_daily_best_game(best: Optional[dict]) -> str:
+    """Блок «Лучшая игра суток»: игрок, герой, исход, K/D/A, KDA, показатели и билд (если известен)."""
+    if not best:
+        return ""
+    match = best["match"]
+    outcome = "победа" if best.get("won") else "поражение"
+    lines = [
+        "🎯 <b>Лучшая игра суток</b>",
+        f"{_b(best['player'])} · {_esc(hero_name(match.get('hero_id')))} · {outcome} · "
+        f'<a href="{dotabuff_match_url(match["match_id"])}">матч</a>',
+        f"⚔️ {best['kills']}/{best['deaths']}/{best['assists']} · KDA {best['kda']:.2f}",
+    ]
+    stats_line = " · ".join(f"{label} {value}" for label, value in best_game_stats(match))
+    if stats_line:
+        lines.append("📊 " + _esc(stats_line))
+    build = best_game_build_line(best.get("build"))
+    if build:
+        lines.append("🛒 " + _esc(build))
+    return "\n".join(lines)
 
 
 def render_daily(report: dict, info: Optional[dict] = None) -> str:
@@ -892,9 +961,9 @@ def render_daily(report: dict, info: Optional[dict] = None) -> str:
                 f'<a href="{dotabuff_match_url(match["match_id"])}">матч</a>'
             )
         lines.append("<i>Больше рекордов — /records</i>")
-    awards = render_awards([a for a in report.get("awards") or [] if a["key"] not in DAILY_DUPLICATES], "за сутки")
-    if awards:
-        lines += ["", awards]
+    best_game = render_daily_best_game(report.get("best_game"))
+    if best_game:
+        lines += ["", best_game]
     return "\n".join(lines)
 
 

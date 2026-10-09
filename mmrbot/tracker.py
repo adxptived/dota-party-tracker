@@ -621,11 +621,32 @@ DAY_SEC = 86_400
 DEFAULT_GAME_SEC = 2400  # на таймлайне суток игра без известной длительности рисуется такой длины (40 мин)
 
 
+def daily_best_game(named: list[tuple[str, list[dict]]]) -> Optional[dict]:
+    """Лучшая игра окна среди всех игроков: максимум KDA при k+a >= порога, при равенстве — больше нетворс.
+
+    {player, match (строка из БД), kills, deaths, assists, kda, won}; нет содержательных игр — None. Билда здесь нет:
+    его дописывает сервис из OpenDota (best-effort), чистая сборка отчёта остаётся без сети.
+    """
+    best, best_key = None, None
+    for name, matches in named:
+        for match in matches:
+            kills, deaths, assists = match.get("kills") or 0, match.get("deaths") or 0, match.get("assists") or 0
+            if kills + assists < stats.BEST_GAME_MIN_KA:
+                continue
+            kda = (kills + assists) / max(deaths, 1)
+            key = (kda, match.get("net_worth") or 0, match.get("start_time") or 0)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = {"player": name, "match": match, "kills": kills, "deaths": deaths, "assists": assists,
+                        "kda": kda, "won": stats.is_win(match["player_slot"], match["radiant_win"])}
+    return best
+
+
 def build_daily_report(storage: Storage, chat_id: int, now: int) -> dict:
     """Итоги скользящих 24 часов до момента `now` — для ежедневной сводки (из кэша БД, сети нет).
 
     Окно — [now − 24 ч, now]: сводка показывает сутки, предшествующие самому сообщению, а не календарное
-    «сегодня» и тем более не неделю. Всё внутри (таблица, герой, серия, рекорды, награды) считается только по этим играм.
+    «сегодня» и тем более не неделю. Всё внутри (таблица, герой, серия, рекорды, лучшая игра) считается только по этим играм.
     """
     chat = storage.get_or_create_chat(chat_id)
     since = now - DAY_SEC
@@ -684,7 +705,7 @@ def build_daily_report(storage: Storage, chat_id: int, now: int) -> dict:
         "streak": streak,
         "shared": party.together_summary(named),
         "records": records.compute_records(named)["records"],
-        "awards": compute_period_awards(named, chat.mmr_step, 2) if len(named) >= 2 else [],
+        "best_game": daily_best_game(named),
         "first_start": min((g["start"] for g in games), default=None),
         "last_end": max((g["end"] for g in games), default=None),
     }

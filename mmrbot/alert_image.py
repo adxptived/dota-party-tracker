@@ -18,6 +18,7 @@ from mmrbot.cards import (
 from mmrbot.formatting import _k, _mvp_name, _thousands, fmt_local, plural_games
 from mmrbot.heroes import hero_name
 from mmrbot.ranks import rank_label
+from mmrbot.upgrade_icons import paste_upgrade
 
 ROW_H, ROW_GAP = 104, 10
 AVATAR = 64
@@ -30,6 +31,7 @@ STRIP_H = 52  # полоса под строкой игрока: билд, ап�
 TIME_H = 18  # + подписи времени покупки под иконками предметов
 ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
 BADGE = 40
+UPGRADE_SIZE = 32
 STRIP_TEXT_X = 840  # фарм и урон по зданиям — правее билда и значков апгрейдов
 
 
@@ -201,7 +203,13 @@ def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
     for key, label, color in (("shard", "ШАРД", ACCENT), ("scepter", "СКИПЕТР", GOLD)):
         if row.get(key):
             when = clock(row.get(f"{key}_time"))
-            x += cards.pill(img, draw, x, mid, f"{label} {when}".strip(), BG, color, size=16, pad=10) + 8
+            icon_w = paste_upgrade(img, key, x, mid, UPGRADE_SIZE)
+            if icon_w is None:
+                x += cards.pill(img, draw, x, mid, f"{label} {when}".strip(), BG, color, size=16, pad=10) + 8
+                continue
+            if when:  # время покупки — подписью под иконкой, как у предметов
+                draw_text(draw, (x + icon_w / 2, mid + ITEM_H / 2 + 11), when, 15, MUTED, anchor="mm")
+            x += max(icon_w, cards.text_width(when, 15) if when else 0) + 10
     farm = []
     if row.get("net_worth"):
         farm.append(f"NW {_k(row['net_worth'])}")

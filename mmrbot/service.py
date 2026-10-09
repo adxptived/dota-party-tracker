@@ -69,7 +69,7 @@ from mmrbot.storage import Storage
 from mmrbot.tracker import (
     FRESH_ENOUGH,
     enrich_alert_items,
-    enrich_match_builds,
+    BUILD_FIELDS, enrich_match_builds,
     finish_refresh,
     build_chat_comparison,
     build_daily_report,
@@ -343,14 +343,34 @@ async def stats_board(
     return board
 
 
+async def _attach_best_build(od, report: dict) -> None:
+    """Дописать лучшей игре суток билд из OpenDota (предметы, времена, шард, скипетр). Best-effort: сбой — без билда."""
+    best = report.get("best_game")
+    if not best or od is None or provider_down(od):
+        return
+    try:
+        builds = await asyncio.to_thread(od.get_match_builds, best["match"]["match_id"])
+    except Exception:
+        log.debug("Билд лучшей игры суток не получен", exc_info=True)
+        return
+    build = (builds or {}).get(best["match"].get("hero_id"))
+    if build:
+        best["build"] = {key: build[key] for key in BUILD_FIELDS if key in build}
+
+
 def _daily_png(view: dict) -> bytes:
-    """В потоке: иконки героев и аватары (кэш/CDN) + рендер сводки суток."""
+    """В потоке: иконки героев, предметов и аватары (кэш/CDN) + рендер сводки суток."""
     icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
     hero_ids = [r.get("hero_id") for r in view["rows"]] + [r.get("hero_id") for r in view["records"]]
+    hero_ids.append((view.get("best_game") or {}).get("hero_id"))
     urls = [r.get("avatar") for r in view["rows"]] + [lane.get("avatar") for lane in view["timeline"]["lanes"]]
     icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
     found = avatar_loader.get_many(urls) if avatar_loader is not None else {}
-    return render_daily_image(view, icons, found)
+    build = (view.get("best_game") or {}).get("build") or {}
+    gear = item_icons.shared()
+    item_ids = [i for i in (build.get("items") or []) + [build.get("neutral_item")] if i]
+    found_items = gear.get_many(item_ids) if gear is not None and item_ids else {}
+    return render_daily_image(view, icons, found, found_items)
 
 
 async def daily_board(
@@ -363,6 +383,7 @@ async def daily_board(
     """
     summaries = await gather_summaries(storage, od, chat_id, True, stratz, complete=True)
     report = await _build(build_daily_report, storage, chat_id, int(time.time()) if now is None else now)
+    await _attach_best_build(od, report)
     info = {s.display_name: {"avatar": s.avatar, "rank_tier": s.rank_tier, "rank_text": s.rank, "mmr": s.current_mmr}
             for s in summaries}
     board = ImageBoard(_with_stale(storage, chat_id, render_daily(report, info), od))

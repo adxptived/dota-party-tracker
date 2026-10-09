@@ -9,7 +9,7 @@ from typing import Optional
 
 from mmrbot.cards import ACCENT, GOLD, MUTED, clean, delta_color, signed
 from mmrbot.formatting import (
-    DAILY_DUPLICATES, PERIOD_LABELS, POSITION_NAMES, PULSE_RECORDS, daily_record_picks, fmt_clock, fmt_local,
+    PERIOD_LABELS, POSITION_NAMES, PULSE_RECORDS, best_game_stats, daily_record_picks, fmt_clock, fmt_local,
     fmt_minutes, fmt_window, local_time, plural_games, plural_heroes,
 )
 from mmrbot.heroes import hero_name
@@ -469,6 +469,21 @@ def _daily_records(report: dict) -> list[dict]:
     return items
 
 
+def _daily_best_game(report: dict) -> Optional[dict]:
+    """Лучшая игра суток для карточки: игрок, герой, K/D/A, KDA, плитки показателей и билд (если известен)."""
+    best = report.get("best_game")
+    if not best:
+        return None
+    match = best["match"]
+    return {
+        "player": clean(best["player"]), "hero_id": match.get("hero_id"), "match_id": match.get("match_id"),
+        "won": bool(best.get("won")), "start_time": match.get("start_time"),
+        "kills": best["kills"], "deaths": best["deaths"], "assists": best["assists"], "kda": f"{best['kda']:.1f}",
+        "stats": [{"label": label, "value": value} for label, value in best_game_stats(match)],
+        "build": best.get("build"),
+    }
+
+
 def daily_card(report: dict, info: Optional[dict] = None) -> dict:
     """Отчёт суток → описание карточки для daily_image.render_daily_image.
 
@@ -498,7 +513,7 @@ def daily_card(report: dict, info: Optional[dict] = None) -> dict:
         "timeline": {"since": report["since"], "until": report["until"], "tz": tz, "lanes": lanes,
                      "ticks": _daily_ticks(report["since"], report["until"], tz)},
         "records": _daily_records(report),
-        "awards": award_items([a for a in report.get("awards") or [] if a["key"] not in DAILY_DUPLICATES]),
+        "best_game": _daily_best_game(report),
         "footer": f"Оценка MMR: ±{report.get('step', 25)} за игру · учтены игры за последние 24 часа до отправки",
         "note": None,
     }

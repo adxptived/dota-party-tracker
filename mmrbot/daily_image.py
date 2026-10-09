@@ -1,11 +1,11 @@
 """Ежедневная сводка картинкой: баннер с итогами суток, плитки, таблица игроков с динамикой ±MMR, таймлайн игр,
-рекорды и награды. Окно — последние 24 часа до отправки (недельных данных здесь нет).
+рекорды и лучшая игра суток (K/D/A, показатели, билд). Окно — последние 24 часа до отправки (недельных данных здесь нет).
 
 Чистая функция: описание карточки приходит словарём `view` (его собирает card_data.daily_card), иконки героев и
 аватары — готовыми байтами; сети и БД здесь нет. Нет иконки/аватара — рисуется заглушка (см. cards.py).
 
 view: title, window, span, badge (текст, цвет), big {value, color, label, sub}, tiles, rows, timeline, records,
-awards, footer, note. Строка таблицы (`rows`): name, avatar (url), rank_tier, rank_text, games, wins, losses, big,
+best_game, footer, note. Строка таблицы (`rows`): name, avatar (url), rank_tier, rank_text, games, wins, losses, big,
 big_color, sub, series [накопленное ±MMR от нуля], hero_id, hero_note. Таймлайн: since, until, ticks [(время, подпись)],
 lanes [{name, avatar, games [{start, end, won}]}].
 """
@@ -15,7 +15,10 @@ from typing import Optional
 
 from mmrbot import cards
 from mmrbot.cards import ACCENT, BG, EDGE, FG, GOLD, LOSS, MUTED, PAD, PANEL, PANEL_HI, WIDTH, WIN, clean, draw_text, mix
-from mmrbot.stats_image import HERO_H, HERO_W, _draw_awards, _draw_records, _draw_tiles, _place
+from mmrbot.alert_image import _item_icon, clock
+from mmrbot.heroes import hero_name
+from mmrbot.stats_image import HERO_H, HERO_W, _draw_records, _draw_tiles, _place
+from mmrbot.upgrade_icons import paste_upgrade
 
 BANNER_H = 204
 ROW_H, IDLE_H, ROW_GAP = 104, 68, 8
@@ -30,19 +33,30 @@ SPARK_X0, SPARK_X1 = 900, 1090
 HERO_X = WIDTH - PAD - 24 - HERO_W
 LANE_H, LANE_GAP = 30, 10
 LANE_LABEL_W = 220
+BEST_TOP_H, BEST_BUILD_H = 210, 96
+BEST_ITEM_W, BEST_ITEM_H, BEST_ITEM_GAP = 64, 48, 8
+BEST_UPGRADE = 48
 MAX_LANES = 8  # дорожек на таймлайне: больше — картинка превращается в простыню (в таблице всё равно видны все)
 
 
-def render_daily_image(view: dict, icons: Optional[dict] = None, avatars: Optional[dict] = None) -> bytes:
-    """Сводка суток → PNG-байты. icons: {hero_id: байты}; avatars: {url: байты}; отсутствующие рисуются заглушками."""
-    icons, avatars = icons or {}, avatars or {}
+def _has_build(best: Optional[dict]) -> bool:
+    build = (best or {}).get("build") or {}
+    return bool(build.get("items") or build.get("neutral_item") or build.get("shard") or build.get("scepter"))
+
+
+def render_daily_image(
+    view: dict, icons: Optional[dict] = None, avatars: Optional[dict] = None, item_icons: Optional[dict] = None,
+) -> bytes:
+    """Сводка суток → PNG-байты. icons: {hero_id: байты}; avatars: {url: байты}; item_icons: {item_id: байты};
+    отсутствующие рисуются заглушками."""
+    icons, avatars, item_icons = icons or {}, avatars or {}, item_icons or {}
     rows, tiles = view.get("rows") or [], view.get("tiles") or []
     lanes = (view.get("timeline") or {}).get("lanes") or []
-    records, awards = view.get("records") or [], view.get("awards") or []
+    records, best = view.get("records") or [], view.get("best_game")
     played = sum(1 for r in rows if r.get("games"))
     estimate = (PAD + BANNER_H + 40 + 150 + HEAD_ROW_H + played * (ROW_H + ROW_GAP) + (len(rows) - played) * (IDLE_H + ROW_GAP)
                 + 120 + len(lanes[:MAX_LANES]) * (LANE_H + LANE_GAP) + 36 + ((len(records) + 2) // 3) * 112
-                + 80 + len(awards[:5]) * 48 + 160)
+                + ((80 + BEST_TOP_H + (BEST_BUILD_H if _has_build(best) else 0)) if best else 0) + 160)
     canvas = cards.Canvas(estimate)
     img, draw = canvas.img, canvas.draw
 
@@ -56,13 +70,76 @@ def render_daily_image(view: dict, icons: Optional[dict] = None, avatars: Option
     if records:
         y = _section(draw, y + 14, "РЕКОРДЫ СУТОК")
         y = _draw_records(img, draw, y, records, icons)
-    if awards:
-        y = _draw_awards(img, draw, y + 14, awards, "НАГРАДЫ СУТОК")
+    if best:
+        y = _draw_best_game(img, draw, y + 14, best, icons, item_icons)
     if view.get("footer"):
         y = cards.footer(draw, y + 4, view["footer"])
     if view.get("note"):
         y = cards.footer(draw, y, view["note"])
     return canvas.png(y)
+
+
+def _draw_best_game(img, draw, y: int, best: dict, icons: dict, item_icons: dict) -> int:
+    """Лучшая игра суток: герой, игрок, крупные K/D/A и KDA, плитки показателей, ниже — билд (если известен)."""
+    build = best.get("build") or {}
+    height = BEST_TOP_H + (BEST_BUILD_H if _has_build(best) else 0)
+    won = best.get("won")
+    accent = WIN if won else LOSS
+    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + height), mix(PANEL, accent, 0.22), PANEL, radius=20, outline=EDGE)
+    draw_text(draw, (PAD + 28, y + 32), "ЛУЧШАЯ ИГРА СУТОК", 20, ACCENT, bold=True, anchor="lm")
+    cards.pill(img, draw, WIDTH - PAD - 28, y + 32, "ПОБЕДА" if won else "ПОРАЖЕНИЕ", BG, accent, size=18, pad=14, align="right")
+
+    hero_id = best.get("hero_id")
+    cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id, 160, 90, 10), PAD + 28, y + 62)
+    tx = PAD + 28 + 160 + 24
+    draw_text(draw, (tx, y + 80), clean(best.get("player")), 32, FG, bold=True, anchor="lm", max_w=330)
+    draw_text(draw, (tx, y + 112), clean(hero_name(hero_id)), 22, MUTED, anchor="lm", max_w=330)
+    cards.kda(draw, tx + 112, y + 160, best.get("kills"), best.get("deaths"), best.get("assists"), 44)
+    draw_text(draw, (tx + 360, y + 160), f"KDA {clean(best.get('kda'))}", 26, GOLD, bold=True, anchor="rm")
+
+    stats = (best.get("stats") or [])[:6]
+    gx0, gx1 = PAD + 28 + 160 + 24 + 400, WIDTH - PAD - 28
+    col_w = (gx1 - gx0) / 3
+    for i, stat in enumerate(stats):
+        cx = gx0 + (i % 3) * col_w
+        cy = y + 80 + (i // 3) * 68
+        draw_text(draw, (cx, cy), clean(stat.get("label")), 18, MUTED, anchor="lm", max_w=col_w - 10)
+        draw_text(draw, (cx, cy + 28), clean(stat.get("value")), 28, FG, bold=True, anchor="lm", max_w=col_w - 10)
+
+    if _has_build(best):
+        by = y + BEST_TOP_H - 6
+        draw.line([(PAD + 28, by), (WIDTH - PAD - 28, by)], fill=mix(PANEL_HI, MUTED, 0.3), width=1)
+        _draw_best_build(img, draw, PAD + 28, by + 14, build, item_icons)
+    return y + height + 14
+
+
+def _draw_best_build(img, draw, x: float, top: float, build: dict, item_icons: dict) -> None:
+    """Ряд билда: предметы с временами покупки, нейтралка, затем иконки шарда и скипетра (с временем)."""
+    times = build.get("item_times") if isinstance(build.get("item_times"), list) else []
+    ids = [i for i in build.get("items") or [] if isinstance(i, int) and not isinstance(i, bool) and i]
+    for i, item_id in enumerate(ids):
+        cards.paste(img, _item_icon(item_icons.get(item_id), BEST_ITEM_W, BEST_ITEM_H, 6), x, top)
+        when = clock(times[i]) if i < len(times) else ""
+        if when:
+            draw_text(draw, (x + BEST_ITEM_W / 2, top + BEST_ITEM_H + 14), when, 16, MUTED, anchor="mm")
+        x += BEST_ITEM_W + BEST_ITEM_GAP
+    neutral = build.get("neutral_item")
+    if isinstance(neutral, int) and not isinstance(neutral, bool) and neutral:
+        x += 12
+        cards.paste(img, _item_icon(item_icons.get(neutral), BEST_ITEM_W, BEST_ITEM_H, 6), x, top)
+        draw_text(draw, (x + BEST_ITEM_W / 2, top + BEST_ITEM_H + 14), "нейтралка", 16, MUTED, anchor="mm")
+        x += BEST_ITEM_W + BEST_ITEM_GAP
+    x += 16
+    for key, label, color in (("shard", "Ш", ACCENT), ("scepter", "С", GOLD)):
+        if not build.get(key):
+            continue
+        width = paste_upgrade(img, key, x, top + BEST_ITEM_H / 2, BEST_UPGRADE)
+        if width is None:  # иконки нет — прежняя подпись
+            width = cards.pill(img, draw, x, top + BEST_ITEM_H / 2, label, BG, color, size=18, pad=10)
+        when = clock(build.get(f"{key}_time"))
+        if when:
+            draw_text(draw, (x + width / 2, top + BEST_ITEM_H + 14), when, 16, MUTED, anchor="mm")
+        x += width + 14
 
 
 def _section(draw, y: int, title: str) -> int:

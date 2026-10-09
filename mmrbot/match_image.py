@@ -17,6 +17,7 @@ from mmrbot.cards import (
 from mmrbot.charts import BG
 from mmrbot.formatting import _k, fmt_local
 from mmrbot.heroes import hero_name
+from mmrbot.upgrade_icons import paste_upgrade
 
 MATCH_WIDTH = 1560
 TRACKED_PANEL, TRACKED_MARK = MINE_PANEL, GOLD  # строка своего игрока: светлее фон + золотая полоса
@@ -32,7 +33,8 @@ NAME_W_BEAR = 200  # в строке медведя левее предмето�
 NAME_W_FREE = 640  # без билда ник может занять всё место до K/D/A
 ITEMS_X = 452
 SLOT_W, SLOT_H, SLOT_GAP = 44, 33, 3
-TAGS_X = 800  # значки «Ш» (шард) и «С» (скипетр) — после предметов и нейтралки
+TAGS_X = 800  # иконки шарда и скипетра — после предметов и нейтралки
+UPGRADE_SIZE = 24
 # центры колонок (x) и их заголовки
 COLUMNS = [("kda", 940, "K / D / A"), ("nw", 1090, "Нетворт"), ("gpm", 1225, "GPM / XPM"),
            ("dmg", 1360, "Урон"), ("imp", 1480, "IMP")]
@@ -151,8 +153,8 @@ def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
                     item_icons)
         draw_text(draw, (ITEMS_X - 10, top + SLOT_H / 2), "Герой", 14, MUTED, anchor="rm")
         draw_text(draw, (ITEMS_X - 10, bear_top + SLOT_H / 2), "Медведь", 14, MUTED, anchor="rm")
-    for cy, key, tag, color in ((mid - 12, "shard", "Ш", ACCENT), (mid + 12, "scepter", "С", GOLD)):
-        if p.get(key):
+    for cy, key, tag, color in ((mid - 14, "shard", "Ш", ACCENT), (mid + 14, "scepter", "С", GOLD)):
+        if p.get(key) and paste_upgrade(img, key, TAGS_X, cy, UPGRADE_SIZE) is None:
             cards.pill(img, draw, TAGS_X, cy, tag, BG, color, size=13, pad=5)
 
 
