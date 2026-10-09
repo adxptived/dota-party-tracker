@@ -191,3 +191,13 @@ def test_png_is_valid_and_warmup_is_safe():
     cards.warmup()  # не падает и не требует сети/диска
     png = cards.Canvas(100).png(50)
     assert png.startswith(b"\x89PNG") and cards.to_png(cards.Canvas(60).img) == cards.to_png(cards.Canvas(60).img)
+
+
+def test_gradient_panel_blends_two_colors_and_keeps_rounded_corners():
+    img = Image.new("RGB", (200, 100), cards.BG)
+    background = img.getpixel((0, 0))
+    cards.gradient_panel(img, (10, 10, 190, 90), "#000000", "#ffffff", radius=24)
+    left, right = img.getpixel((20, 50)), img.getpixel((180, 50))
+    assert sum(left) < sum(img.getpixel((100, 50))) < sum(right)
+    assert img.getpixel((10, 10)) == background  # угол скруглён — фон не закрашен
+    cards.gradient_panel(img, (5, 5, 5, 50), "#000000", "#ffffff")  # пустая панель — без ошибки

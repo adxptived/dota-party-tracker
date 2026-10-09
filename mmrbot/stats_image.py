@@ -150,12 +150,12 @@ def _draw_records(img, draw, y: int, records: list, icons: dict) -> int:
     return y + rows_used * (96 + TILE_GAP)
 
 
-def _draw_awards(img, draw, y: int, awards: list) -> int:
+def _draw_awards(img, draw, y: int, awards: list, title: str = "НАГРАДЫ") -> int:
     """Награды: заголовок блока и по строке «название — игрок (деталь)»."""
     awards = awards[:5]
     height = 56 + len(awards) * 48
     cards.panel(img, (PAD, y, WIDTH - PAD, y + height), PANEL, radius=16)
-    draw_text(draw, (PAD + 24, y + 30), "НАГРАДЫ", 20, ACCENT, bold=True, anchor="lm")
+    draw_text(draw, (PAD + 24, y + 30), title, 20, ACCENT, bold=True, anchor="lm")
     for i, award in enumerate(awards):
         cy = y + 56 + i * 48 + 20
         draw_text(draw, (PAD + 24, cy), clean(award.get("title")), 24, FG, bold=True, anchor="lm", max_w=420)

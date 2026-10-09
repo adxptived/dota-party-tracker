@@ -17,8 +17,9 @@ from mmrbot import avatars, hero_icons, item_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
 from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
 from mmrbot.contest_image import MAX_TABLE as CONTEST_TABLE_LIMIT, render_contest_image
+from mmrbot.daily_image import render_daily_image
 from mmrbot.card_data import (
-    award_items, contest_caption, contest_view, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
+    award_items, contest_caption, daily_caption, daily_card, contest_view, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
     summary_rows,
 )
@@ -31,6 +32,7 @@ from mmrbot.formatting import (
     PERIOD_LABELS,
     render_contest,
     render_awards,
+    render_daily,
     render_party_pulse,
     render_compare_table,
     render_full_match,
@@ -70,6 +72,7 @@ from mmrbot.tracker import (
     enrich_match_builds,
     finish_refresh,
     build_chat_comparison,
+    build_daily_report,
     build_hero_view,
     build_weekly_report,
     build_leaderboard,
@@ -297,22 +300,22 @@ STATS_MODES = {"stats": ("Рейтинг", "игры — с начала отс�
                "month": ("Месяц", "оценка ±MMR за 30 дней", ("МЕСЯЦ", ACCENT))}
 
 
-DIGEST_MODE = ("Ежедневная сводка", "итоги дня · оценка MMR: старт ± шаг за игру", ("СВОДКА ДНЯ", ACCENT))
-
 
 async def stats_board(
     storage: Storage, od: OpenDota, chat_id: int, mode: str = "stats", stratz=None, image: Optional[bool] = None,
 ) -> ImageBoard:
-    """Рейтинг пати (mode: stats | today | week | month; digest — ежедневная сводка): текст всегда, картинка с короткой подписью — если нарисовалась.
+    """Рейтинг пати (mode: stats | today | week | month): текст всегда, картинка с короткой подписью — если нарисовалась.
 
     Тот же отчёт, что и текстовые render_board / render_period_board: данные собираются один раз.
+    mode="digest" — ежедневная сводка: собственный отчёт за последние 24 часа (daily_board), без недельных данных.
     """
-    title, subtitle, badge = DIGEST_MODE if mode == "digest" else STATS_MODES[mode]
-    if mode in ("stats", "today", "digest"):
-        parts = await _stats_parts(storage, od, chat_id, mode == "today", True, stratz, "day" if mode == "digest" else "week")
+    if mode == "digest":
+        return await daily_board(storage, od, chat_id, stratz, image)
+    title, subtitle, badge = STATS_MODES[mode]
+    if mode in ("stats", "today"):
+        parts = await _stats_parts(storage, od, chat_id, mode == "today", True, stratz, "week")
         summaries = parts["summaries"]
-        text = ("📰 <b>Ежедневная сводка</b>\n\n" if mode == "digest" else "") + parts["text"]
-        board = ImageBoard(_with_stale(storage, chat_id, text, od))
+        board = ImageBoard(_with_stale(storage, chat_id, parts["text"], od))
         rows = summary_rows(summaries, today=mode == "today")
         full = mode != "today"
         tiles = party_tiles(summaries, parts["week_rows"]) if full else []
@@ -334,9 +337,42 @@ async def stats_board(
         plain_note = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
         board.png = await asyncio.to_thread(
             build_png, "рейтинг", lambda: _stats_png(title, subtitle, badge, rows, tiles, records, awards, plain_note,
-                               "MMR" if mode in ("stats", "today", "digest") else "±MMR"))
+                               "MMR" if mode in ("stats", "today") else "±MMR"))
         if board.png is not None:
             board.caption = fit_caption(caption + (f"\n{note}" if note else ""))
+    return board
+
+
+def _daily_png(view: dict) -> bytes:
+    """В потоке: иконки героев и аватары (кэш/CDN) + рендер сводки суток."""
+    icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
+    hero_ids = [r.get("hero_id") for r in view["rows"]] + [r.get("hero_id") for r in view["records"]]
+    urls = [r.get("avatar") for r in view["rows"]] + [lane.get("avatar") for lane in view["timeline"]["lanes"]]
+    icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
+    found = avatar_loader.get_many(urls) if avatar_loader is not None else {}
+    return render_daily_image(view, icons, found)
+
+
+async def daily_board(
+    storage: Storage, od: OpenDota, chat_id: int, stratz=None, image: Optional[bool] = None, now: Optional[int] = None,
+) -> ImageBoard:
+    """Ежедневная сводка: итоги последних 24 часов до момента отправки — не календарный день и не неделя.
+
+    Игроков обновляем без бюджета ожидания (сводка уходит по расписанию, торопиться некуда), затем всё берём из БД:
+    текст всегда, картинка с короткой подписью — если в окне были игры и она нарисовалась.
+    """
+    summaries = await gather_summaries(storage, od, chat_id, True, stratz, complete=True)
+    report = await _build(build_daily_report, storage, chat_id, int(time.time()) if now is None else now)
+    info = {s.display_name: {"avatar": s.avatar, "rank_tier": s.rank_tier, "rank_text": s.rank, "mmr": s.current_mmr}
+            for s in summaries}
+    board = ImageBoard(_with_stale(storage, chat_id, render_daily(report, info), od))
+    if want_image(storage, chat_id, image) and report["totals"]["games"]:
+        note = _stale_line(storage, chat_id, od)
+        view = daily_card(report, info)
+        view["note"] = _plain(note)
+        board.png = await _render_png("сводку суток", _daily_png, view)
+        if board.png is not None:
+            board.caption = fit_caption(daily_caption(report) + (f"\n{note}" if note else ""))
     return board
 
 
