@@ -118,7 +118,7 @@ def _slow_refresh(monkeypatch, finished, delay=0.5, budget=0.05):
         finished.append(True)
 
     monkeypatch.setattr(service, "refresh_only", slow)
-    monkeypatch.setattr(service, "COMMAND_REFRESH_WAIT", budget)
+    monkeypatch.setattr(service, "COMMAND_REFRESH_WAIT", budget)  # у тестовых клиентов нет command_wait — берётся умолчание
 
 
 def _assert_fast_and_background_completes(coro_factory, finished, check):
@@ -311,3 +311,25 @@ def test_never_loaded_player_always_waits_for_first_load(tmp_path):
 def test_fresh_enough_boundary_is_ten_minutes():
     from mmrbot.tracker import FRESH_ENOUGH, REFRESH_COOLDOWN
     assert FRESH_ENOUGH == 600 and FRESH_ENOUGH > REFRESH_COOLDOWN
+
+
+def test_command_wait_is_read_from_client(tmp_path, monkeypatch):
+    """COMMAND_REFRESH_WAIT передаётся объектом клиента (od.command_wait): 0 — не ждать обновление вовсе."""
+    finished = []
+    _slow_refresh(monkeypatch, finished, delay=0.2, budget=30)
+
+    class Client:
+        command_wait = 0.0
+
+    from mmrbot.storage import Storage
+    store = Storage(str(tmp_path / "w.db"))
+
+    async def go():
+        started = time.monotonic()
+        waited = await service.refresh_with_budget(store, Client(), 1)
+        elapsed = time.monotonic() - started
+        await asyncio.sleep(0.3)
+        return waited, elapsed
+
+    waited, elapsed = asyncio.run(go())
+    assert waited is False and elapsed < 0.15 and finished == [True]

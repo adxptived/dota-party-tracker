@@ -1,5 +1,4 @@
 """B3: история матчей игрока кэшируется по «версии данных» players.data_ver — повторное чтение не ходит в БД за строками."""
-import sqlite3
 import time
 
 import pytest
@@ -124,13 +123,9 @@ def test_remove_player_drops_history(env):
 
 
 def test_old_database_gets_data_ver_column(tmp_path):
+    from tests.legacy_db import make_v0
     path = str(tmp_path / "old.db")
-    Storage(path)
-    with sqlite3.connect(path) as conn:
-        conn.execute("DROP TRIGGER IF EXISTS matches_bump_ins")
-        conn.execute("DROP TRIGGER IF EXISTS matches_bump_upd")
-        conn.execute("DROP TRIGGER IF EXISTS matches_bump_del")
-        conn.execute("ALTER TABLE players DROP COLUMN data_ver")
+    make_v0(path).close()  # база до «версии данных»: ни колонки, ни триггеров
     storage = Storage(path)
     storage.get_or_create_chat(1)
     player = storage.add_player(1, 1, "A", None, NOW, NOW)
@@ -151,14 +146,17 @@ def test_cache_is_bounded(tmp_path):
     assert sum(len(v[1]) for v in storage._matches_cache.values()) <= 10
 
 
-def test_unnotified_query_uses_partial_index(env):
-    """B9: поиск кандидатов на оповещение не сканирует всю историю игрока."""
+def test_unnotified_query_does_not_scan_history(env):
+    """B9: поиск кандидатов на оповещение идёт от очереди pending_notices, а не сканирует историю матчей."""
     storage, player, _ = env
     with storage._conn() as conn:
         plan = " ".join(r[3] for r in conn.execute(
-            "EXPLAIN QUERY PLAN SELECT * FROM matches WHERE player_id = ? AND notified = 0 "
-            "AND start_time + COALESCE(duration, 0) >= ? ORDER BY start_time", (player.id, 0)))
-    assert "idx_matches_unnotified" in plan
+            "EXPLAIN QUERY PLAN SELECT m.* FROM pending_notices n JOIN players p ON p.id = n.player_id "
+            "JOIN matches m ON m.account_id = p.account_id AND m.match_id = n.match_id "
+            "WHERE n.player_id = ? AND m.start_time + COALESCE(m.duration, 0) >= ? ORDER BY m.start_time",
+            (player.id, 0)))
+    assert "SCAN m" not in plan and "SCAN matches" not in plan
+    assert "SEARCH n" in plan
 
 
 def test_light_selects_use_warm_cache_and_stay_correct(env):
@@ -170,7 +168,7 @@ def test_light_selects_use_warm_cache_and_stay_correct(env):
     warm = storage.get_outcomes(player.id)
     sides = storage.get_match_sides(player.id, since_ts=NOW - 1000 + 3)
     assert not any("FROM matches" in s for s in spy.statements)
-    assert warm == cold and set(warm[0]) == {"start_time", "player_slot", "radiant_win"}
+    assert warm == cold and set(warm[0]) == {"start_time", "player_slot", "radiant_win", "duration", "double_down"}
     assert [m["match_id"] for m in sides] == [3, 4, 5] and "kills" not in sides[0]
     storage.add_matches(player.id, [_m(9, NOW - 100)])
     assert len(storage.get_outcomes(player.id)) == 6  # новая игра — кэш не отдаёт устаревшее

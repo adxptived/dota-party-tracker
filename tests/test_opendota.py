@@ -190,14 +190,18 @@ class PagedSession(FakeSession):
         self.calls.append({"url": url, "params": params or {}})
         offset = (params or {}).get("offset", 0)
         limit = (params or {}).get("limit", self.total)
-        return FakeResp([{"match_id": i} for i in range(offset, min(offset + limit, self.total))])
+        return FakeResp([{"match_id": i, "start_time": 1000 + i} for i in range(offset, min(offset + limit, self.total))])
 
 
 def test_get_matches_ranked_filter_and_limit():
     session = FakeSession([])
     od = OpenDota(session=session, min_interval=0)
     od.get_matches(42)
-    assert session.calls[0]["params"] == {"significant": 0, "limit": 200, "lobby_type": 7}
+    # список матчей просим с выбором колонок: вместе с ними приходят герои всех десяти игроков (составы команд)
+    assert session.calls[0]["params"] == {
+        "significant": 0, "limit": 200, "lobby_type": 7, "project": list(OpenDota.MATCH_LIST_COLUMNS),
+    }
+    assert "heroes" in OpenDota.MATCH_LIST_COLUMNS
 
 
 def test_get_matches_full_history_is_paged():

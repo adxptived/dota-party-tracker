@@ -89,13 +89,10 @@ def _mmr_str(current: Optional[int]) -> str:
 
 def fmt_local(ts: int, tz_name: str = "UTC", fmt: str = "%d.%m.%Y") -> str:
     """Unix-время → дата в часовом поясе чата (так же, как «сегодня»); для UTC добавляет пометку времени."""
-    from datetime import datetime, timezone
-    import pytz
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz, tz_name = pytz.utc, "UTC"
-    text = datetime.fromtimestamp(ts or 0, tz=timezone.utc).astimezone(tz).strftime(fmt)
+    from mmrbot.timezones import is_valid, to_local
+    if not is_valid(tz_name):
+        tz_name = "UTC"
+    text = to_local(ts or 0, tz_name, "UTC").strftime(fmt)
     return f"{text} UTC" if tz_name == "UTC" and "%H" in fmt else text
 
 
@@ -447,7 +444,33 @@ def render_compare_table(comparison: dict, summaries: list[PlayerSummary]) -> st
     return "\n".join(lines)
 
 
-def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
+def mmr_log_line(s: PlayerSummary, tz: str = "UTC") -> str:
+    """«✏️ Правки MMR: 03.10 +80 · 20.10 −25 (всего +55)» — журнал /setmmr; правок не было — пустая строка."""
+    fixes = [e for e in (s.mmr_log or [])[1:] if e.get("drift") is not None]
+    if not fixes:
+        return ""
+    shown = " · ".join(f"{fmt_local(e['ts'], tz, '%d.%m')} {format_delta(e['drift'])}" for e in fixes[-4:])
+    more = "… · " if len(fixes) > 4 else ""
+    total = f" (всего {format_delta(s.mmr_corrections)})" if len(fixes) > 1 else ""
+    return f"✏️ Правки MMR: {more}{shown}{total}"
+
+
+def render_mmr_set(name: str, mmr: int, before: Optional[PlayerSummary], after: PlayerSummary) -> str:
+    """Ответ на /setmmr: новое значение и чем оно отличалось от оценки (журнал правок сохраняет историю)."""
+    head = f"✅ {_b(name)}: ≈{mmr} MMR"
+    previous = before.current_mmr if before is not None else None
+    if previous is None:
+        return head
+    if len(after.mmr_log) <= len(before.mmr_log):  # игр с прошлого задания не было — это замена значения, не правка оценки
+        return head if previous == mmr else f"{head}\n<i>Было ≈{previous}; игр с тех пор не было — значение заменено.</i>"
+    entry = after.mmr_log[-1]
+    if not entry["drift"]:
+        return f"{head}\n<i>Оценка совпала с введённым за {plural_games(entry['games'])}.</i>"
+    return (f"{head}\n<i>Оценка была ≈{previous}: поправка {format_delta(entry['drift'])} за {plural_games(entry['games'])}. "
+            f"История и заработанное игрой ({format_delta(after.mmr_delta)}) сохранены.</i>")
+
+
+def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str = "UTC") -> str:
     """Карточка игрока — ТОЛЬКО окно отслеживания (последние игры), без карьерных срезов."""
     header = f"{_b(s.display_name)} · {_rank_with_emoji(s)}{_streak_str(s)}"
     if s.steam_name:
@@ -460,6 +483,8 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None) -> str:
     # Заголовочная строка: MMR + честный перф рядом.
     perf = f"    перф {_b(f'{s.avg_perf * 100:.0f}/100')}" if s.avg_perf is not None else ""
     lines.append(f"{_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}{perf}")
+    if mmr_log_line(s, tz):
+        lines.append(mmr_log_line(s, tz))
     if s.mmr_drift:
         lines.append(f"<i>⚠️ Оценка MMR расходится с медалью {_esc(s.rank)} — обновите стартовый: /setmmr</i>")
     lines.append(f"{s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)   последние игры: {_form_icons(s.recent_form)}")
@@ -550,7 +575,8 @@ def render_player_list(summaries: list[PlayerSummary]) -> str:
     blocks = []
     for i, s in enumerate(summaries, start=1):
         if s.current_mmr is not None:
-            mmr = f"🎯 {_b(_mmr_str(s.current_mmr))} (старт {s.anchor_mmr}{_trend(s.mmr_delta)})"
+            fixes = f", правки {format_delta(s.mmr_corrections)}" if s.mmr_corrections else ""
+            mmr = f"🎯 {_b(_mmr_str(s.current_mmr))} (старт {s.anchor_mmr}{_trend(s.mmr_delta)}{fixes})"
             if s.mmr_drift:
                 mmr += " ⚠️ расходится с медалью — /setmmr"
         else:
@@ -655,7 +681,7 @@ def render_game_alert(event: dict) -> str:
     if event.get("average_rank"):
         lines.append(f"🎚 Лобби: {rank_emoji(event['average_rank'])} {_esc(rank_label(event['average_rank']))}".replace("  ", " "))
     for r in rows:
-        delta = r["step"] if r["won"] else -r["step"]
+        delta = r["delta"] if r.get("delta") is not None else (r["step"] if r["won"] else -r["step"])
         line = (
             f"{'🏆' if r['won'] else '💀'} {_b(r['name'])}{' ⭐' if r['name'] == mvp else ''} — {_esc(hero_name(r['hero_id']))} "
             f"{r['kills']}/{r['deaths']}/{r['assists']} · {_today_delta(delta)}"
@@ -771,13 +797,8 @@ DAILY_RECORD_ORDER = ("kills", "kda", "gpm", "hero_damage", "imp", "assists", "l
 
 
 def local_time(ts: int, tz_name: str):
-    from datetime import datetime, timezone
-    import pytz
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz = pytz.utc
-    return datetime.fromtimestamp(ts or 0, tz=timezone.utc).astimezone(tz)
+    from mmrbot.timezones import to_local
+    return to_local(ts or 0, tz_name, "UTC")
 
 
 def fmt_stamp(ts: int, tz_name: str = "UTC") -> str:

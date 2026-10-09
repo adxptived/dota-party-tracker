@@ -20,13 +20,14 @@ from mmrbot.presence import advance
 from mmrbot.awards import compute_period_awards, compute_standings, contest_points, current_leaders, leader_changes
 from mmrbot.health import log_network_error
 from mmrbot.health import provider_down as _provider_down
+from mmrbot.opendota import lineup_of
 from mmrbot.ranks import mmr_rank_mismatch, rank_emoji, rank_label
 from mmrbot.storage import Chat, Player, Storage
 
 log = logging.getLogger(__name__)
 
 
-ENRICH_DAYS = 90  # детали (perf/benchmarks) догружаем только за столько последних дней: по запросу на матч
+ENRICH_DAYS = 90  # детали (perf/benchmarks) по умолчанию догружаем за столько дней; настройка — client.enrich_days
 EMPTY_RECHECK_SEC = 6 * 3600  # сек: игроку без единого матча всю историю перезапрашиваем не чаще
 ENRICH_CAP = 3  # матчей на refresh в запросе пользователя (~1с на матч); остальное — фоном, backfill_opendota
 RECENT_GAME_SEC = 3 * 3600  # о матче старше этого окна не оповещаем (история при /add, простой бота)
@@ -106,7 +107,9 @@ class PlayerSummary:
     hero_pool: int = 0
     wins_losses: dict = field(default_factory=dict)
     steam_name: Optional[str] = None
-    anchor_games: int = 0  # игр, по которым считается ±MMR (с момента задания MMR)
+    anchor_games: int = 0  # игр, по которым считается ±MMR (с первого задания MMR)
+    mmr_corrections: int = 0  # сумма правок /setmmr: anchor_mmr + mmr_delta + mmr_corrections == current_mmr
+    mmr_log: list = field(default_factory=list)  # журнал заданий MMR: [{ts, mmr, drift, games}]
     mmr_drift: bool = False  # оценка MMR разошлась с медалью — стоит обновить /setmmr
     history_closed: bool = False  # история матчей закрыта у OpenDota — цифры могут быть неполными
 
@@ -133,6 +136,8 @@ def _normalize(raw: dict) -> dict:
         "tower_damage": raw.get("tower_damage"),
         "hero_healing": raw.get("hero_healing"),
         "leaver_status": raw.get("leaver_status"),
+        # Есть только в списке матчей (project=heroes): герои обеих команд — составы без запроса на матч.
+        "lineup": lineup_of(raw.get("heroes")),
     }
 
 
@@ -197,13 +202,14 @@ def _background_allowed(client) -> bool:
     return True if check is None else bool(check())
 
 
-def _enrich_since(now: Optional[int] = None, days: Optional[int] = None) -> int:
-    """Граница start_time для догрузки деталей: глубже ENRICH_DAYS историю не обогащаем.
+def _enrich_since(now: Optional[int] = None, days: Optional[int] = None, client=None) -> int:
+    """Граница start_time для догрузки деталей: глубже enrich_days клиента (OPENDOTA_ENRICH_DAYS) историю не обогащаем.
 
     Вся ранкед-история — это тысячи матчей, а детали стоят запроса на каждый: без границы бэкфилл
     одного игрока-ветерана съедал суточный лимит OpenDota. days=0 — без границы.
     """
-    days = ENRICH_DAYS if days is None else days
+    if days is None:
+        days = getattr(client, "enrich_days", ENRICH_DAYS)
     if days <= 0:
         return 0
     return (int(time.time()) if now is None else now) - days * 86_400
@@ -218,7 +224,8 @@ def _enrich_from_opendota(
     background=True — необязательная фоновая догрузка: перед каждым запросом сверяемся с остатком
     суточного лимита клиента и останавливаемся, когда пора беречь его для опроса игр и команд.
     """
-    ids = storage.get_unenriched_match_ids(player.id, _enrich_since() if since_ts is None else since_ts, cap)
+    ids = storage.get_unenriched_match_ids(
+        player.id, _enrich_since(client=client) if since_ts is None else since_ts, cap)
     done = 0
     for match_id in ids:
         if background and not _background_allowed(client):
@@ -248,15 +255,17 @@ def backfill_opendota(
 ) -> int:
     """Фоновое обогащение бэклога матчей (perf/benchmarks) — не в пути пользовательской команды.
 
-    Берём только матчи за последние `days` дней (по умолчанию ENRICH_DAYS) и только пока клиент
+    Берём только матчи за последние `days` дней (по умолчанию client.enrich_days) и только пока клиент
     разрешает фоновые запросы (остаток суточного лимита OpenDota выше резерва).
     """
     done = 0
-    since = _enrich_since(now, days)
+    since = None  # считаем при первом игроке: без игроков клиент не трогаем вовсе
     for chat in storage.list_chats():
         for player in storage.list_players(chat.chat_id):
             if not _background_allowed(client) or _provider_down(client):
                 return done
+            if since is None:
+                since = _enrich_since(now, days, client)
             done += _enrich_from_opendota(storage, client, player, per_player, since, background=True)
     return done
 
@@ -288,7 +297,7 @@ def finish_refresh(
             client.refresh(player.account_id)
         except Exception:
             pass
-        done += _enrich_from_opendota(storage, client, player, per_player, _enrich_since(now, days), background=True)
+        done += _enrich_from_opendota(storage, client, player, per_player, _enrich_since(now, days, client), background=True)
     return done
 
 
@@ -389,6 +398,7 @@ def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional
     now = int(time.time()) if now is None else now
     events: list[dict] = []
     profiles: dict[int, Optional[dict]] = {}
+    changed: dict[int, dict] = {}  # ник и аватарка общие для аккаунта: смену считаем один раз, сообщаем каждому чату
     for chat in storage.list_chats():
         for player in storage.list_players(chat.chat_id):
             if player.account_id not in profiles:
@@ -401,12 +411,14 @@ def detect_steam_changes(storage: Storage, client: OpenDotaClient, now: Optional
                     log_network_error(log, f"Не удалось получить Steam-профиль {player.account_id}", exc,
                                       health=getattr(client, "health", None))
                     profiles[player.account_id] = None
+                profile = profiles[player.account_id]
+                if profile:
+                    _store_profile(storage, player, profile, now)
+                    changed[player.account_id] = storage.update_player_steam(
+                        player.id, profile.get("personaname"), profile.get("avatarfull"))
             profile = profiles[player.account_id]
-            if not profile:
-                continue
-            _store_profile(storage, player, profile, now)
-            changes = storage.update_player_steam(player.id, profile.get("personaname"), profile.get("avatarfull"))
-            if changes and chat.notify_steam:
+            changes = changed.get(player.account_id)
+            if profile and changes and chat.notify_steam:
                 events.append({"chat_id": chat.chat_id, "player": player, "changes": changes, "profile": profile})
     return events
 
@@ -473,7 +485,8 @@ def detect_new_games(
                 "kills": match.get("kills") or 0, "deaths": match.get("deaths") or 0,
                 "assists": match.get("assists") or 0,
                 "won": stats.is_win(match["player_slot"], match["radiant_win"]),
-                "step": chat.mmr_step, "current_mmr": summary.current_mmr,
+                "step": chat.mmr_step, "delta": stats.match_mmr_delta(match, chat.mmr_step),
+                "double": bool(match.get("double_down")), "current_mmr": summary.current_mmr,
                 "streak_type": summary.streak_type, "streak_len": summary.streak_len,
                 "gpm": match.get("gpm"), "hero_damage": match.get("hero_damage"), "position": match.get("position"),
                 "imp": match.get("imp"), "leaver_status": match.get("leaver_status"),
@@ -578,6 +591,27 @@ def contest_champion(points: list[dict]) -> Optional[dict]:
     return points[0]
 
 
+def close_season(storage: Storage, chat_id: int, season, now: int, renew: bool) -> Optional[dict]:
+    """Закрыть сезон: подсчитать итоги по играм с его начала, записать чемпиона и таблицу, начать следующий (renew).
+
+    → {season (закрытый), champion, table, standings, points, next}; None — сезон уже закрыт (повторно не объявляем).
+    """
+    from dataclasses import replace
+
+    from mmrbot import seasons
+
+    data = build_contest(storage, chat_id, season.start_ts)
+    champion = contest_champion(data["points"])
+    table = seasons.table_of(data["points"])
+    finished, nxt = storage.finish_season(season.id, now, champion["player"] if champion else None, table, renew)
+    if not finished:
+        return None
+    return {
+        "season": replace(season, end_ts=now, champion=champion["player"] if champion else None, table=table),
+        "champion": champion, "table": table, "standings": data["standings"], "points": data["points"], "next": nxt,
+    }
+
+
 def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
     """Итоги недели чата из кэша БД: таблица периода, герой недели, лучшая серия, совместные игры."""
     chat = storage.get_or_create_chat(chat_id)
@@ -664,7 +698,7 @@ def build_daily_report(storage: Storage, chat_id: int, now: int) -> dict:
             "games": agg.games,
             "wins": agg.wins,
             "losses": agg.losses,
-            "delta": stats.estimate_mmr_delta(agg.wins, agg.losses, chat.mmr_step),
+            "delta": stats.mmr_delta(matches, chat.mmr_step),
             "winrate": agg.winrate,
             "kda": agg.kda_ratio,
             "kills": agg.sum_kills,
@@ -726,12 +760,17 @@ def build_mmr_series(storage: Storage, chat_id: int, since_ts: Optional[int]) ->
     return result
 
 
-def _fetch_matches(storage: Storage, client: OpenDotaClient, player: Player, now: int) -> tuple[list[dict], bool]:
-    """Сырые матчи для сверки и признак «сверяли глубоко».
+def _fetch_matches(
+    storage: Storage, client: OpenDotaClient, player: Player, now: int, fast: bool = False,
+) -> tuple[list[dict], bool, bool]:
+    """Сырые матчи для сверки и признаки «сверяли глубоко» и «выгружена вся история».
 
     Первая загрузка — вся ранкед-история. Дальше — лёгкий список последних матчей (один запрос,
     сразу с GPM/уроном), если он достаёт до нашего последнего матча. Иначе, и раз в DEEP_SYNC_SEC
     для самопроверки, — 200 ранкед-матчей; если и они все новые (бот долго стоял) — вся история.
+
+    Составы команд приходят только со списком матчей. Аккаунту, чья история сохранена до появления составов
+    (lineups_ts пуст), всю историю один раз перечитывает фоновое обновление (не команда пользователя: fast).
     """
     recent_fn = getattr(client, "get_recent_matches", None)
     if not storage.has_matches(player.id):
@@ -741,20 +780,22 @@ def _fetch_matches(storage: Storage, client: OpenDotaClient, player: Player, now
         if recent_fn is not None and checked:
             recent = recent_fn(player.account_id)
             if not any(stats.is_ranked_lobby(m.get("lobby_type")) for m in recent):
-                return recent, False
-        return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True
+                return recent, False, False
+        return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True, True
+    if not fast and player.lineups_ts is None and storage.lineups_synced_ts(player.id) is None:
+        return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True, True
     last = storage.latest_match_time(player.id)
     deep_due = player.history_ts is None or now - player.history_ts >= DEEP_SYNC_SEC
     if recent_fn is not None and not deep_due:
         recent = recent_fn(player.account_id)
         times = [m["start_time"] for m in recent if m.get("start_time") is not None]
         if times and last is not None and min(times) <= last:  # выдача перекрывает сохранённое — пропусков нет
-            return recent, False
+            return recent, False, False
     raw = client.get_matches(player.account_id, limit=HISTORY_LIMIT_REFRESH)
     times = [m["start_time"] for m in raw if m.get("start_time") is not None]
     if len(raw) >= HISTORY_LIMIT_REFRESH and last is not None and min(times, default=0) > last:
-        raw = client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST)  # разрыв больше 200 игр
-    return raw, True
+        return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True, True  # разрыв больше 200 игр
+    return raw, True, False
 
 
 class _Flight:
@@ -832,7 +873,7 @@ def _refresh_player_impl(
 
     # Храним ВСЮ ранкед-историю (для героев/позиций/матчей за любой период). Окно «с момента
     # добавления» применяется только в лидерборде (build_player_summary).
-    raw_matches, deep = _fetch_matches(storage, client, player, now)
+    raw_matches, deep, full = _fetch_matches(storage, client, player, now, fast)
     fresh = [
         _normalize(m)
         for m in raw_matches
@@ -841,6 +882,8 @@ def _refresh_player_impl(
     ]
     inserted = storage.add_matches(player.id, fresh)
     storage.touch_player(player.id, now, deep=deep)
+    if full:  # вся история пришла списком матчей — вместе с составами команд; повторять выгрузку не нужно
+        storage.mark_lineups_synced(player.id, now)
 
     # Ранг меняется только после игр: без новых матчей перечитываем профиль изредка
     # (его же раз в полчаса обновляет проверка Steam-профилей).
@@ -855,7 +898,7 @@ def _refresh_player_impl(
 
     if not fast and enrich_cap > 0:
         # Свежесыгранные матчи обогащаем сразу; без новых игр это разбор старого бэклога — он ждёт, если лимит на исходе.
-        _enrich_from_opendota(storage, client, player, enrich_cap, _enrich_since(now), background=not inserted)
+        _enrich_from_opendota(storage, client, player, enrich_cap, _enrich_since(now, client=client), background=not inserted)
 
     if stratz is not None:
         _enrich_from_stratz(storage, stratz, player, now)
@@ -863,16 +906,7 @@ def _refresh_player_impl(
     return inserted
 
 
-def _counts_for_mmr(match: dict, anchor_ts: int) -> bool:
-    """Матч влияет на оценку MMR, если закончился после якоря.
-
-    MMR, который игрок ввёл в момент якоря, уже включает все завершённые игры; игра, шедшая
-    в этот момент (началась раньше), ещё не включена — её считаем. Без длительности — по началу.
-    """
-    duration = match.get("duration")
-    if duration:
-        return match["start_time"] + duration > anchor_ts
-    return match["start_time"] >= anchor_ts
+_counts_for_mmr = stats.counts_after  # прежнее имя: матч влияет на оценку MMR, если закончился после её задания
 
 
 SUMMARY_CACHE_LIMIT = 256
@@ -903,17 +937,16 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
 
     all_matches = storage.get_matches(player.id)  # вся ранкед-история; MMR-оценка — от якоря ниже
     # Матчи отсортированы по start_time: окна — срезы той же выборки, без лишних запросов к БД.
-    anchor_matches = [m for m in all_matches if _counts_for_mmr(m, player.anchor_ts)]
+    # Оценка MMR — по журналу заданий MMR: «старт», заработанное игрой и правки /setmmr считаются раздельно.
+    ledger = stats.mmr_ledger(all_matches, storage.get_anchors(player.id), step, player.anchor_ts)
     day_start = stats.local_day_start(now, chat.tz)
     today_matches = [m for m in all_matches if m["start_time"] >= day_start]
 
     agg_all = stats.aggregate(all_matches)
-    agg_anchor = stats.aggregate(anchor_matches)
     agg_today = stats.aggregate(today_matches)
 
-    mmr_delta = stats.estimate_mmr_delta(agg_anchor.wins, agg_anchor.losses, step)
-    current_mmr = player.anchor_mmr + mmr_delta if player.anchor_mmr is not None else None
-    delta_today = stats.estimate_mmr_delta(agg_today.wins, agg_today.losses, step)
+    mmr_delta, current_mmr = ledger["earned"], ledger["current"]
+    delta_today = stats.mmr_delta(today_matches, step)
 
     streak_type, streak_len = stats.current_streak(all_matches)
     top = stats.top_heroes(all_matches, k=3)
@@ -952,7 +985,7 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         account_id=player.account_id,
         rank=rank_label(player.last_rank_tier, player.last_leaderboard_rank),
         rank_emoji=rank_emoji(player.last_rank_tier),
-        anchor_mmr=player.anchor_mmr,
+        anchor_mmr=ledger["start"],
         current_mmr=current_mmr,
         mmr_delta=mmr_delta,
         games_total=agg_all.games,
@@ -1000,9 +1033,20 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         hero_pool=pool,
         wins_losses=wins_losses,
         history_closed=player.fh_unavailable,
-        anchor_games=agg_anchor.games,
+        anchor_games=ledger["games"],
+        mmr_corrections=ledger["corrections"],
+        mmr_log=ledger["entries"],
         mmr_drift=mmr_rank_mismatch(current_mmr, player.last_rank_tier),
     )
+
+
+def set_player_mmr(storage: Storage, chat_id: int, player: Player, mmr: int, now: int) -> tuple:
+    """Задать MMR игрока (запись в журнал правок). Вернуть сводки до и после — по ним видно расхождение с оценкой."""
+    chat = storage.get_or_create_chat(chat_id)
+    before = build_player_summary(storage, chat, player, now)
+    storage.set_player_anchor(player.id, mmr, now)
+    fresh = storage.get_player_by_id(player.id) or player
+    return before, build_player_summary(storage, chat, fresh, now)
 
 
 def refresh_chat(
@@ -1071,13 +1115,14 @@ def build_period_leaderboard(storage: Storage, chat_id: int, since_ts: Optional[
     chat = storage.get_or_create_chat(chat_id)
     rows: list[dict] = []
     for player in storage.list_players(chat_id):
-        agg = stats.aggregate(storage.get_matches(player.id, since_ts=since_ts))
+        matches = storage.get_matches(player.id, since_ts=since_ts)
+        agg = stats.aggregate(matches)
         rows.append({
             "name": player.display_name,
             "games": agg.games,
             "wins": agg.wins,
             "losses": agg.losses,
-            "delta": stats.estimate_mmr_delta(agg.wins, agg.losses, chat.mmr_step),
+            "delta": stats.mmr_delta(matches, chat.mmr_step),
             "winrate": agg.winrate,
             "kda": agg.kda_ratio,
         })
@@ -1137,6 +1182,30 @@ def build_hero_view(
             entries.append((player, rows[0]))
     entries.sort(key=lambda e: (e[1]["games"], e[1]["winrate"]), reverse=True)
     return entries
+
+
+def build_matchups(
+    storage: Storage, chat_id: int, name: Optional[str], since_ts: Optional[int], min_games: Optional[int] = None,
+) -> Optional[tuple[Optional[str], dict]]:
+    """Соперники и союзники по героям (из кэша БД): игрока `name` или, без имени, всей пати.
+
+    → (ник игрока | None для пати, отчёт matchups.player_matchups / party_matchups); None — игрока с таким ником нет.
+    """
+    from mmrbot import matchups
+
+    kwargs = {} if min_games is None else {"min_games": min_games}
+    if name:
+        player = storage.get_player(chat_id, name)
+        if player is None:
+            return None
+        report = matchups.player_matchups(
+            storage.get_matches(player.id, since_ts=since_ts), storage.get_lineups(player.id, since_ts), **kwargs)
+        return player.display_name, report
+    named, lineups = [], {}
+    for player in storage.list_players(chat_id):
+        named.append((player.display_name, storage.get_matches(player.id, since_ts=since_ts)))
+        lineups.update(storage.get_lineups(player.id, since_ts))
+    return None, matchups.party_matchups(named, lineups, **kwargs)
 
 
 def median_rank_tier(tiers: list[int]) -> Optional[int]:

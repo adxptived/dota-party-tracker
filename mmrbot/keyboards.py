@@ -24,11 +24,12 @@ CATEGORIES = {
     "players": ("🎮 Игроки и матчи", [
         [("🪪 Карточка игрока", "player"), ("🎭 Steam-профиль", "steam")],
         [("🦸 Герои и позиции", "heroes"), ("🔎 Статистика героя", "hero")],
-        [("🎮 Матч", "match")],
+        [("🎮 Матч", "match"), ("⚔️ Против кого", "matchups")],
     ]),
     "records": ("🌟 Рекорды и графики", [
         [("🌟 Рекорды", "records"), ("📈 График MMR", "graph")],
-        [("🏅 Соревнование", "achv")],
+        [("🏅 Соревнование", "achv"), ("🏆 Сезон", "season")],
+        [("🏛 Зал славы", "hall")],
     ]),
     "party": ("👥 Пати", [
         [("👥 Игроки", "list"), ("➕ Добавить", "add")],
@@ -46,7 +47,7 @@ _CLOSE = ("✖️ Закрыть", "x:close")
 
 STEPS = [10, 20, 25, 30, 50]
 TIMEZONES = [
-    ("Москва", "Europe/Moscow"), ("Киев", "Europe/Kiev"), ("Минск", "Europe/Minsk"), ("Алматы", "Asia/Almaty"),
+    ("Москва", "Europe/Moscow"), ("Киев", "Europe/Kyiv"), ("Минск", "Europe/Minsk"), ("Алматы", "Asia/Almaty"),
     ("Самара", "Europe/Samara"), ("Екатеринбург", "Asia/Yekaterinburg"),
     ("Новосибирск", "Asia/Novosibirsk"), ("Владивосток", "Asia/Vladivostok"),
 ]
@@ -242,12 +243,27 @@ def match_photo_buttons(match_id: int, focus, text_shown: bool = False) -> Inlin
     return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
 
 
-def alert_buttons(match_id: int) -> InlineKeyboardMarkup:
-    """Под оповещением о матче: весь матч картинкой (`mx:<match_id>`) и ссылка на Dotabuff."""
-    return InlineKeyboardMarkup(inline_keyboard=[[
+DOUBLE_ON, DOUBLE_OFF = "✅ ×2", "×2"
+
+
+def double_button(match_id: int, account_id: int, name: str, on: bool) -> InlineKeyboardButton:
+    """«×2 Вася» — игра с дабл-дауном (`dd:<match_id>:<account_id>`); отмечена — «✅ ×2 Вася»."""
+    label = name if len(name) <= 14 else name[:13] + "…"
+    return InlineKeyboardButton(text=f"{DOUBLE_ON if on else DOUBLE_OFF} {label}", callback_data=f"dd:{match_id}:{account_id}")
+
+
+def alert_buttons(match_id: int, doubles: Optional[list] = None) -> InlineKeyboardMarkup:
+    """Под оповещением о матче: весь матч картинкой (`mx:<match_id>`), ссылка на Dotabuff и «×2» по игрокам.
+
+    doubles — [(account_id, имя, отмечен ли дабл-даун)]: по кнопке на игрока, по две в ряд.
+    """
+    rows = [[
         InlineKeyboardButton(text="🎮 Весь матч", callback_data=f"mx:{match_id}"),
         InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{match_id}"),
-    ]])
+    ]]
+    buttons = [double_button(match_id, account, name, on) for account, name, on in doubles or []]
+    rows += [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def list_actions() -> InlineKeyboardMarkup:

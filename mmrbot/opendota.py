@@ -5,6 +5,7 @@ asyncio.to_thread, чтобы не блокировать event loop. Сесси
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -19,6 +20,8 @@ from .ranks import average_rank_tier
 BASE_URL = "https://api.opendota.com/api"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 RANKED_LOBBY = 7
+
+log = logging.getLogger(__name__)
 
 
 _ITEM_SLOTS = tuple(f"item_{i}" for i in range(6))  # основные слоты; рюкзак и нейтралка — отдельно
@@ -71,6 +74,23 @@ def _player_build(player: dict) -> dict:
     }
 
 
+def lineup_of(players) -> Optional[tuple[list, list]]:
+    """Составы команд (герои света, герои тьмы) из игроков матча; игроки — список или {слот: игрок} из списка матчей.
+
+    None — состава нет (героев не прислали). Сторона — по player_slot (0–4 свет, 128–132 тьма) или isRadiant.
+    """
+    if isinstance(players, dict):
+        players = [dict(value or {}, player_slot=int(slot)) for slot, value in players.items() if str(slot).isdigit()]
+    radiant, dire = [], []
+    for player in players or []:
+        hero = player.get("hero_id")
+        slot = player.get("player_slot")
+        if not hero or (slot is None and "isRadiant" not in player):
+            continue
+        (radiant if (slot < 128 if slot is not None else player["isRadiant"]) else dire).append(hero)
+    return (radiant, dire) if radiant and dire else None
+
+
 def _party_size(players: list, me: dict) -> Optional[int]:
     """Размер пати игрока из состава матча: party_size от OpenDota, иначе союзники с тем же party_id."""
     size = me.get("party_size")
@@ -106,8 +126,14 @@ class OpenDota:
         background_reserve: Optional[int] = None,
         health: Optional[ProviderHealth] = None,
         proxy: Optional[str] = None,
+        enrich_days: int = 90,
+        command_wait: float = 4.0,
     ):
         self.api_key = api_key
+        # Политика расхода запросов (из .env): за сколько дней догружать детали матчей (0 — вся история)
+        # и сколько секунд команда пользователя ждёт обновление, прежде чем ответить из БД.
+        self.enrich_days = enrich_days
+        self.command_wait = command_wait
         # Прокси только для OpenDota (в нём может быть пароль — нигде не логируем и не выводим в repr).
         self._proxies = {"http": proxy, "https": proxy} if proxy else None
         # Предохранитель: недоступность по сети и 429 — одна логика «не ходить в сеть» (команды берут кэш БД).
@@ -134,6 +160,7 @@ class OpenDota:
         self._match_locks: dict[int, threading.Lock] = {}
         self._refresh_at: dict[int, float] = {}
         self._parse_requested: set[int] = set()  # матчи, на разбор которых уже просили OpenDota
+        self._project_matches = True  # просить список матчей с выбором колонок (составы команд); см. get_matches
         # Лок защищает только резервирование «слота» запроса (троттлинг): сами HTTP-запросы идут
         # параллельно — ожидание сети перекрывается между потоками, частота остаётся в лимите.
         self._lock = threading.Lock()
@@ -336,25 +363,42 @@ class OpenDota:
             "fh_unavailable": profile.get("fh_unavailable"),  # None — признака нет в ответе
         }
 
+    # Колонки списка матчей. С параметром project OpenDota отдаёт только перечисленное (плюс match_id, player_slot,
+    # radiant_win), поэтому свой набор по умолчанию перечисляем сами и добавляем heroes — героев всех десяти
+    # игроков ({слот: {hero_id, account_id}}): составы команд без отдельного запроса на каждый матч.
+    MATCH_LIST_COLUMNS = (
+        "hero_id", "start_time", "duration", "lobby_type", "kills", "deaths", "assists",
+        "average_rank", "leaver_status", "party_size", "heroes",
+    )
+
     def get_matches(self, account_id: int, limit: Optional[int] = 200, lobby_type: Optional[int] = 7) -> list[dict]:
         """Матчи игрока. По умолчанию только ранкед (lobby_type=7) — фильтр на стороне OpenDota,
         иначе лимит забивается обычными играми. limit=None — вся история."""
         base: dict = {"significant": 0}
+        if self._project_matches:
+            base["project"] = list(self.MATCH_LIST_COLUMNS)
         if lobby_type is not None:
             base["lobby_type"] = lobby_type
         path = f"/players/{account_id}/matches"
-        if limit is not None:
-            data = self._get(path, params=dict(base, limit=limit))
-            return data if isinstance(data, list) else []
         # Вся история — постранично: один огромный ответ OpenDota иногда рвёт (HTTP 500).
+        page_size = limit if limit is not None else self.HISTORY_PAGE
         result: list[dict] = []
         offset = 0
         while True:
-            page = self._get(path, params=dict(base, limit=self.HISTORY_PAGE, offset=offset))
+            params = dict(base, limit=page_size)
+            if limit is None:
+                params["offset"] = offset
+            page = self._get(path, params=params)
             if not isinstance(page, list):
                 break
+            if self._project_matches and page and "start_time" not in page[0]:
+                # Выбор колонок сработал не так, как ожидалось (в ответе нет обязательного поля): дальше просим
+                # список без project — составов не будет, зато обновление игроков не ломается.
+                log.warning("OpenDota вернул список матчей без start_time при выборе колонок — отключаю project")
+                self._project_matches = False
+                return self.get_matches(account_id, limit, lobby_type)
             result.extend(page)
-            if len(page) < self.HISTORY_PAGE:
+            if limit is not None or len(page) < self.HISTORY_PAGE:
                 break
             offset += self.HISTORY_PAGE
         return result
@@ -429,6 +473,10 @@ class OpenDota:
         result = {out: player.get(src) for src, out in self._MATCH_FIELDS.items()}
         result.update(_player_build(player))
         result["party_size"] = _party_size(players, player)
+        result["lineup"] = lineup_of(players)
+        # Стаки есть только в разобранном матче (version): в неразобранном OpenDota отдаёт пустой счётчик, и нулём
+        # его считать нельзя — «0 стаков» вытеснило бы настоящее значение.
+        result["stacks"] = player.get("camps_stacked") if match.get("version") else None
         # average_rank из OpenDota врёт на высоких лобби (Immortal-лобби → Divine 5), считаем сами по игрокам.
         result["average_rank"] = average_rank_tier([p.get("rank_tier") for p in players])
         benchmarks = {}

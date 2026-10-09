@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from mmrbot.stats import estimate_mmr_delta, is_win, longest_win_streak
+from mmrbot.stats import is_win, longest_win_streak, mmr_delta, match_benchmark
 
 
 def _games(n: int) -> str:
@@ -75,11 +75,7 @@ def compute_standings(
     played = {n: ms for n, ms in players.items() if len(ms) >= 1}
     regular = {n: ms for n, ms in played.items() if len(ms) >= min_games}
 
-    deltas = {
-        n: estimate_mmr_delta(sum(is_win(m["player_slot"], m["radiant_win"]) for m in ms),
-                              sum(not is_win(m["player_slot"], m["radiant_win"]) for m in ms), step)
-        for n, ms in played.items()
-    }
+    deltas = {n: mmr_delta(ms, step) for n, ms in played.items()}
     add("climb", "🚀", "Больше всех поднялся", deltas, lambda n: f"{deltas[n]:+d} MMR", keep=lambda v: v > 0)
     add("drop", "📉", "Больше всех просел", deltas, lambda n: f"{deltas[n]:+d} MMR", lowest=True, anti=True,
         keep=lambda v: v < 0)
@@ -101,12 +97,55 @@ def compute_standings(
 
     perf = averages("perf_score")
     add("perf", "⭐", "Лучший перф", perf, lambda n: f"{perf[n] * 100:.0f}/100")
-    gpm = averages("gpm")
-    add("gpm", "💰", "Наибольший GPM", gpm, lambda n: f"{gpm[n]:.0f} GPM в среднем")
-    damage = averages("hero_damage")
-    add("damage", "💥", "Наибольший урон по героям", damage, lambda n: f"{damage[n] / 1000:.1f}k урона/игра")
+    # Для саппортов — вижн, стаки и линия. Данные приходят из Stratz/OpenDota не по всем
+    # матчам, поэтому в сравнении только те, у кого их хотя бы в двух играх: «30 вардов в среднем» по одной игре не показатель.
+    samples = min(2, min_games)
+
+    def sampled(field: str, known=lambda v: True) -> dict[str, list]:
+        result = {}
+        for n, ms in regular.items():
+            values = [m[field] for m in ms if m.get(field) is not None and known(m[field])]
+            if len(values) >= samples:
+                result[n] = values
+        return result
+
+    # GPM и урон по-честному сравнивать нельзя: пятёрка никогда не нафармит как керри. Если бенчмарки OpenDota
+    # (перцентиль против других игроков на ТОМ ЖЕ герое) есть хотя бы у двоих, соревнуются проценты, а не цифры;
+    # иначе остаётся прежнее сравнение по сырым значениям. В подписи — и то и другое.
+    def hero_relative(field: str, metric: str) -> dict[str, tuple[float, float]]:
+        result = {}
+        for n, ms in regular.items():
+            pcts = [p for m in ms if (p := match_benchmark(m, metric)) is not None]
+            raws = [m[field] for m in ms if m.get(field) is not None]
+            if len(pcts) >= samples and raws:
+                result[n] = (sum(pcts) / len(pcts), sum(raws) / len(raws))
+        return result
+
+    gpm_rel = hero_relative("gpm", "gold_per_min")
+    if len(gpm_rel) >= 2:
+        add("gpm", "💰", "GPM для своего героя", {n: v[0] for n, v in gpm_rel.items()},
+            lambda n: f"{gpm_rel[n][1]:.0f} GPM · лучше {gpm_rel[n][0] * 100:.0f}%")
+    else:
+        gpm = averages("gpm")
+        add("gpm", "💰", "Наибольший GPM", gpm, lambda n: f"{gpm[n]:.0f} GPM в среднем")
+    damage_rel = hero_relative("hero_damage", "hero_damage_per_min")
+    if len(damage_rel) >= 2:
+        add("damage", "💥", "Урон для своего героя", {n: v[0] for n, v in damage_rel.items()},
+            lambda n: f"{damage_rel[n][1] / 1000:.1f}k · лучше {damage_rel[n][0] * 100:.0f}%")
+    else:
+        damage = averages("hero_damage")
+        add("damage", "💥", "Наибольший урон по героям", damage, lambda n: f"{damage[n] / 1000:.1f}k урона/игра")
     assists = averages("assists")
     add("assists", "🤝", "Больше всего ассистов", assists, lambda n: f"{assists[n]:.1f} ассистов/игра")
+
+    wards = {n: sum(v) / len(v) for n, v in sampled("wards").items()}
+    add("wards", "👁️", "Лучший вижн", wards, lambda n: f"{wards[n]:.1f} вардов/игра", floor=1)
+    stacks = {n: sum(v) / len(v) for n, v in sampled("stacks").items()}
+    add("stacks", "🏕️", "Мастер стаков", stacks, lambda n: f"{stacks[n]:.1f} стаков/игра", floor=0.5)
+    lanes = sampled("lane_result")
+    lane_share = {n: sum(1 for x in v if x > 0) / len(v) for n, v in lanes.items()}
+    add("lane", "🛣️", "Победитель линии", lane_share,
+        lambda n: f"выиграл {lane_share[n] * 100:.0f}% линий")  # коротко: длинная подпись обрезается в карточке
 
     best_games: dict[str, tuple[float, dict]] = {}
     for n, ms in played.items():

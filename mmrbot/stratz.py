@@ -14,18 +14,21 @@ from typing import Optional
 import requests
 
 from .health import ProviderHealth, ProviderUnavailable
+from .lanes import lane_result, ward_count
+from .opendota import lineup_of
 
 URL = "https://api.stratz.com/graphql"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _BLOCK_NO_HEADER = 30.0  # 429 на всех попытках — короткая пауза, чтобы не долбить сервис в соседних командах
 
 _PLAYER_FIELDS = """
-    lobbyType
+    lobbyType topLaneOutcome midLaneOutcome bottomLaneOutcome
     players {
       steamAccountId isRadiant partyId heroId
       position role lane imp
       goldPerMinute experiencePerMinute networth heroDamage towerDamage heroHealing
       numLastHits numDenies level
+      stats { wards { time } }
     }
 """
 
@@ -49,6 +52,13 @@ _FIELD_MAP = {
     "heroDamage": "hero_damage", "towerDamage": "tower_damage", "heroHealing": "hero_healing",
     "numLastHits": "last_hits", "numDenies": "denies", "level": "level",
 }
+
+
+def _lane_outcomes(match: Optional[dict]) -> dict:
+    """{"top", "mid", "bottom"} → исход линии (LaneOutcomeEnums) из ответа Stratz."""
+    match = match or {}
+    return {"top": match.get("topLaneOutcome"), "mid": match.get("midLaneOutcome"),
+            "bottom": match.get("bottomLaneOutcome")}
 
 
 def _position(value) -> Optional[int]:
@@ -201,6 +211,9 @@ class Stratz:
                     "role": row.get("role"),
                     "lane": row.get("lane"),
                     "imp": row.get("imp"),
+                    "lineup": lineup_of([{"hero_id": r.get("heroId"), "isRadiant": r.get("isRadiant")} for r in rows]),
+                    "lane_result": lane_result(row.get("lane"), row.get("isRadiant"), _lane_outcomes(data.get(f"m{n}"))),
+                    "wards": ward_count(row.get("stats")),
                 }
                 for src, out in _FIELD_MAP.items():
                     info[out] = row.get(src)

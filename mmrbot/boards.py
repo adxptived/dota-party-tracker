@@ -34,6 +34,12 @@ class HeroBoard(ImageBoard):
     hero_id: Optional[int] = None
 
 
+@dataclass
+class MatchupsBoard(ImageBoard):
+    """Соперники и союзники: account_id нужен кнопкам периода и «Текстом» (0 — вся пати)."""
+    account_id: int = 0
+
+
 def build_png(label: str, render: Callable[[], bytes]) -> Optional[bytes]:
     """Нарисовать картинку; любая ошибка рендера → None (отчёт уйдёт текстом), а не падение команды."""
     try:

@@ -86,6 +86,30 @@ def parse_hour(args: str) -> int:
     return hour
 
 
+_SEASON_START = {"start", "старт", "начать", "новый", "new"}
+_SEASON_END = {"end", "stop", "finish", "конец", "стоп", "завершить", "закончить"}
+SEASON_DEFAULT_DAYS, SEASON_MIN_DAYS, SEASON_MAX_DAYS = 30, 7, 365
+
+
+def parse_season_args(args: str) -> tuple[str, Optional[int]]:
+    """`/season [start [дней] | end]` → ('show'|'start'|'end'|'error', дней | None).
+
+    Длина сезона — 7…365 дней (по умолчанию 30): короче — мало игр для номинаций, длиннее — сезон теряет смысл.
+    """
+    tokens = (args or "").split()
+    if not tokens:
+        return "show", None
+    word = tokens[0].lower()
+    if word in _SEASON_END and len(tokens) == 1:
+        return "end", None
+    if word in _SEASON_START and len(tokens) <= 2:
+        if len(tokens) == 1:
+            return "start", SEASON_DEFAULT_DAYS
+        if _is_int(tokens[1]) and SEASON_MIN_DAYS <= int(tokens[1]) <= SEASON_MAX_DAYS:
+            return "start", int(tokens[1])
+    return "error", None
+
+
 _PERIOD_WORDS = {
     "день": "day", "сутки": "day", "сегодня": "day", "day": "day", "today": "day",
     "неделя": "week", "неделю": "week", "week": "week",

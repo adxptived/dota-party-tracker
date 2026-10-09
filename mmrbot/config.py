@@ -5,10 +5,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-import pytz
 from dotenv import load_dotenv
 
 from mmrbot.storage import DEFAULT_DIGEST_HOUR, DEFAULT_MMR_STEP, DEFAULT_TZ
+from mmrbot.timezones import RENAMED, is_valid
 
 
 @dataclass
@@ -30,6 +30,14 @@ class Config:
     max_players: int = 16  # игроков на чат: каждый — это запросы к OpenDota из общего лимита
     command_refresh_wait: float = 4.0  # сек: команда ждёт обновление игроков не дольше, дальше — ответ из БД
     opendota_proxy: Optional[str] = None  # прокси только для OpenDota (socks5h://… или http://…); в нём может быть пароль
+    error_chat_id: Optional[int] = None  # куда слать отчёты об ошибках (Telegram ID владельца или чата); None — никуда
+    inline_cache_chat: Optional[int] = None  # чат-хранилище картинок для inline-режима; None — inline отвечает текстом
+    sentry_dsn: Optional[str] = None  # адрес проекта Sentry; нужен пакет sentry-sdk
+
+    def secrets(self) -> tuple:
+        """Значения, которые нельзя показывать в отчётах об ошибках и логах."""
+        return tuple(s for s in (self.bot_token, self.opendota_api_key, self.stratz_api_key, self.steam_api_key,
+                                 self.opendota_proxy, self.sentry_dsn) if s)
 
 
 def _chat_ids(raw: str) -> frozenset:
@@ -48,11 +56,18 @@ def _chat_ids(raw: str) -> frozenset:
 
 def _tz_env(name: str, default: str) -> str:
     value = (os.getenv(name) or "").strip() or default
+    return RENAMED.get(value, value) if is_valid(value) else default
+
+
+def _chat_id_env(name: str) -> Optional[int]:
+    """ID чата из окружения: пусто — None; не число — ошибка запуска (молча потерять отчёты об ошибках хуже)."""
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        return None
     try:
-        pytz.timezone(value)
-    except Exception:
-        return default
-    return value
+        return int(value)
+    except ValueError:
+        raise RuntimeError(f"{name}: «{value}» — не числовой ID чата.") from None
 
 
 def _int_env(name: str, default: int) -> int:
@@ -115,4 +130,7 @@ def load_config() -> Config:
         max_players=max(1, _int_env("MAX_PLAYERS", 16)),
         command_refresh_wait=_float_env("COMMAND_REFRESH_WAIT", 4.0),
         opendota_proxy=_proxy_env("OPENDOTA_PROXY"),
+        error_chat_id=_chat_id_env("ERROR_CHAT_ID"),
+        inline_cache_chat=_chat_id_env("INLINE_CACHE_CHAT"),
+        sentry_dsn=(os.getenv("SENTRY_DSN") or "").strip() or None,
     )

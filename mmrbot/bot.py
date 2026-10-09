@@ -15,10 +15,10 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InputMediaPhoto, Message
 
 from mmrbot import commands as cmd
-from mmrbot import perf
+from mmrbot import perf, seasons
 from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, is_chat_admin, may_manage
-from mmrbot.formatting import render_player_list, render_settings, render_steam_profile, tz_label
+from mmrbot.formatting import render_mmr_set, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
@@ -40,10 +40,14 @@ from mmrbot.service import (
     heroes_board,
     render_heroes_board,
     match_board,
+    matchups_board,
+    season_board,
+    season_end_board,
     player_board,
     player_heroes_board,
     render_match_board,
     render_player_board,
+    render_matchups_board,
     render_player_heroes_board,
     render_roles_board,
     together_board,
@@ -55,14 +59,12 @@ from mmrbot.storage import Storage
 from mmrbot.tags import auto_link_user, clear_member_tag, link_adder, sync_member_tags
 from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
 from mmrbot.ranks import rank_label
-from mmrbot.tracker import build_leaderboard, refresh_player
+from mmrbot.tracker import build_leaderboard, close_season, refresh_player, set_player_mmr
 
 router = Router()
 log = logging.getLogger(__name__)
 
 PERIODS_KEYS = {"day", "week", "month", "year", "all"}
-
-MAX_PLAYERS = 16  # игроков на чат (переопределяется из конфига при старте): каждый тратит общий лимит OpenDota
 
 
 async def _can_manage(message, storage: Storage, user=None, bot=None) -> bool:
@@ -135,14 +137,19 @@ BOT_COMMANDS = [
     BotCommand(command="last", description="🏁 Последний матч"),
     BotCommand(command="match", description="🎮 Разбор матча"),
     BotCommand(command="player", description="🪪 Карточка игрока"),
+    BotCommand(command="matchups", description="⚔️ Против кого и с кем"),
     BotCommand(command="records", description="🌟 Рекорды пати"),
     BotCommand(command="graph", description="📈 График MMR"),
     BotCommand(command="achievements", description="🏅 Соревнование чата"),
+    BotCommand(command="go", description="🎮 Позвать пати играть"),
+    BotCommand(command="season", description="🏆 Сезон соревнования"),
+    BotCommand(command="hall", description="🏛 Зал славы"),
     BotCommand(command="steam", description="🎭 Steam-профиль"),
     BotCommand(command="add", description="➕ Добавить игрока"),
     BotCommand(command="list", description="👥 Список игроков"),
     BotCommand(command="settings", description="⚙️ Настройки"),
     BotCommand(command="setmmr", description="✏️ Задать MMR"),
+    BotCommand(command="double", description="✖️ Отметить игру с дабл-дауном (×2 MMR)"),
     BotCommand(command="setstep", description="⚙️ Шаг MMR за игру"),
     BotCommand(command="settime", description="⏰ Час сводки"),
     BotCommand(command="me", description="🙋 Привязать себя к игроку"),
@@ -164,12 +171,16 @@ HELP_TEXT = (
     '/stats — рейтинг и награды (сегодня, неделя, месяц)\n'
     '/player имя — карточка игрока\n'
     '/heroes [имя или герой] — герои\n'
+    '/matchups [имя] — против каких героев тяжело и с кем лучше\n'
     '/last [игрок] — последний матч\n'
     '/match [id] — разбор матча\n'
     '/together — игры вместе\n'
     '/compare — кто сильнее\n'
-    '/records · /graph · /achievements (соревнование чата)\n\n'
+    '/records · /graph · /achievements (соревнование чата)\n'
+    '/season — сезон соревнования, /hall — зал славы\n'
+    '/go [текст] — позвать пати играть (кнопки «иду / через 15 мин / пас»)\n\n'
     'Управлять: /list · /remove · /setmmr · /settings\n'
+    '/double [имя] — игра с дабл-дауном (±2 шага MMR)\n'
     '/menu — всё кнопками, там же «Термины»\n\n'
     '≈MMR — оценка: старт ± шаг за игру, точный MMR Dota не отдаёт.\n'
     'Нужна опция «Выставлять публичные данные матчей».'
@@ -438,8 +449,8 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
 
     storage.get_or_create_chat(message.chat.id)
     now = int(time.time())
-    if storage.count_players(message.chat.id) >= MAX_PLAYERS:
-        await message.answer(f"⚠️ В чате уже {MAX_PLAYERS} игроков — это предел. Удалите кого-нибудь: /remove")
+    if storage.count_players(message.chat.id) >= storage.max_players:
+        await message.answer(f"⚠️ В чате уже {storage.max_players} игроков — это предел. Удалите кого-нибудь: /remove")
         return
 
     if not name:
@@ -531,8 +542,8 @@ async def cmd_setmmr(message: Message, command: CommandObject, storage: Storage)
     if player is None:
         await message.answer(NOT_FOUND_TEXT)
         return
-    storage.set_player_anchor(player.id, mmr, int(time.time()))
-    await message.answer(f"✅ {player.display_name}: ≈{mmr} MMR")
+    before, after = set_player_mmr(storage, message.chat.id, player, mmr, int(time.time()))
+    await message.answer(render_mmr_set(player.display_name, mmr, before, after), parse_mode="HTML")
 
 
 @router.message(Command("setstep"))
@@ -830,8 +841,15 @@ async def _text_records(storage: Storage, od: OpenDota, chat_id: int, args: list
     return await render_records_board(storage, od, chat_id, args[0], stratz)
 
 
+async def _text_matchups(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:mu:<account_id|0>:<period> — соперники и союзники текстом (0 — вся пати)."""
+    if len(args) != 2 or args[1] not in PERIODS_KEYS:
+        return None
+    return await render_matchups_board(storage, od, chat_id, None if args[0] == "0" else args[0], args[1], stratz)
+
+
 TEXT_VIEWS = {"together": _text_together, "compare": _text_compare, "records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
-              "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_contest}
+              "mu": _text_matchups, "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_contest}
 
 
 async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
@@ -870,6 +888,28 @@ async def do_records(message: Message, storage: Storage, od: OpenDota, period: s
     """Рекорды пати картинкой (периоды меняют её на месте, «📝 Текстом» — текстом); не вышло — текстом."""
     await _image_report(message, records_board(storage, od, message.chat.id, period, stratz),
                         with_text_button(records_buttons(period), "records", period), "рекордов", edit=edit)
+
+
+async def do_matchups(message: Message, storage: Storage, od: Optional[OpenDota], name: Optional[str], period: str,
+                      stratz=None, edit: bool = False) -> None:
+    """Против каких героев тяжело и с кем в команде лучше (игрок или вся пати) + периоды и «📝 Текстом»."""
+    if name and storage.get_player(message.chat.id, name) is None:
+        await message.answer(NOT_FOUND_TEXT)
+        return
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await matchups_board(storage, od, message.chat.id, name, period, stratz)
+    except Exception:
+        log.exception("Ошибка сборки соперников и союзников для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board is None:
+        await _delete(status)
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    markup = with_text_button(period_buttons("mu", board.account_id, period), "mu", board.account_id, period)
+    await _reply_image(message, board, markup, status, edit=edit)
 
 
 async def do_graph(
@@ -1000,6 +1040,14 @@ async def cmd_heroes(message: Message, command: CommandObject, storage: Storage,
         await message.answer(f"🔍 Не нашёл ни игрока, ни героя «{name}». Список: /list. Героя пишите по-английски: /heroes Axe")
 
 
+@router.message(Command("matchups"))
+async def cmd_matchups(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
+    if not await _has_players(message, storage):
+        return
+    name, period = cmd.parse_target_period(command.args or "")
+    await do_matchups(message, storage, od, name, period, stratz)
+
+
 @router.message(Command("match"))
 @router.message(Command("last"))  # /last [игрок] — последний матч: то же, что /match без id
 async def cmd_match(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
@@ -1044,6 +1092,68 @@ async def cmd_achievements(message: Message, command: CommandObject, storage: St
         return
     _, period = cmd.parse_target_period(command.args or "")
     await do_contest(message, storage, od, period if (command.args or "").strip() else "week", stratz)
+
+
+SEASON_USAGE = "🤔 Не понял. Формат: /season — зачёт сезона, /season start [дней 7–365], /season end"
+
+
+async def do_season(message: Message, storage: Storage, od: Optional[OpenDota], stratz=None) -> None:
+    """Зачёт идущего сезона картинкой (не вышло — текстом); сезона нет — подсказка, как начать."""
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await season_board(storage, od, message.chat.id, stratz)
+    except Exception:
+        log.exception("Ошибка сборки сезона для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board is None:
+        await _delete(status)
+        await message.answer("🏆 Сезона сейчас нет. Начать: /season start [дней] (по умолчанию 30). "
+                             "Прошлые сезоны — /hall.", reply_markup=nav_menu())
+        return
+    await _reply_image(message, board, nav_menu(), status)
+
+
+@router.message(Command("season"))
+async def cmd_season(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
+    action, days = cmd.parse_season_args(command.args or "")
+    chat_id = message.chat.id
+    if action == "error":
+        await message.answer(SEASON_USAGE)
+        return
+    if action == "show":
+        await do_season(message, storage, od, stratz)
+        return
+    if not await _can_manage(message, storage):
+        return
+    tz = storage.get_or_create_chat(chat_id).tz
+    now = int(time.time())
+    if action == "start":
+        season = storage.start_season(chat_id, now, days)
+        if season is None:
+            current = storage.current_season(chat_id)
+            await message.answer(f"⏳ Сезон {current.number} уже идёт до {seasons.date_text(current.planned_end_ts, tz)}. "
+                                 "Завершить досрочно: /season end", reply_markup=nav_menu())
+            return
+        await message.answer(seasons.render_start(season, tz), parse_mode="HTML", reply_markup=nav_menu())
+        return
+    current = storage.current_season(chat_id)  # action == "end"
+    if current is None:
+        await message.answer("🏆 Сезона нет — завершать нечего. Начать: /season start", reply_markup=nav_menu())
+        return
+    result = await asyncio.to_thread(close_season, storage, chat_id, current, now, False)
+    if result is None:
+        await message.answer("🏆 Сезон уже завершён.", reply_markup=nav_menu())
+        return
+    await _reply_image(message, await season_end_board(storage, chat_id, result), nav_menu())
+
+
+@router.message(Command("hall"))
+async def cmd_hall(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
+    tz = storage.get_or_create_chat(message.chat.id).tz
+    await message.answer(seasons.render_hall(storage.list_seasons(message.chat.id), tz), parse_mode="HTML",
+                         reply_markup=nav_menu())
 
 
 @router.message(Command("steam"))
@@ -1102,8 +1212,9 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
     except ValueError as exc:
         await message.answer(f"⚠️ {exc}")
         return
-    storage.set_player_anchor(player.id, mmr, int(time.time()))
-    await message.answer(f"✅ {player.display_name}: ≈{mmr} MMR", reply_markup=nav_menu())
+    before, after = set_player_mmr(storage, message.chat.id, player, mmr, int(time.time()))
+    await message.answer(render_mmr_set(player.display_name, mmr, before, after), parse_mode="HTML",
+                         reply_markup=nav_menu())
 
 
 # --- кнопки -------------------------------------------------------------
@@ -1170,7 +1281,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "c", "mt", "tx", "mx"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -1235,6 +1346,15 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await message.answer(f"{category_title(key)} — выберите действие:", reply_markup=category_menu(key))
             else:
                 await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
+        elif action == "season":
+            await do_season(message, storage, od, stratz)
+        elif action == "hall":
+            await message.answer(seasons.render_hall(storage.list_seasons(message.chat.id),
+                                                     storage.get_or_create_chat(message.chat.id).tz),
+                                 parse_mode="HTML", reply_markup=nav_menu())
+        elif action == "matchups":
+            if await _has_players(message, storage):
+                await do_matchups(message, storage, od, None, "all", stratz)
         elif action == "records":
             if await _has_players(message, storage):
                 await do_records(message, storage, od, "week", stratz)
@@ -1336,9 +1456,24 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await _prompt_setmmr(message, player)
         return
 
+    if kind == "mu" and len(args) == 2:
+        account, period = args
+        if period in {"day", "week", "month", "all"}:
+            await do_matchups(message, storage, od, None if account == "0" else account, period, stratz, edit=True)
+        return
+
     if kind in {"hp", "rp"} and len(args) == 2:
         account, period = args
         if period not in {"day", "week", "month", "all"}:
             return
         action = do_player_heroes if kind == "hp" else do_roles
         await action(message, storage, od, account, period, stratz, edit=True)
+
+
+# --- разделы в своих модулях ------------------------------------------------
+# Подключаются к этому роутеру: на них действуют те же middleware (удаление сообщения с командой, автопривязка).
+from mmrbot import doubles, gather, inline  # noqa: E402
+
+router.include_router(doubles.router)
+router.include_router(gather.router)
+router.include_router(inline.router)

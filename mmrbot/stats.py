@@ -5,11 +5,12 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-import pytz
+from mmrbot.timezones import to_local, zone
 
 RANKED_LOBBY_TYPE = 7
 
@@ -121,10 +122,7 @@ def top_heroes(matches: list[dict], k: int = 3) -> list[dict]:
 
 def winrate_by_hour(matches: list[dict], tz_name: str) -> dict[int, tuple[int, int]]:
     """Разбивка по локальному часу старта: hour -> (игр, побед)."""
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz = pytz.timezone("Europe/Moscow")
+    tz = zone(tz_name)
     by_hour: dict[int, list[int]] = {}
     for match in matches:
         start_time = match.get("start_time")
@@ -180,6 +178,21 @@ def perf_score(benchmarks: dict) -> Optional[float]:
     if not pcts:
         return None
     return sum(pcts) / len(pcts)
+
+
+def match_benchmark(match: dict, metric: str) -> Optional[float]:
+    """Перцентиль игрока в матче по метрике против других на ТОМ ЖЕ герое (0..1); None — бенчмарка нет.
+
+    Читает сохранённый `bench_json` строки матча. Битый или пустой JSON — не ошибка, а «данных нет».
+    """
+    raw = (match or {}).get("bench_json")
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw).get(metric)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return value if isinstance(value, (int, float)) else None
 
 
 def aggregate_skill(benchmarks_list: list[dict]) -> dict:
@@ -313,21 +326,112 @@ def period_since(period: str, now: int) -> Optional[int]:
 
 def local_day_start(now: int, tz_name: str) -> int:
     """Unix-время начала текущих календарных суток (00:00) в часовом поясе чата."""
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz = pytz.timezone("Europe/Moscow")
-    local = datetime.fromtimestamp(now, tz=timezone.utc).astimezone(tz)
-    midnight = tz.localize(datetime(local.year, local.month, local.day))
+    local = to_local(now, tz_name)
+    midnight = datetime(local.year, local.month, local.day, tzinfo=zone(tz_name))
     return int(midnight.timestamp())
 
 
+def match_mmr_delta(match: dict, step: int) -> int:
+    """Изменение оценки MMR за одну игру: победа +step, поражение −step; игра с дабл-дауном — вдвое."""
+    value = step * 2 if match.get("double_down") else step
+    return value if is_win(match["player_slot"], match["radiant_win"]) else -value
+
+
+def mmr_delta(matches: list[dict], step: int) -> int:
+    """Суммарное изменение оценки MMR за игры."""
+    return sum(match_mmr_delta(match, step) for match in matches)
+
+
+def counts_after(match: dict, ts: int) -> bool:
+    """Влияет ли матч на оценку MMR, заданную в момент ts: да, если он закончился после.
+
+    MMR, который игрок ввёл в момент ts, уже включает все завершённые игры; игра, шедшая
+    в этот момент (началась раньше), ещё не включена — её считаем. Без длительности — по началу.
+    """
+    duration = match.get("duration")
+    if duration:
+        return match["start_time"] + duration > ts
+    return match["start_time"] >= ts
+
+
+def effective_anchors(matches: list[dict], anchors: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Журнал заданий MMR без «исправлений опечатки»: запись, до которой с предыдущей не сыграно ни одной игры,
+    не правка оценки, а замена значения — она встаёт на место предыдущей (с её временем)."""
+    result: list[tuple[int, int]] = []
+    for ts, mmr in anchors:
+        if result:
+            prev_ts = result[-1][0]
+            if not any(counts_after(m, prev_ts) and not counts_after(m, ts) for m in matches):
+                result[-1] = (prev_ts, mmr)
+                continue
+        result.append((ts, mmr))
+    return result
+
+
+def mmr_ledger(matches: list[dict], anchors: list[tuple[int, int]], step: int, since_ts: int = 0) -> dict:
+    """Оценка MMR по журналу его заданий: старт, заработанное игрой и правки — раздельно.
+
+    anchors — [(когда, MMR)] по времени (журнал `/add … MMR` и `/setmmr`); matches — по времени.
+    Без записей (MMR не задан) считается только заработанное с момента since_ts.
+
+    → {start, current, earned, games, corrections, entries}:
+      start — первый заданный MMR; current — последний заданный ± игры после него;
+      earned/games — изменение и число игр с первого задания (правки сюда не входят и его не обнуляют);
+      corrections — сумма правок: на сколько заданные позже значения расходились с оценкой на тот момент
+      (запись без единой игры после предыдущей правкой не считается — она просто заменяет значение);
+      entries — журнал: [{ts, mmr, drift, games}], drift и games — расхождение с оценкой и число игр
+      с предыдущей записи (у первой — None и 0). Всегда start + earned + corrections == current.
+    """
+    anchors = effective_anchors(matches, anchors)
+    first_ts = anchors[0][0] if anchors else since_ts
+    counted = [m for m in matches if counts_after(m, first_ts)]
+    earned = mmr_delta(counted, step)
+    if not anchors:
+        return {"start": None, "current": None, "earned": earned, "games": len(counted), "corrections": 0, "entries": []}
+    entries = [{"ts": anchors[0][0], "mmr": anchors[0][1], "drift": None, "games": 0}]
+    for (prev_ts, prev_mmr), (ts, mmr) in zip(anchors, anchors[1:]):
+        between = [m for m in counted if counts_after(m, prev_ts) and not counts_after(m, ts)]
+        entries.append({"ts": ts, "mmr": mmr, "drift": mmr - (prev_mmr + mmr_delta(between, step)), "games": len(between)})
+    last_ts, last_mmr = anchors[-1]
+    current = last_mmr + mmr_delta([m for m in counted if counts_after(m, last_ts)], step)
+    start = anchors[0][1]
+    return {"start": start, "current": current, "earned": earned, "games": len(counted),
+            "corrections": current - start - earned, "entries": entries}
+
+
+def mmr_timeline(matches: list[dict], anchors: list[tuple[int, int]], step: int) -> list[tuple[int, int]]:
+    """Оценка MMR после каждой игры: [(время игры, MMR)] — по всей истории, через все правки.
+
+    Между записями журнала значение идёт от заданного MMR ± игры; в момент правки линия честно «прыгает»
+    на расхождение. Игры до первой записи восстановлены назад от неё. Без записей — накопленное ±MMR от нуля.
+    """
+    anchors = effective_anchors(matches, anchors)
+    if not anchors:
+        return mmr_series(matches, step)
+    first_ts, first_mmr = anchors[0]
+    before = [m for m in matches if not counts_after(m, first_ts)]
+    after = [m for m in matches if counts_after(m, first_ts)]
+    points: list[tuple[int, int]] = []
+    value = first_mmr - mmr_delta(before, step)
+    for match in before:
+        value += match_mmr_delta(match, step)
+        points.append((match["start_time"], value))
+    index, value = 0, first_mmr
+    for match in after:
+        while index + 1 < len(anchors) and counts_after(match, anchors[index + 1][0]):
+            index += 1
+            value = anchors[index][1]
+        value += match_mmr_delta(match, step)
+        points.append((match["start_time"], value))
+    return points
+
+
 def mmr_series(matches: list[dict], step: int) -> list[tuple[int, int]]:
-    """Накопленное изменение MMR после каждой игры: [(время, ±MMR)] (победа +step, поражение −step)."""
+    """Накопленное изменение MMR после каждой игры: [(время, ±MMR)] (победа +step, поражение −step, дабл-даун — ×2)."""
     total = 0
     points = []
     for match in sorted(matches, key=lambda m: m["start_time"]):
-        total += step if is_win(match["player_slot"], match["radiant_win"]) else -step
+        total += match_mmr_delta(match, step)
         points.append((match["start_time"], total))
     return points
 

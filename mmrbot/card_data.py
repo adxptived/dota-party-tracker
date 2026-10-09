@@ -157,11 +157,13 @@ def _k(value) -> str:
     return f"{value / 1000:.1f}k" if value >= 1000 else f"{value:.0f}"
 
 
-def player_card(s, standing: Optional[dict] = None, series: Optional[list] = None, note: Optional[str] = None) -> dict:
+def player_card(s, standing: Optional[dict] = None, series: Optional[list] = None, note: Optional[str] = None,
+                absolute: bool = False) -> dict:
     """Сводка игрока → описание карточки для player_image.render_player_image.
 
-    standing — запись игрока из tracker.build_chat_comparison()["players"][имя] (+ size); series — накопленные ±MMR
-    по играм (последние ~60); note — пометка об устаревании данных (обычный текст).
+    standing — запись игрока из tracker.build_chat_comparison()["players"][имя] (+ size); series — значения линии
+    по играм (последние ~60): при absolute=True — готовая оценка MMR после каждой игры (stats.mmr_timeline),
+    иначе накопленные ±MMR, к которым прибавляется стартовый MMR; note — пометка об устаревании данных.
     """
     from mmrbot.formatting import SKILL_GROUPS
     from mmrbot.ranks import rank_label
@@ -196,7 +198,7 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
     ]
     values = list(series or [])
     if values:
-        base = s.anchor_mmr or 0
+        base = 0 if absolute else s.anchor_mmr or 0
         card["series"] = [base + v for v in values] if s.anchor_mmr is not None else values
         card["series_label"] = f"Динамика ≈MMR · последние {plural_games(len(values))}" if s.anchor_mmr is not None \
             else f"Динамика ±MMR · последние {plural_games(len(values))}"

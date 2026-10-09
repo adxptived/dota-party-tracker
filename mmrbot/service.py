@@ -15,7 +15,7 @@ from typing import Optional
 
 from mmrbot import avatars, hero_icons, item_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
-from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
+from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, MatchupsBoard, build_png, fit_caption
 from mmrbot.contest_image import MAX_TABLE as CONTEST_TABLE_LIMIT, render_contest_image
 from mmrbot.daily_image import render_daily_image
 from mmrbot.card_data import (
@@ -58,9 +58,10 @@ from mmrbot.heroes import find_hero, hero_name
 from mmrbot.heroes_image import LIMIT as HEROES_LIMIT
 from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image
 from mmrbot.match_image import render_match_image
+from mmrbot.matchups_image import render_matchups_image
 from mmrbot.opendota import OpenDota
 from mmrbot.ranks import rank_label
-from mmrbot import stats
+from mmrbot import matchups, seasons, stats
 from mmrbot.player_image import render_player_image
 from mmrbot.records_image import render_records_image
 from mmrbot.stats import period_since
@@ -74,6 +75,7 @@ from mmrbot.tracker import (
     build_chat_comparison,
     build_daily_report,
     build_hero_view,
+    build_matchups,
     build_weekly_report,
     build_leaderboard,
     refresh_chat,
@@ -150,7 +152,7 @@ def _kick_finish(storage: Storage, od: OpenDota, chat_id: int) -> None:
     task.add_done_callback(_finish_tasks.discard)
 
 
-COMMAND_REFRESH_WAIT = 4.0  # сек: команда ждёт обновление игроков не дольше (настройка COMMAND_REFRESH_WAIT)
+COMMAND_REFRESH_WAIT = 4.0  # сек: ожидание обновления по умолчанию; настройка COMMAND_REFRESH_WAIT живёт в od.command_wait
 _background_refreshes: set = set()
 
 # Какие команды ждут обновление (в пределах бюджета), а какие отвечают сразу из БД, а обновление идёт фоном.
@@ -159,7 +161,7 @@ _background_refreshes: set = set()
 WAITS_FOR_REFRESH = {
     "stats": True, "player": True, "compare": True, "together": True, "records": True, "graph": True,
     "period": True, "match": True,
-    "heroes": False, "player_heroes": False, "roles": False, "hero": False,
+    "heroes": False, "player_heroes": False, "roles": False, "hero": False, "matchups": False,
 }
 
 
@@ -173,12 +175,12 @@ async def refresh_for(command: str, storage: Storage, od: OpenDota, chat_id: int
 async def refresh_with_budget(
     storage: Storage, od: OpenDota, chat_id: int, stratz=None, budget: Optional[float] = None
 ) -> bool:
-    """Обновить игроков чата, но ждать не дольше budget (по умолчанию COMMAND_REFRESH_WAIT).
+    """Обновить игроков чата, но ждать не дольше budget (по умолчанию od.command_wait).
 
     Уложились — True. Нет (OpenDota тормозит) — False: вызывающий отвечает из БД, а обновление, не
     отменяясь, доходит фоном. Ошибка обновления в пределах бюджета поднимается наверх, как раньше.
     """
-    wait = COMMAND_REFRESH_WAIT if budget is None else budget
+    wait = getattr(od, "command_wait", COMMAND_REFRESH_WAIT) if budget is None else budget
     task = asyncio.ensure_future(refresh_only(storage, od, chat_id, stratz))
     with perf.phase("refresh"):  # то, сколько команда реально прождала обновление
         done, _ = await asyncio.wait({task}, timeout=wait)
@@ -513,12 +515,12 @@ async def records_board(
     return board
 
 
-def _contest_png(period: str, table: list, noms: list, note) -> bytes:
+def _contest_png(period: str, table: list, noms: list, note, subtitle=None) -> bytes:
     """В потоке: аватары (кэш/CDN) + рендер соревнования."""
     avatar_loader = avatars.shared()
     found = avatar_loader.get_many({r.get("avatar") for r in table[:CONTEST_TABLE_LIMIT]}
                                    | {e.get("avatar") for n in noms for e in n["entries"]}) if avatar_loader is not None else {}
-    return render_contest_image(period, table, noms, found, note)
+    return render_contest_image(period, table, noms, found, note, subtitle)
 
 
 async def contest_board(
@@ -610,16 +612,25 @@ def _player_png(card: dict) -> bytes:
 
 
 def _mmr_values(storage: Storage, chat_id: int, player_id: int) -> list[int]:
-    """Накопленное ±MMR по последним играм игрока — для линии на карточке."""
+    """Оценка MMR после каждой из последних игр игрока — для линии на карточке.
+
+    Считается по журналу заданий MMR, поэтому линия непрерывна через правки /setmmr (в момент правки — скачок
+    на расхождение). MMR не задан — накопленное ±MMR от нуля.
+    """
     step = storage.get_or_create_chat(chat_id).mmr_step
-    return [value for _, value in stats.mmr_series(storage.get_outcomes(player_id), step)[-60:]]
+    timeline = stats.mmr_timeline(storage.get_outcomes(player_id), storage.get_anchors(player_id), step)
+    return [value for _, value in timeline[-60:]]
 
 
 async def player_board(
-    storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None, image: Optional[bool] = None
+    storage: Storage, od: Optional[OpenDota], chat_id: int, name: str, stratz=None, image: Optional[bool] = None,
+    refresh: bool = True,
 ) -> Optional[ImageBoard]:
-    """Карточка игрока: текст всегда, картинка с короткой подписью — если нарисовалась; None — игрока нет."""
-    summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="player")
+    """Карточка игрока: текст всегда, картинка с короткой подписью — если нарисовалась; None — игрока нет.
+
+    refresh=False — только из БД, без обращений к OpenDota (inline-режим: ответить нужно за секунды).
+    """
+    summaries = await gather_summaries(storage, od, chat_id, refresh=refresh, stratz=stratz, command="player")
     comparison = build_chat_comparison(summaries)
     name_lower = name.strip().lower()
     for summary in summaries:
@@ -628,14 +639,15 @@ async def player_board(
     else:
         return None
     standing = standing_line(comparison, summary.display_name)
-    board = ImageBoard(_with_stale(storage, chat_id, render_player_card(summary, standing=standing), od))
+    tz = storage.get_or_create_chat(chat_id).tz
+    board = ImageBoard(_with_stale(storage, chat_id, render_player_card(summary, standing=standing, tz=tz), od))
     if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         plain = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
         player = storage.get_player_by_account_id(chat_id, summary.account_id)
         series = await _build(_mmr_values, storage, chat_id, player.id) if player is not None else []
         position = dict(comparison["players"].get(summary.display_name) or {}, size=comparison["size"])
-        card = player_card(summary, position, series, plain)
+        card = player_card(summary, position, series, plain, absolute=True)
         board.png = await asyncio.to_thread(build_png, "карточку игрока", lambda: _player_png(card))
         if board.png is not None:
             board.caption = fit_caption(player_caption(summary) + (f"\n{note}" if note else ""))
@@ -969,3 +981,94 @@ async def render_hero_board(
     storage: Storage, od: OpenDota, chat_id: int, query: str, period: str, stratz=None
 ) -> str:
     return (await hero_board(storage, od, chat_id, query, period, stratz, image=False)).text
+
+
+# --- соперники и союзники по героям ---------------------------------------------------------------------------
+
+def _matchups_png(view: dict, note) -> bytes:
+    """В потоке: иконки героев (кэш/CDN) + рендер карточки."""
+    icon_loader = hero_icons.shared()
+    icons = icon_loader.get_many(matchups.hero_ids(view)) if icon_loader is not None else {}
+    return render_matchups_image(view, icons, note)
+
+
+async def matchups_board(
+    storage: Storage, od: Optional[OpenDota], chat_id: int, name: Optional[str], period: str, stratz=None,
+    image: Optional[bool] = None,
+) -> Optional[MatchupsBoard]:
+    """Против каких героев игрок (или вся пати, name=None) проигрывает и с кем в команде выигрывает.
+
+    Составы берутся из БД (их дозагружает фон), поэтому обновления не ждём. None — игрока с таким ником нет.
+    """
+    if od is not None:
+        await refresh_for("matchups", storage, od, chat_id, stratz)
+    since = period_since(period, int(time.time()))
+    result = await _build(build_matchups, storage, chat_id, name, since, matchups.threshold(period))
+    if result is None:
+        return None
+    who, report = result
+    account_id = storage.get_player(chat_id, who).account_id if who else 0
+    board = MatchupsBoard(_with_stale(storage, chat_id, matchups.render_matchups(who, period, report), od),
+                          account_id=account_id)
+    if want_image(storage, chat_id, image) and report["games"] and not matchups.is_empty(report):
+        note = _stale_line(storage, chat_id, od)
+        view = matchups.matchups_view(who, period, report)
+        board.png = await _render_png("соперников и союзников", _matchups_png, view, _plain(note))
+        if board.png is not None:
+            board.caption = fit_caption(matchups.matchups_caption(who, period, report) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def render_matchups_board(
+    storage: Storage, od: Optional[OpenDota], chat_id: int, name: Optional[str], period: str, stratz=None,
+) -> str:
+    board = await matchups_board(storage, od, chat_id, name, period, stratz, image=False)
+    return NOT_FOUND if board is None else board.text
+
+
+# --- сезоны ------------------------------------------------------------------------------------------------------
+
+SEASON_MIN_GAMES = 3  # порог игр для номинаций-средних: как у недели и месяца
+
+
+async def season_board(
+    storage: Storage, od: Optional[OpenDota], chat_id: int, stratz=None, image: Optional[bool] = None,
+) -> Optional[ImageBoard]:
+    """Зачёт идущего сезона: очки только по играм с его начала. None — в чате сезона нет."""
+    season = storage.current_season(chat_id)
+    if season is None:
+        return None
+    if od is not None:
+        await refresh_for("records", storage, od, chat_id, stratz)
+    now = int(time.time())
+    tz = storage.get_or_create_chat(chat_id).tz
+    data = await _build(build_contest, storage, chat_id, season.start_ts, SEASON_MIN_GAMES)
+    head = seasons.status_head(season, now, tz)
+    body = render_contest(f"сезона {season.number}", data["standings"], data["points"])
+    board = ImageBoard(_with_stale(storage, chat_id, f"{head}\n\n{body}", od))
+    if want_image(storage, chat_id, image):
+        avatar_of = {p.display_name: p.steam_avatar for p in storage.list_players(chat_id)}
+        table, noms = contest_view(data["standings"], data["points"], avatar_of)
+        note = _stale_line(storage, chat_id, od)
+        subtitle = f"сезон {season.number} · {seasons.span(season, tz)} · осталось {seasons.days_left(season, now)} дн."
+        board.png = await _render_png("сезон", _contest_png, f"СЕЗОН {season.number}", table, noms, _plain(note), subtitle)
+        if board.png is not None:
+            board.caption = fit_caption(seasons.status_caption(season, now, table) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def season_end_board(
+    storage: Storage, chat_id: int, result: dict, image: Optional[bool] = None,
+) -> ImageBoard:
+    """Итоги закрытого сезона для чата (результат tracker.close_season): чемпион, таблица, начало следующего."""
+    season, nxt = result["season"], result["next"]
+    tz = storage.get_or_create_chat(chat_id).tz
+    board = ImageBoard(seasons.render_end(season, result["champion"], result["table"], nxt, tz))
+    if want_image(storage, chat_id, image) and result["points"]:
+        avatar_of = {p.display_name: p.steam_avatar for p in storage.list_players(chat_id)}
+        table, noms = contest_view(result["standings"], result["points"], avatar_of)
+        subtitle = f"итоги сезона {season.number} · {seasons.span(season, tz)}"
+        board.png = await _render_png("итоги сезона", _contest_png, f"ИТОГИ СЕЗОНА {season.number}", table, noms, None, subtitle)
+        if board.png is not None:
+            board.caption = fit_caption(seasons.end_caption(season, result["champion"], result["table"], nxt))
+    return board

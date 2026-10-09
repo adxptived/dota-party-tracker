@@ -1,5 +1,9 @@
 """SQLite-хранилище: чаты, игроки, засчитанные ранкед-матчи.
 
+Аккаунт Steam (`accounts`: ранг, ник, «обновлён») и его матчи (`matches`) хранятся один раз, сколько бы чатов
+его ни отслеживало; `players` — участие аккаунта в чате (ник, стартовый MMR, привязка к Telegram). Методы
+принимают id игрока чата и сами находят его аккаунт.
+
 Соединение открывается на каждый вызов (объём операций крошечный, конкуренция низкая),
 что снимает проблему «SQLite objects can only be used in the same thread» с aiogram.
 Матчи хранятся в сыром виде (player_slot/radiant_win), чтобы stats.aggregate оставался
@@ -12,15 +16,17 @@ import sqlite3
 import threading
 from bisect import bisect_left
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+from mmrbot.migrations import LATEST_VERSION, migrate
 
 DEFAULT_DIGEST_HOUR = 10
 DEFAULT_MMR_STEP = 25
 DEFAULT_TZ = "Europe/Moscow"
-# Номер схемы (PRAGMA user_version). Колонки по-прежнему добавляются в _migrate; номер нужен, чтобы
-# будущая несовместимая миграция могла понять, с какой версии база, и чтобы старый код не открыл новую.
-SCHEMA_VERSION = 2
+DEFAULT_MAX_PLAYERS = 16
+# Номер схемы (PRAGMA user_version) — номер последней миграции из mmrbot/migrations.py.
+SCHEMA_VERSION = LATEST_VERSION
 
 
 @dataclass
@@ -61,107 +67,37 @@ class Player:
     fh_unavailable: bool = False  # OpenDota: история матчей игрока закрыта — цифры могут быть неполными
     ingame_since: Optional[int] = None  # когда зашёл в Dota 2 (по Steam); None — не в игре
     ingame_misses: int = 0  # опросов подряд без Dota (гасит дребезг статуса)
+    lineups_ts: Optional[int] = None  # когда история аккаунта целиком перечитана вместе с составами команд
     tg_user_id: Optional[int] = None  # Telegram-аккаунт игрока (командой /me) — для тега участника
     last_tag: Optional[str] = None  # тег, который бот поставил в последний раз
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS chats (
-    chat_id          INTEGER PRIMARY KEY,
-    digest_hour      INTEGER NOT NULL DEFAULT 10,
-    mmr_step         INTEGER NOT NULL DEFAULT 25,
-    tz               TEXT    NOT NULL DEFAULT 'Europe/Moscow',
-    last_digest_date TEXT,
-    notify_steam     INTEGER NOT NULL DEFAULT 1,
-    notify_games     INTEGER NOT NULL DEFAULT 1,
-    notify_weekly    INTEGER NOT NULL DEFAULT 1,
-    last_weekly      TEXT,
-    notify_start     INTEGER NOT NULL DEFAULT 1,
-    tag_mmr          INTEGER NOT NULL DEFAULT 0,
-    notify_digest    INTEGER NOT NULL DEFAULT 1,
-    admin_only       INTEGER NOT NULL DEFAULT 1,
-    active           INTEGER NOT NULL DEFAULT 1,
-    prefer_text      INTEGER NOT NULL DEFAULT 0
-);
--- прежние лидеры номинаций соревнования (по чату и периоду): по ним замечаем смену лидера
-CREATE TABLE IF NOT EXISTS contest_leaders (
-    chat_id INTEGER NOT NULL,
-    period  TEXT    NOT NULL,
-    key     TEXT    NOT NULL,
-    leader  TEXT    NOT NULL,
-    PRIMARY KEY (chat_id, period, key)
-);
--- last_gpm … last_gpm_best и insights_dirty больше не используются (карьерные средние бот не запрашивает);
--- колонки оставлены, чтобы старые базы открывались без пересборки таблицы.
-CREATE TABLE IF NOT EXISTS players (
-    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id               INTEGER NOT NULL,
-    account_id            INTEGER NOT NULL,
-    display_name          TEXT    NOT NULL,
-    anchor_mmr            INTEGER,
-    anchor_ts             INTEGER NOT NULL,
-    created_ts            INTEGER NOT NULL,
-    last_rank_tier        INTEGER,
-    last_leaderboard_rank INTEGER,
-    updated_ts            INTEGER,
-    last_gpm              REAL,
-    last_xpm              REAL,
-    last_last_hits        REAL,
-    last_lanes            TEXT,
-    last_gpm_median       REAL,
-    last_gpm_best         REAL,
-    steam_name            TEXT,
-    steam_avatar          TEXT,
-    profile_ts            INTEGER,
-    history_ts            INTEGER,
-    insights_dirty        INTEGER NOT NULL DEFAULT 0,
-    fh_unavailable        INTEGER NOT NULL DEFAULT 0,
-    ingame_since          INTEGER,
-    ingame_misses         INTEGER NOT NULL DEFAULT 0,
-    tg_user_id            INTEGER,
-    last_tag              TEXT,
-    UNIQUE(chat_id, account_id)
-);
-CREATE TABLE IF NOT EXISTS matches (
-    player_id   INTEGER NOT NULL,
-    match_id    INTEGER NOT NULL,
-    start_time  INTEGER NOT NULL,
-    player_slot INTEGER NOT NULL,
-    radiant_win INTEGER NOT NULL,
-    lobby_type  INTEGER,
-    kills       INTEGER NOT NULL DEFAULT 0,
-    deaths      INTEGER NOT NULL DEFAULT 0,
-    assists     INTEGER NOT NULL DEFAULT 0,
-    hero_id      INTEGER,
-    duration     INTEGER,
-    party_size   INTEGER,
-    average_rank INTEGER,
-    gpm          REAL,
-    xpm          REAL,
-    last_hits    INTEGER,
-    denies       INTEGER,
-    hero_damage  INTEGER,
-    tower_damage INTEGER,
-    hero_healing INTEGER,
-    net_worth    INTEGER,
-    level        INTEGER,
-    perf_score   REAL,
-    bench_json   TEXT,
-    enriched     INTEGER NOT NULL DEFAULT 0,
-    position     INTEGER,
-    role         TEXT,
-    lane         TEXT,
-    imp          INTEGER,
-    stratz_done  INTEGER NOT NULL DEFAULT 0,
-    stratz_tries INTEGER NOT NULL DEFAULT 0,
-    enrich_tries INTEGER NOT NULL DEFAULT 0,
-    stratz_next_ts INTEGER NOT NULL DEFAULT 0,
-    notified     INTEGER NOT NULL DEFAULT 0,
-    leaver_status INTEGER,
-    PRIMARY KEY (player_id, match_id)
-);
-CREATE INDEX IF NOT EXISTS idx_matches_player_time ON matches (player_id, start_time);
-"""
+@dataclass
+class Season:
+    """Сезон соревнования чата: очки считаются по играм с start_ts. end_ts пуст, пока сезон идёт."""
+    id: int
+    chat_id: int
+    number: int
+    start_ts: int
+    length_days: int
+    planned_end_ts: int
+    end_ts: Optional[int] = None
+    champion: Optional[str] = None  # ник чемпиона на момент итогов; None — ничья или никто не играл
+    table: list = field(default_factory=list)  # итоговая таблица очков [{player, points, golds}]
+    renew: bool = True  # после окончания начинать такой же следующий сезон
+
+
+@dataclass
+class Gather:
+    """Сбор пати (/go): сообщение чата с кнопками. closed — заменён новым сбором или закончился."""
+    id: int
+    chat_id: int
+    message_id: Optional[int]
+    created_ts: int
+    by_user: Optional[int]
+    by_name: Optional[str]
+    note: Optional[str]
+    closed: bool = False
 
 
 class _Connection(sqlite3.Connection):
@@ -180,89 +116,18 @@ class Storage:
     def __init__(
         self, db_path: str, default_digest_hour: int = DEFAULT_DIGEST_HOUR,
         default_mmr_step: int = DEFAULT_MMR_STEP, default_tz: str = DEFAULT_TZ,
+        max_players: int = DEFAULT_MAX_PLAYERS,
     ):
         self.db_path = db_path
+        self.max_players = max_players  # предел игроков на чат (MAX_PLAYERS): каждый тратит общий лимит OpenDota
         # Значения для новых чатов (из .env: DEFAULT_DIGEST_HOUR / DEFAULT_MMR_STEP / DEFAULT_TZ).
         self.default_digest_hour = default_digest_hour
         self.default_mmr_step = default_mmr_step
         self.default_tz = default_tz
-        # B3: история матчей игрока в памяти по «версии данных» players.data_ver (её двигают триггеры на matches).
+        # B3: история матчей аккаунта в памяти по «версии данных» accounts.data_ver (её двигают триггеры на matches).
         self._matches_cache: OrderedDict = OrderedDict()
         self._matches_cache_lock = threading.Lock()
-        with self._conn() as conn:
-            conn.execute("PRAGMA journal_mode = WAL")  # режим хранится в файле БД — достаточно один раз
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version > SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"База {db_path} создана более новой версией бота (схема {version}, эта версия знает "
-                    f"{SCHEMA_VERSION}). Обновите бота или восстановите базу из бэкапа."
-                )
-            conn.executescript(_SCHEMA)
-            self._migrate(conn)
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-
-    @staticmethod
-    def _migrate(conn: sqlite3.Connection) -> None:
-        """Лёгкие миграции для БД, созданных предыдущими версиями схемы."""
-        def add_missing(table: str, columns: dict[str, str]) -> None:
-            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-            for name, decl in columns.items():
-                if name not in existing:
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
-
-        add_missing("chats", {
-            "last_digest_date": "TEXT", "notify_steam": "INTEGER NOT NULL DEFAULT 1",
-            "notify_games": "INTEGER NOT NULL DEFAULT 1", "notify_weekly": "INTEGER NOT NULL DEFAULT 1",
-            "last_weekly": "TEXT", "notify_start": "INTEGER NOT NULL DEFAULT 1",
-            "tag_mmr": "INTEGER NOT NULL DEFAULT 0",
-            "notify_digest": "INTEGER NOT NULL DEFAULT 1",
-            "admin_only": "INTEGER NOT NULL DEFAULT 1",
-            "active": "INTEGER NOT NULL DEFAULT 1",
-            "prefer_text": "INTEGER NOT NULL DEFAULT 0",
-        })
-        # Старая история — уже «оповещённая»: иначе после обновления бот завалил бы чат старыми играми.
-        had_notified = "notified" in {r["name"] for r in conn.execute("PRAGMA table_info(matches)").fetchall()}
-        if not had_notified:
-            conn.execute("ALTER TABLE matches ADD COLUMN notified INTEGER NOT NULL DEFAULT 0")
-            conn.execute("UPDATE matches SET notified = 1")
-        add_missing("players", {
-            "last_gpm": "REAL", "last_xpm": "REAL", "last_last_hits": "REAL",
-            "last_lanes": "TEXT", "last_gpm_median": "REAL", "last_gpm_best": "REAL",
-            "steam_name": "TEXT", "steam_avatar": "TEXT",
-            "profile_ts": "INTEGER", "history_ts": "INTEGER",
-            "insights_dirty": "INTEGER NOT NULL DEFAULT 0",
-            "fh_unavailable": "INTEGER NOT NULL DEFAULT 0",
-            "ingame_since": "INTEGER", "ingame_misses": "INTEGER NOT NULL DEFAULT 0",
-            "tg_user_id": "INTEGER", "last_tag": "TEXT",
-            "data_ver": "INTEGER NOT NULL DEFAULT 0",
-        })
-        add_missing("matches", {
-            "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
-            "gpm": "REAL", "xpm": "REAL", "last_hits": "INTEGER", "denies": "INTEGER",
-            "hero_damage": "INTEGER", "tower_damage": "INTEGER", "hero_healing": "INTEGER",
-            "net_worth": "INTEGER", "level": "INTEGER", "perf_score": "REAL",
-            "bench_json": "TEXT", "enriched": "INTEGER NOT NULL DEFAULT 0",
-            "position": "INTEGER", "role": "TEXT", "lane": "TEXT", "imp": "INTEGER",
-            "stratz_done": "INTEGER NOT NULL DEFAULT 0",
-            "stratz_tries": "INTEGER NOT NULL DEFAULT 0",
-            "enrich_tries": "INTEGER NOT NULL DEFAULT 0",
-            "stratz_next_ts": "INTEGER NOT NULL DEFAULT 0",
-            "leaver_status": "INTEGER",
-        })
-        # Кандидатов на оповещение ищут на каждом тике game_watch: частичный индекс по notified = 0 вместо скана истории.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_matches_unnotified ON matches(player_id, start_time) WHERE notified = 0"
-        )
-        # «Версия данных» игрока: любое изменение его матчей (кроме служебных счётчиков) двигает players.data_ver.
-        bump = "UPDATE players SET data_ver = data_ver + 1 WHERE id = {}.player_id"
-        conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_ins AFTER INSERT ON matches BEGIN {bump.format('NEW')}; END")
-        conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_del AFTER DELETE ON matches BEGIN {bump.format('OLD')}; END")
-        conn.execute(
-            "CREATE TRIGGER IF NOT EXISTS matches_bump_upd AFTER UPDATE ON matches "
-            "WHEN OLD.notified IS NEW.notified AND OLD.enrich_tries IS NEW.enrich_tries "
-            "AND OLD.stratz_tries IS NEW.stratz_tries AND OLD.stratz_next_ts IS NEW.stratz_next_ts "
-            f"BEGIN {bump.format('NEW')}; END"
-        )
+        migrate(db_path)  # схема: нумерованные миграции (mmrbot/migrations.py)
 
     def _conn(self) -> sqlite3.Connection:
         # timeout: фоновые джобы и хендлеры пишут из разных потоков — ждём блокировку, а не падаем.
@@ -345,12 +210,15 @@ class Storage:
                 "(SELECT account_id FROM players WHERE chat_id = ?)",
                 (new_chat_id, old_chat_id),
             ).fetchall()
-            for row in clash:
-                conn.execute("DELETE FROM matches WHERE player_id = ?", (row["id"],))
+            for row in clash:  # история аккаунта общая и остаётся у переносимого игрока
+                self._delete_player_data(conn, row["id"])
                 conn.execute("DELETE FROM players WHERE id = ?", (row["id"],))
             conn.execute("DELETE FROM chats WHERE chat_id = ?", (new_chat_id,))
             conn.execute("UPDATE chats SET chat_id = ?, active = 1 WHERE chat_id = ?", (new_chat_id, old_chat_id))
             conn.execute("UPDATE players SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+            conn.execute("DELETE FROM seasons WHERE chat_id = ?", (new_chat_id,))
+            conn.execute("UPDATE seasons SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+            conn.execute("UPDATE gather_calls SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
         return True
 
     def set_chat_notify_games(self, chat_id: int, enabled: bool) -> None:
@@ -382,7 +250,7 @@ class Storage:
         """Отвязать аккаунт; вернуть игрока, к которому он был привязан (None — привязки не было)."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM players WHERE chat_id = ? AND tg_user_id = ?", (chat_id, user_id)
+                f"{self._PLAYER_SELECT} WHERE p.chat_id = ? AND p.tg_user_id = ?", (chat_id, user_id)
             ).fetchone()
             if row is None:
                 return None
@@ -396,7 +264,8 @@ class Storage:
     def set_player_presence(self, player_id: int, since: Optional[int], misses: int) -> None:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE players SET ingame_since = ?, ingame_misses = ? WHERE id = ?", (since, misses, player_id)
+                f"UPDATE accounts SET ingame_since = ?, ingame_misses = ? WHERE account_id = {self._ACCOUNT_OF}",
+                (since, misses, player_id),
             )
 
     def set_chat_notify_weekly(self, chat_id: int, enabled: bool) -> None:
@@ -447,6 +316,16 @@ class Storage:
 
     # --- players --------------------------------------------------------
 
+    # Игрок чата вместе с состоянием его аккаунта Steam (ранг, ник, «обновлён» — общие для всех чатов).
+    _PLAYER_SELECT = (
+        "SELECT p.id, p.chat_id, p.account_id, p.display_name, p.anchor_mmr, p.anchor_ts, p.created_ts, "
+        "p.tg_user_id, p.last_tag, a.last_rank_tier, a.last_leaderboard_rank, a.updated_ts, a.steam_name, "
+        "a.steam_avatar, a.profile_ts, a.history_ts, a.fh_unavailable, a.ingame_since, a.ingame_misses, a.lineups_ts "
+        "FROM players p JOIN accounts a ON a.account_id = p.account_id"
+    )
+    # Аккаунт игрока — для запросов к матчам по id игрока чата.
+    _ACCOUNT_OF = "(SELECT account_id FROM players WHERE id = ?)"
+
     def _player_from_row(self, row: sqlite3.Row) -> Player:
         return Player(
             id=row["id"],
@@ -466,19 +345,22 @@ class Storage:
             fh_unavailable=bool(row["fh_unavailable"]),
             ingame_since=row["ingame_since"],
             ingame_misses=row["ingame_misses"] or 0,
+            lineups_ts=row["lineups_ts"],
             tg_user_id=row["tg_user_id"],
             last_tag=row["last_tag"],
         )
 
     def update_player_steam(self, player_id: int, name: Optional[str], avatar: Optional[str]) -> dict:
-        """Сохранить ник/аватарку Steam; вернуть изменения относительно прошлых значений.
+        """Сохранить ник/аватарку Steam аккаунта игрока; вернуть изменения относительно прошлых значений.
 
         Первое заполнение (раньше значения не было) изменением не считается. Пустые значения
-        не затирают сохранённые.
+        не затирают сохранённые. Значения общие для аккаунта: повторный вызов для того же аккаунта
+        из другого чата изменений уже не увидит — вызывающий опрашивает аккаунт один раз.
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT steam_name, steam_avatar FROM players WHERE id = ?", (player_id,)
+                f"SELECT account_id, steam_name, steam_avatar FROM accounts WHERE account_id = {self._ACCOUNT_OF}",
+                (player_id,),
             ).fetchone()
             if row is None:
                 return {}
@@ -489,8 +371,8 @@ class Storage:
             if avatar and old_avatar is not None and avatar != old_avatar:
                 changes["avatar"] = True
             conn.execute(
-                "UPDATE players SET steam_name = ?, steam_avatar = ? WHERE id = ?",
-                (name or old_name, avatar or old_avatar, player_id),
+                "UPDATE accounts SET steam_name = ?, steam_avatar = ? WHERE account_id = ?",
+                (name or old_name, avatar or old_avatar, row["account_id"]),
             )
         return changes
 
@@ -503,6 +385,7 @@ class Storage:
         anchor_ts: int,
         created_ts: int,
     ) -> Player:
+        """Добавить игрока в чат. Аккаунт, который уже отслеживает другой чат, приходит со всей своей историей."""
         if self.nick_taken(chat_id, display_name):  # «Вася» и «вася» — один ник: команды находят игрока без учёта регистра
             raise ValueError(f"Ник «{display_name}» в этом чате уже занят (регистр не важен) — выберите другой.")
         with self._conn() as conn:
@@ -514,7 +397,12 @@ class Storage:
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Этот аккаунт уже добавлен в этот чат.") from exc
-            row = conn.execute("SELECT * FROM players WHERE id = ?", (cur.lastrowid,)).fetchone()
+            conn.execute("INSERT OR IGNORE INTO accounts (account_id) VALUES (?)", (account_id,))
+            if anchor_mmr is not None:
+                conn.execute(
+                    "INSERT INTO mmr_anchors (player_id, ts, mmr) VALUES (?, ?, ?)", (cur.lastrowid, anchor_ts, anchor_mmr)
+                )
+            row = conn.execute(f"{self._PLAYER_SELECT} WHERE p.id = ?", (cur.lastrowid,)).fetchone()
             return self._player_from_row(row)
 
     def nick_taken(self, chat_id: int, name: str) -> bool:
@@ -547,35 +435,87 @@ class Storage:
                 return player
         return None
 
+    def get_player_by_id(self, player_id: int) -> Optional[Player]:
+        with self._conn() as conn:
+            row = conn.execute(f"{self._PLAYER_SELECT} WHERE p.id = ?", (player_id,)).fetchone()
+        return self._player_from_row(row) if row else None
+
     def list_players(self, chat_id: int) -> list[Player]:
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM players WHERE chat_id = ? ORDER BY id", (chat_id,)
-            ).fetchall()
+            rows = conn.execute(f"{self._PLAYER_SELECT} WHERE p.chat_id = ? ORDER BY p.id", (chat_id,)).fetchall()
         return [self._player_from_row(r) for r in rows]
+
+    def user_chats(self, user_id: int) -> list[int]:
+        """Чаты, где Telegram-аккаунт привязан к игроку (/me), — по возрастанию ID."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT chat_id FROM players WHERE tg_user_id = ? ORDER BY chat_id", (user_id,)
+            ).fetchall()
+        return [r["chat_id"] for r in rows]
+
+    def chats_of_account(self, account_id: int) -> list[int]:
+        """Чаты (в т.ч. приостановленные), где отслеживается аккаунт."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT chat_id FROM players WHERE account_id = ? ORDER BY chat_id", (account_id,)
+            ).fetchall()
+        return [r["chat_id"] for r in rows]
+
+    @staticmethod
+    def _delete_player_rows(conn: sqlite3.Connection, player_id: int, account_id: int) -> None:
+        """Убрать игрока чата; историю и состояние аккаунта — только если его больше никто не отслеживает."""
+        Storage._delete_player_data(conn, player_id)
+        conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+        if conn.execute("SELECT 1 FROM players WHERE account_id = ? LIMIT 1", (account_id,)).fetchone() is None:
+            conn.execute("DELETE FROM matches WHERE account_id = ?", (account_id,))
+            conn.execute("DELETE FROM accounts WHERE account_id = ?", (account_id,))
+            conn.execute("DELETE FROM match_lineups WHERE match_id NOT IN (SELECT match_id FROM matches)")
+
+    # Таблицы с данными игрока чата (ключ player_id): чистятся вместе с игроком.
+    _PLAYER_TABLES = ("pending_notices", "mmr_anchors")
+
+    @staticmethod
+    def _delete_player_data(conn: sqlite3.Connection, player_id: int) -> None:
+        for table in Storage._PLAYER_TABLES:
+            conn.execute(f"DELETE FROM {table} WHERE player_id = ?", (player_id,))
 
     def remove_player(self, chat_id: int, key: str) -> bool:
         player = self.get_player(chat_id, key)
         if player is None:
             return False
         with self._conn() as conn:
-            conn.execute("DELETE FROM matches WHERE player_id = ?", (player.id,))
-            conn.execute("DELETE FROM players WHERE id = ?", (player.id,))
+            self._delete_player_rows(conn, player.id, player.account_id)
+        with self._matches_cache_lock:
+            if not self.chats_of_account(player.account_id):
+                self._matches_cache.pop(player.account_id, None)
         return True
 
     def set_player_anchor(self, player_id: int, anchor_mmr: int, anchor_ts: int) -> None:
+        """Задать MMR игрока на момент anchor_ts: запись добавляется в журнал правок, прежние остаются."""
         with self._conn() as conn:
+            if conn.execute("SELECT 1 FROM players WHERE id = ?", (player_id,)).fetchone() is None:
+                return
             conn.execute(
-                "UPDATE players SET anchor_mmr = ?, anchor_ts = ? WHERE id = ?",
+                "UPDATE players SET anchor_mmr = ?, anchor_ts = ?, rev = rev + 1 WHERE id = ?",
                 (anchor_mmr, anchor_ts, player_id),
             )
+            conn.execute("INSERT INTO mmr_anchors (player_id, ts, mmr) VALUES (?, ?, ?)", (player_id, anchor_ts, anchor_mmr))
+
+    def get_anchors(self, player_id: int) -> list[tuple[int, int]]:
+        """Журнал заданий MMR игрока по времени: [(когда, MMR)]. Пусто — MMR не задавали."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ts, mmr FROM mmr_anchors WHERE player_id = ? ORDER BY ts, id", (player_id,)
+            ).fetchall()
+        return [(r["ts"], r["mmr"]) for r in rows]
 
     def update_player_rank(
         self, player_id: int, rank_tier: Optional[int], leaderboard_rank: Optional[int], updated_ts: int
     ) -> None:
         with self._conn() as conn:
             conn.execute(
-                "UPDATE players SET last_rank_tier = ?, last_leaderboard_rank = ?, updated_ts = ? WHERE id = ?",
+                "UPDATE accounts SET last_rank_tier = ?, last_leaderboard_rank = ?, updated_ts = ? "
+                f"WHERE account_id = {self._ACCOUNT_OF}",
                 (rank_tier, leaderboard_rank, updated_ts, player_id),
             )
 
@@ -589,23 +529,28 @@ class Storage:
         """
         with self._conn() as conn:
             conn.execute(
-                "UPDATE players SET last_rank_tier = ?, last_leaderboard_rank = ?, profile_ts = ? WHERE id = ?",
+                "UPDATE accounts SET last_rank_tier = ?, last_leaderboard_rank = ?, profile_ts = ? "
+                f"WHERE account_id = {self._ACCOUNT_OF}",
                 (rank_tier, leaderboard_rank, profile_ts, player_id),
             )
             if fh_unavailable is not None:
                 conn.execute(
-                    "UPDATE players SET fh_unavailable = ? WHERE id = ?", (1 if fh_unavailable else 0, player_id)
+                    f"UPDATE accounts SET fh_unavailable = ? WHERE account_id = {self._ACCOUNT_OF}",
+                    (1 if fh_unavailable else 0, player_id),
                 )
 
     def touch_player(self, player_id: int, updated_ts: int, deep: bool = False) -> None:
-        """Отметить успешную сверку матчей (deep — сверяли глубоко, списком на 200 матчей)."""
+        """Отметить успешную сверку матчей аккаунта (deep — сверяли глубоко, списком на 200 матчей)."""
         with self._conn() as conn:
             if deep:
                 conn.execute(
-                    "UPDATE players SET updated_ts = ?, history_ts = ? WHERE id = ?", (updated_ts, updated_ts, player_id)
+                    f"UPDATE accounts SET updated_ts = ?, history_ts = ? WHERE account_id = {self._ACCOUNT_OF}",
+                    (updated_ts, updated_ts, player_id),
                 )
             else:
-                conn.execute("UPDATE players SET updated_ts = ? WHERE id = ?", (updated_ts, player_id))
+                conn.execute(
+                    f"UPDATE accounts SET updated_ts = ? WHERE account_id = {self._ACCOUNT_OF}", (updated_ts, player_id)
+                )
 
     # --- matches --------------------------------------------------------
 
@@ -616,87 +561,114 @@ class Storage:
     )
 
     def add_matches(self, player_id: int, matches: list[dict]) -> int:
-        """Вставить матчи; вернуть число новых.
+        """Вставить матчи аккаунта игрока; вернуть число новых.
 
         Уже сохранённый матч не перезаписывается, но его пустые поля (размер пати, средний ранг,
         длительность, GPM и т.п.) дозаполняются: в первой выдаче OpenDota они часто ещё null.
+        Новый матч ставится в очередь оповещения каждому чату, где отслеживается аккаунт.
         """
         if not matches:
             return 0
-        columns = ("player_id", "match_id", "start_time", "player_slot", "radiant_win", "lobby_type",
+        columns = ("account_id", "match_id", "start_time", "player_slot", "radiant_win", "lobby_type",
                    "kills", "deaths", "assists") + self._FILL_FIELDS
         fill = ", ".join(f"{f} = COALESCE({f}, excluded.{f})" for f in self._FILL_FIELDS)
         # Уже известный матч трогаем, только если пришло что-то новое для пустого поля: пустая запись не двигает data_ver.
         fills_something = " OR ".join(f"({f} IS NULL AND excluded.{f} IS NOT NULL)" for f in self._FILL_FIELDS)
-        rows = [
-            (
-                player_id,
-                m["match_id"],
-                m["start_time"],
-                m["player_slot"],
-                1 if m["radiant_win"] else 0,
-                m.get("lobby_type"),
-                m.get("kills", 0) or 0,
-                m.get("deaths", 0) or 0,
-                m.get("assists", 0) or 0,
-            ) + tuple(m.get(f) for f in self._FILL_FIELDS)
-            for m in matches
-        ]
-        count = "SELECT COUNT(*) FROM matches WHERE player_id = ?"
         with self._conn() as conn:
-            before = conn.execute(count, (player_id,)).fetchone()[0]
+            row = conn.execute("SELECT account_id FROM players WHERE id = ?", (player_id,)).fetchone()
+            if row is None:
+                return 0
+            account_id = row["account_id"]
+            known = {r[0] for r in conn.execute("SELECT match_id FROM matches WHERE account_id = ?", (account_id,))}
+            rows = [
+                (
+                    account_id,
+                    m["match_id"],
+                    m["start_time"],
+                    m["player_slot"],
+                    1 if m["radiant_win"] else 0,
+                    m.get("lobby_type"),
+                    m.get("kills", 0) or 0,
+                    m.get("deaths", 0) or 0,
+                    m.get("assists", 0) or 0,
+                ) + tuple(m.get(f) for f in self._FILL_FIELDS)
+                for m in matches
+            ]
             conn.executemany(
                 f"INSERT INTO matches ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))}) "
-                f"ON CONFLICT(player_id, match_id) DO UPDATE SET {fill} WHERE {fills_something}",
+                f"ON CONFLICT(account_id, match_id) DO UPDATE SET {fill} WHERE {fills_something}",
                 rows,
             )
-            return conn.execute(count, (player_id,)).fetchone()[0] - before
+            new_ids = sorted({m["match_id"] for m in matches} - known)
+            self._save_lineups(conn, [(m["match_id"], m["lineup"]) for m in matches if m.get("lineup")])
+            if new_ids:
+                watchers = [r[0] for r in conn.execute("SELECT id FROM players WHERE account_id = ?", (account_id,))]
+                conn.executemany(
+                    "INSERT OR IGNORE INTO pending_notices (player_id, match_id) VALUES (?, ?)",
+                    [(watcher, match_id) for watcher in watchers for match_id in new_ids],
+                )
+            return len(new_ids)
 
     def has_matches(self, player_id: int) -> bool:
         with self._conn() as conn:
-            return conn.execute("SELECT 1 FROM matches WHERE player_id = ? LIMIT 1", (player_id,)).fetchone() is not None
+            return conn.execute(
+                f"SELECT 1 FROM matches WHERE account_id = {self._ACCOUNT_OF} LIMIT 1", (player_id,)
+            ).fetchone() is not None
 
     def latest_match_time(self, player_id: int) -> Optional[int]:
         """start_time самого свежего сохранённого матча игрока (None — матчей нет)."""
         with self._conn() as conn:
-            return conn.execute("SELECT MAX(start_time) FROM matches WHERE player_id = ?", (player_id,)).fetchone()[0]
+            return conn.execute(
+                f"SELECT MAX(start_time) FROM matches WHERE account_id = {self._ACCOUNT_OF}", (player_id,)
+            ).fetchone()[0]
 
     def last_activity(self, chat_id: int) -> Optional[int]:
         """Время окончания самого свежего матча среди игроков чата (None — матчей нет)."""
         with self._conn() as conn:
             return conn.execute(
                 "SELECT MAX(m.start_time + COALESCE(m.duration, 0)) FROM matches m "
-                "JOIN players p ON p.id = m.player_id WHERE p.chat_id = ?",
+                "JOIN players p ON p.account_id = m.account_id WHERE p.chat_id = ?",
                 (chat_id,),
             ).fetchone()[0]
 
     def data_version(self, chat_id: int) -> tuple:
-        """Отпечаток данных чата (число матчей, самый свежий): меняется, когда приходят новые игры."""
+        """Отпечаток данных чата (число матчей, самый свежий, ревизия): меняется, когда приходят новые игры или
+        правятся данные игроков — заданный MMR, пометки матчей (дабл-даун), дозаполненные поля."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*), MAX(m.start_time) FROM matches m "
-                "JOIN players p ON p.id = m.player_id WHERE p.chat_id = ?",
+                "JOIN players p ON p.account_id = m.account_id WHERE p.chat_id = ?",
                 (chat_id,),
             ).fetchone()
-        return (row[0], row[1])
+            rev = conn.execute(
+                "SELECT COALESCE(SUM(p.rev + a.data_ver), 0) FROM players p JOIN accounts a ON a.account_id = p.account_id "
+                "WHERE p.chat_id = ?", (chat_id,),
+            ).fetchone()[0]
+        return (row[0], row[1], rev)
 
     def get_latest_match(self, player_ids: list[int], match_id: Optional[int] = None) -> Optional[dict]:
-        """Самый свежий матч среди игроков (или конкретный match_id) одним запросом, без выгрузки истории."""
+        """Самый свежий матч среди игроков (или конкретный match_id) одним запросом, без выгрузки истории.
+
+        В строке, кроме полей матча, — player_id: чей это матч из перечисленных игроков.
+        """
         if not player_ids:
             return None
-        query = f"SELECT * FROM matches WHERE player_id IN ({', '.join('?' * len(player_ids))})"
+        query = (
+            "SELECT m.*, p.id AS player_id FROM matches m JOIN players p ON p.account_id = m.account_id "
+            f"WHERE p.id IN ({', '.join('?' * len(player_ids))})"
+        )
         params: list = list(player_ids)
         if match_id is not None:
-            query += " AND match_id = ?"
+            query += " AND m.match_id = ?"
             params.append(match_id)
-        query += " ORDER BY start_time DESC, player_id LIMIT 1"
+        query += " ORDER BY m.start_time DESC, p.id LIMIT 1"
         with self._conn() as conn:
             row = conn.execute(query, params).fetchone()
         return dict(row) if row else None
 
     _DETAIL_FIELDS = (
         "gpm", "xpm", "last_hits", "denies", "hero_damage",
-        "tower_damage", "hero_healing", "net_worth", "level", "leaver_status",
+        "tower_damage", "hero_healing", "net_worth", "level", "leaver_status", "wards", "stacks", "lane_result",
     )
 
     def update_match_details(self, player_id: int, match_id: int, details: dict, perf_score) -> None:
@@ -710,9 +682,10 @@ class Storage:
         params = [details.get(field) for field in fields]
         params += [perf_score, bench_json, player_id, match_id]
         with self._conn() as conn:
+            self._save_lineups(conn, [(match_id, details.get("lineup"))])
             conn.execute(
                 f"UPDATE matches SET {assignments}, perf_score = ?, bench_json = ?, enriched = 1 "
-                "WHERE player_id = ? AND match_id = ?",
+                f"WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
                 params,
             )
 
@@ -723,9 +696,10 @@ class Storage:
         params += [info.get(f) for f in self._DETAIL_FIELDS + ("party_size",)]
         params += [player_id, match_id]
         with self._conn() as conn:
+            self._save_lineups(conn, [(match_id, info.get("lineup"))])
             conn.execute(
                 f"UPDATE matches SET position = ?, role = ?, lane = ?, imp = ?, stratz_done = 1, {fill} "
-                "WHERE player_id = ? AND match_id = ?",
+                f"WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
                 params,
             )
 
@@ -743,7 +717,8 @@ class Storage:
         params: list = [player_id, max_tries] + ([] if now is None else [now]) + [since_ts, limit]
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT match_id FROM matches WHERE player_id = ? AND (stratz_done = 0 OR party_size IS NULL) "
+                f"SELECT match_id FROM matches WHERE account_id = {self._ACCOUNT_OF} "
+                "AND (stratz_done = 0 OR party_size IS NULL) "
                 f"AND stratz_tries < ? {due}AND start_time >= ? ORDER BY start_time DESC LIMIT ?",
                 params,
             ).fetchall()
@@ -754,7 +729,8 @@ class Storage:
         with self._conn() as conn:
             for mid in match_ids:
                 row = conn.execute(
-                    "SELECT stratz_tries FROM matches WHERE player_id = ? AND match_id = ?", (player_id, mid)
+                    f"SELECT stratz_tries FROM matches WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
+                    (player_id, mid),
                 ).fetchone()
                 if row is None:
                     continue
@@ -762,7 +738,7 @@ class Storage:
                 delay = self.STRATZ_BACKOFF[min(tries, len(self.STRATZ_BACKOFF) - 1)]
                 conn.execute(
                     "UPDATE matches SET stratz_tries = stratz_tries + 1, stratz_next_ts = ? "
-                    "WHERE player_id = ? AND match_id = ?",
+                    f"WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
                     (now + delay, player_id, mid),
                 )
 
@@ -772,7 +748,7 @@ class Storage:
         """match_id матчей без обогащения (свежие первыми); после max_tries пустых ответов — сдаёмся."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT match_id FROM matches WHERE player_id = ? AND enriched = 0 "
+                f"SELECT match_id FROM matches WHERE account_id = {self._ACCOUNT_OF} AND enriched = 0 "
                 "AND enrich_tries < ? AND start_time >= ? ORDER BY start_time DESC LIMIT ?",
                 (player_id, max_tries, since_ts, limit),
             ).fetchall()
@@ -785,7 +761,8 @@ class Storage:
         marks = ",".join("?" * len(match_ids))
         with self._conn() as conn:
             rows = conn.execute(
-                f"SELECT match_id, player_slot, hero_id FROM matches WHERE player_id = ? AND match_id IN ({marks})",
+                f"SELECT match_id, player_slot, hero_id FROM matches WHERE account_id = {self._ACCOUNT_OF} "
+                f"AND match_id IN ({marks})",
                 [player_id, *match_ids],
             ).fetchall()
         return {r["match_id"]: (r["player_slot"] < 128, r["hero_id"]) for r in rows}
@@ -793,14 +770,49 @@ class Storage:
     def get_match_slot(self, player_id: int, match_id: int) -> Optional[int]:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT player_slot FROM matches WHERE player_id = ? AND match_id = ?", (player_id, match_id)
+                f"SELECT player_slot FROM matches WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
+                (player_id, match_id),
             ).fetchone()
         return None if row is None else row["player_slot"]
 
+    def set_double_down(self, player_id: int, match_id: int, enabled: Optional[bool] = None) -> Optional[bool]:
+        """Пометить матч игрока как сыгранный с дабл-дауном (±2 шага MMR). enabled=None — переключить.
+
+        Вернуть новое состояние; None — такого матча у игрока нет. Пометка — факт о матче аккаунта:
+        она общая для всех чатов, где аккаунт отслеживается.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT double_down FROM matches WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
+                (player_id, match_id),
+            ).fetchone()
+            if row is None:
+                return None
+            value = (not row["double_down"]) if enabled is None else bool(enabled)
+            if bool(row["double_down"]) != value:
+                conn.execute(
+                    f"UPDATE matches SET double_down = ? WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
+                    (1 if value else 0, player_id, match_id),
+                )
+            return value
+
+    def get_match(self, player_id: int, match_id: int) -> Optional[dict]:
+        """Строка матча игрока (None — нет такого)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT * FROM matches WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?", (player_id, match_id)
+            ).fetchone()
+        return dict(row) if row else None
+
+    # Матчи аккаунтов, которые отслеживает хотя бы один активный чат (аккаунт в двух чатах считается один раз).
+    _ACTIVE_MATCHES = (
+        "FROM matches m WHERE EXISTS (SELECT 1 FROM players p JOIN chats c ON c.chat_id = p.chat_id "
+        "WHERE p.account_id = m.account_id AND c.active = 1) AND "
+    )
+
     def backlog_counts(self, enrich_since: int, enrich_max_tries: int = 3, stratz_max_tries: int = 8) -> dict:
-        """Размер очередей фоновой догрузки по игрокам активных чатов: детали матчей (OpenDota) и данные Stratz."""
-        base = ("FROM matches m JOIN players p ON p.id = m.player_id JOIN chats c ON c.chat_id = p.chat_id "
-                "WHERE c.active = 1 AND ")
+        """Размер очередей фоновой догрузки по аккаунтам активных чатов: детали матчей (OpenDota) и данные Stratz."""
+        base = self._ACTIVE_MATCHES
         with self._conn() as conn:
             details = conn.execute(
                 f"SELECT COUNT(*) {base}m.enriched = 0 AND m.enrich_tries < ? AND m.start_time >= ?",
@@ -816,7 +828,8 @@ class Storage:
         """updated_ts (последняя успешная сверка матчей) всех игроков активных чатов; None — ещё не обновлялся."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT p.updated_ts FROM players p JOIN chats c ON c.chat_id = p.chat_id WHERE c.active = 1"
+                "SELECT a.updated_ts FROM players p JOIN chats c ON c.chat_id = p.chat_id "
+                "JOIN accounts a ON a.account_id = p.account_id WHERE c.active = 1"
             ).fetchall()
         return [r["updated_ts"] for r in rows]
 
@@ -824,30 +837,83 @@ class Storage:
         """OpenDota не отдал детали матча — копим попытки, чтобы он не блокировал очередь."""
         with self._conn() as conn:
             conn.execute(
-                "UPDATE matches SET enrich_tries = enrich_tries + 1 WHERE player_id = ? AND match_id = ?",
+                f"UPDATE matches SET enrich_tries = enrich_tries + 1 WHERE account_id = {self._ACCOUNT_OF} "
+                "AND match_id = ?",
                 (player_id, match_id),
             )
 
-    def get_unnotified_matches(self, player_id: int, since_ts: int) -> list[dict]:
-        """Матчи, о которых ещё не оповещали и которые закончились не раньше since_ts (кандидаты на оповещение).
+    # --- составы команд ------------------------------------------------------------
 
-    Возраст считаем от конца матча: длинная игра при задержке OpenDota иначе молча выпадала из окна.
-    """
+    @staticmethod
+    def _save_lineups(conn: sqlite3.Connection, lineups: list) -> None:
+        """Сохранить составы: [(match_id, (герои света, герои тьмы))]. Более полный состав заменяет неполный."""
+        rows = []
+        for match_id, lineup in lineups:
+            if not lineup:
+                continue
+            radiant = [int(h) for h in lineup[0] if h]
+            dire = [int(h) for h in lineup[1] if h]
+            if radiant and dire:
+                rows.append((match_id, ",".join(map(str, radiant)), ",".join(map(str, dire))))
+        if rows:
+            conn.executemany(
+                "INSERT INTO match_lineups (match_id, radiant, dire) VALUES (?, ?, ?) "
+                "ON CONFLICT(match_id) DO UPDATE SET radiant = excluded.radiant, dire = excluded.dire "
+                "WHERE length(excluded.radiant) + length(excluded.dire) > length(radiant) + length(dire)",
+                rows,
+            )
+
+    def get_lineups(self, player_id: int, since_ts: Optional[int] = None) -> dict[int, tuple[tuple, tuple]]:
+        """Составы матчей игрока: {match_id: (герои света, герои тьмы)}; матчей без известного состава в ответе нет."""
+        query = (
+            "SELECT l.match_id, l.radiant, l.dire FROM match_lineups l JOIN matches m ON m.match_id = l.match_id "
+            f"WHERE m.account_id = {self._ACCOUNT_OF}"
+        )
+        params: list = [player_id]
+        if since_ts is not None:
+            query += " AND m.start_time >= ?"
+            params.append(since_ts)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return {
+            r["match_id"]: (tuple(int(h) for h in r["radiant"].split(",")), tuple(int(h) for h in r["dire"].split(",")))
+            for r in rows
+        }
+
+    def lineups_synced_ts(self, player_id: int) -> Optional[int]:
+        """Когда история аккаунта перечитана вместе с составами (из БД: объект игрока в руках вызывающего мог устареть)."""
+        with self._conn() as conn:
+            row = conn.execute(f"SELECT lineups_ts FROM accounts WHERE account_id = {self._ACCOUNT_OF}", (player_id,)).fetchone()
+        return row["lineups_ts"] if row else None
+
+    def mark_lineups_synced(self, player_id: int, ts: int) -> None:
+        """История аккаунта целиком перечитана вместе с составами — повторять полную выгрузку не нужно."""
+        with self._conn() as conn:
+            conn.execute(f"UPDATE accounts SET lineups_ts = ? WHERE account_id = {self._ACCOUNT_OF}", (ts, player_id))
+
+    # --- оповещения о матчах: очередь «игрок чата × матч» ----------------------
+
+    def get_unnotified_matches(self, player_id: int, since_ts: int) -> list[dict]:
+        """Матчи, о которых чату игрока ещё не сообщали и которые закончились не раньше since_ts.
+
+        Возраст считаем от конца матча: длинная игра при задержке OpenDota иначе молча выпадала из окна.
+        """
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM matches WHERE player_id = ? AND notified = 0 "
-                "AND start_time + COALESCE(duration, 0) >= ? ORDER BY start_time",
+                "SELECT m.* FROM pending_notices n JOIN players p ON p.id = n.player_id "
+                "JOIN matches m ON m.account_id = p.account_id AND m.match_id = n.match_id "
+                "WHERE n.player_id = ? AND m.start_time + COALESCE(m.duration, 0) >= ? ORDER BY m.start_time",
                 (player_id, since_ts),
             ).fetchall()
         return [dict(r) for r in rows]
 
     def mark_notified(self, player_id: int, keep: Optional[list[int]] = None) -> None:
-        """Пометить матчи игрока оповещёнными (в т.ч. старые — их не объявляем).
+        """Снять с очереди оповещения матчи игрока (в т.ч. старые — их не объявляем).
 
-        keep — match_id, которые остаются неоповещёнными: о них ещё предстоит сообщить
-        (помечаются через mark_notified_matches после успешной отправки).
+        keep — match_id, которые остаются в очереди: о них ещё предстоит сообщить
+        (снимаются через mark_notified_matches после успешной отправки).
         """
-        query = "UPDATE matches SET notified = 1 WHERE player_id = ? AND notified = 0"
+        query = "DELETE FROM pending_notices WHERE player_id = ?"
         params: list = [player_id]
         if keep:
             query += f" AND match_id NOT IN ({', '.join('?' * len(keep))})"
@@ -856,21 +922,22 @@ class Storage:
             conn.execute(query, params)
 
     def mark_notified_matches(self, pairs: list[tuple[int, int]]) -> None:
-        """Пометить оповещёнными конкретные матчи: [(player_id, match_id)]."""
+        """Снять с очереди оповещения конкретные матчи: [(player_id, match_id)]."""
         if not pairs:
             return
         with self._conn() as conn:
-            conn.executemany("UPDATE matches SET notified = 1 WHERE player_id = ? AND match_id = ?", pairs)
+            conn.executemany("DELETE FROM pending_notices WHERE player_id = ? AND match_id = ?", pairs)
 
     def announced_match_ids(self, chat_id: int, match_ids: list[int]) -> set[int]:
-        """Какие из match_ids уже объявлены в чате — по строке любого его игрока."""
+        """Какие из match_ids уже объявлены в чате: матч есть у кого-то из его игроков и в очереди у того не стоит."""
         if not match_ids:
             return set()
         marks = ", ".join("?" * len(match_ids))
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT m.match_id FROM matches m JOIN players p ON p.id = m.player_id "
-                f"WHERE p.chat_id = ? AND m.notified = 1 AND m.match_id IN ({marks})",
+                "SELECT DISTINCT m.match_id FROM matches m JOIN players p ON p.account_id = m.account_id "
+                f"WHERE p.chat_id = ? AND m.match_id IN ({marks}) AND NOT EXISTS "
+                "(SELECT 1 FROM pending_notices n WHERE n.player_id = p.id AND n.match_id = m.match_id)",
                 [chat_id, *match_ids],
             ).fetchall()
         return {r["match_id"] for r in rows}
@@ -893,23 +960,170 @@ class Storage:
                 [(chat_id, period, key, leader) for key, leader in leaders.items()],
             )
 
-    def player_data_ver(self, player_id: int) -> int:
-        """Версия данных игрока (растёт при любом изменении его матчей); 0 — игрока нет."""
+    # --- сезоны соревнования ------------------------------------------------------
+
+    @staticmethod
+    def _season_from_row(row: sqlite3.Row) -> Season:
+        return Season(
+            id=row["id"], chat_id=row["chat_id"], number=row["number"], start_ts=row["start_ts"],
+            length_days=row["length_days"], planned_end_ts=row["planned_end_ts"], end_ts=row["end_ts"],
+            champion=row["champion"], table=json.loads(row["table_json"] or "[]"), renew=bool(row["renew"]),
+        )
+
+    @staticmethod
+    def _insert_season(conn: sqlite3.Connection, chat_id: int, start_ts: int, length_days: int, renew: bool) -> Season:
+        number = (conn.execute("SELECT MAX(number) FROM seasons WHERE chat_id = ?", (chat_id,)).fetchone()[0] or 0) + 1
+        cursor = conn.execute(
+            "INSERT INTO seasons (chat_id, number, start_ts, length_days, planned_end_ts, renew) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, number, start_ts, length_days, start_ts + length_days * 86_400, 1 if renew else 0),
+        )
+        return Storage._season_from_row(conn.execute("SELECT * FROM seasons WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+    def start_season(self, chat_id: int, now: int, length_days: int, renew: bool = True) -> Optional[Season]:
+        """Начать сезон. None — в чате уже идёт сезон (он один)."""
         with self._conn() as conn:
-            row = conn.execute("SELECT data_ver FROM players WHERE id = ?", (player_id,)).fetchone()
-        return row[0] if row else 0
+            if conn.execute("SELECT 1 FROM seasons WHERE chat_id = ? AND end_ts IS NULL", (chat_id,)).fetchone():
+                return None
+            return self._insert_season(conn, chat_id, now, length_days, renew)
+
+    def current_season(self, chat_id: int) -> Optional[Season]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM seasons WHERE chat_id = ? AND end_ts IS NULL", (chat_id,)).fetchone()
+        return self._season_from_row(row) if row else None
+
+    def finish_season(
+        self, season_id: int, end_ts: int, champion: Optional[str], table: list, renew: bool,
+    ) -> tuple[bool, Optional[Season]]:
+        """Закрыть сезон с итогами и (renew) сразу начать такой же следующий. → (закрыт ли, следующий сезон).
+
+        Закрывается один раз: повторный вызов для уже закрытого сезона ничего не меняет — (False, None).
+        """
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM seasons WHERE id = ?", (season_id,)).fetchone()
+            updated = conn.execute(
+                "UPDATE seasons SET end_ts = ?, champion = ?, table_json = ? WHERE id = ? AND end_ts IS NULL",
+                (end_ts, champion, json.dumps(table, ensure_ascii=False), season_id),
+            ).rowcount
+            if not updated:
+                return False, None
+            nxt = self._insert_season(conn, row["chat_id"], end_ts, row["length_days"], bool(row["renew"])) if renew else None
+        return True, nxt
+
+    def list_seasons(self, chat_id: int) -> list[Season]:
+        """Завершённые сезоны чата по возрастанию номера."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM seasons WHERE chat_id = ? AND end_ts IS NOT NULL ORDER BY number", (chat_id,)
+            ).fetchall()
+        return [self._season_from_row(r) for r in rows]
+
+    def due_seasons(self, now: int) -> list[Season]:
+        """Идущие сезоны, которым пора закончиться (чаты, откуда бота убрали, не трогаем)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT s.* FROM seasons s JOIN chats c ON c.chat_id = s.chat_id "
+                "WHERE s.end_ts IS NULL AND s.planned_end_ts <= ? AND c.active = 1 ORDER BY s.id", (now,)
+            ).fetchall()
+        return [self._season_from_row(r) for r in rows]
+
+    # --- сбор пати --------------------------------------------------------------
+
+    GATHER_KEEP_SEC = 7 * 86_400  # старые сборы и ответы удаляем при создании нового
+
+    @staticmethod
+    def _gather_from_row(row: sqlite3.Row) -> Gather:
+        return Gather(
+            id=row["id"], chat_id=row["chat_id"], message_id=row["message_id"], created_ts=row["created_ts"],
+            by_user=row["by_user"], by_name=row["by_name"], note=row["note"], closed=bool(row["closed"]),
+        )
+
+    def create_gather(self, chat_id: int, now: int, by_user: Optional[int], by_name: Optional[str],
+                      note: Optional[str]) -> Gather:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM gather_calls WHERE created_ts < ?", (now - self.GATHER_KEEP_SEC,))
+            conn.execute("DELETE FROM gather_votes WHERE call_id NOT IN (SELECT id FROM gather_calls)")
+            cursor = conn.execute(
+                "INSERT INTO gather_calls (chat_id, created_ts, by_user, by_name, note) VALUES (?, ?, ?, ?, ?)",
+                (chat_id, now, by_user, by_name, note),
+            )
+            row = conn.execute("SELECT * FROM gather_calls WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        return self._gather_from_row(row)
+
+    def get_gather(self, call_id: int) -> Optional[Gather]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM gather_calls WHERE id = ?", (call_id,)).fetchone()
+        return self._gather_from_row(row) if row else None
+
+    def current_gather(self, chat_id: int) -> Optional[Gather]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM gather_calls WHERE chat_id = ? AND closed = 0 ORDER BY id DESC LIMIT 1", (chat_id,)
+            ).fetchone()
+        return self._gather_from_row(row) if row else None
+
+    def set_gather_message(self, call_id: int, message_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE gather_calls SET message_id = ? WHERE id = ?", (message_id, call_id))
+
+    def close_gather(self, call_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE gather_calls SET closed = 1 WHERE id = ?", (call_id,))
+
+    def close_gathers(self, chat_id: int) -> list[Gather]:
+        """Закрыть все открытые сборы чата → они же (нужен message_id, чтобы убрать кнопки)."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM gather_calls WHERE chat_id = ? AND closed = 0", (chat_id,)).fetchall()
+            conn.execute("UPDATE gather_calls SET closed = 1 WHERE chat_id = ? AND closed = 0", (chat_id,))
+        return [self._gather_from_row(r) for r in rows]
+
+    def vote_gather(self, call_id: int, user_id: int, name: str, choice: str, now: int) -> Optional[str]:
+        """Ответ участника: тот же ответ повторно снимает голос (→ None), другой — меняет. → итоговый ответ."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT choice FROM gather_votes WHERE call_id = ? AND user_id = ?", (call_id, user_id)
+            ).fetchone()
+            if row is not None and row["choice"] == choice:
+                conn.execute("DELETE FROM gather_votes WHERE call_id = ? AND user_id = ?", (call_id, user_id))
+                return None
+            conn.execute(
+                "INSERT INTO gather_votes (call_id, user_id, name, choice, ts) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(call_id, user_id) DO UPDATE SET name = excluded.name, choice = excluded.choice, ts = excluded.ts",
+                (call_id, user_id, name, choice, now),
+            )
+        return choice
+
+    def gather_votes(self, call_id: int) -> list[dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT user_id, name, choice, ts FROM gather_votes WHERE call_id = ? ORDER BY ts, user_id", (call_id,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- история матчей: кэш в памяти по аккаунту ------------------------------
+
+    # Аккаунт игрока, версия его матчей и версия собственных данных игрока чата (MMR, пометки матчей).
+    _VERSION_OF = (
+        "SELECT a.account_id, a.data_ver, p.rev FROM players p JOIN accounts a ON a.account_id = p.account_id "
+        "WHERE p.id = ?"
+    )
+
+    def player_data_ver(self, player_id: int) -> int:
+        """Версия данных игрока: растёт при любом изменении матчей его аккаунта и его данных в чате; 0 — игрока нет."""
+        with self._conn() as conn:
+            row = conn.execute(self._VERSION_OF, (player_id,)).fetchone()
+        return row["data_ver"] + row["rev"] if row else 0
 
     def _warm_matches(self, player_id: int, since_ts: Optional[int]) -> Optional[list[dict]]:
         """Матчи из кэша, если он тёплый и актуален; иначе None (тогда дешевле лёгкий запрос, чем грузить всю историю)."""
         with self._conn() as conn:
-            row = conn.execute("SELECT data_ver FROM players WHERE id = ?", (player_id,)).fetchone()
+            row = conn.execute(self._VERSION_OF, (player_id,)).fetchone()
         if row is None:
             return []
         with self._matches_cache_lock:
-            cached = self._matches_cache.get(player_id)
-            if cached is None or cached[0] != row[0]:
+            cached = self._matches_cache.get(row["account_id"])
+            if cached is None or cached[0] != row["data_ver"]:
                 return None
-            self._matches_cache.move_to_end(player_id)
+            self._matches_cache.move_to_end(row["account_id"])
         _, rows, starts = cached
         return rows if since_ts is None else rows[bisect_left(starts, since_ts):]
 
@@ -917,7 +1131,7 @@ class Storage:
         warm = self._warm_matches(player_id, since_ts)
         if warm is not None:
             return [{c: m[c] for c in columns} for m in warm]
-        query = f"SELECT {', '.join(columns)} FROM matches WHERE player_id = ?"
+        query = f"SELECT {', '.join(columns)} FROM matches WHERE account_id = {self._ACCOUNT_OF}"
         params: list = [player_id]
         if since_ts is not None:
             query += " AND start_time >= ?"
@@ -928,8 +1142,9 @@ class Storage:
         return [dict(r) for r in rows]
 
     def get_outcomes(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
-        """Лёгкая выборка исходов (время/слот/победа) — для графиков: из тёплого кэша матчей, иначе узким запросом."""
-        return self._light_matches(player_id, ("start_time", "player_slot", "radiant_win"), since_ts)
+        """Лёгкая выборка исходов (время/длительность/слот/победа) — для графиков: из тёплого кэша матчей, иначе узким запросом."""
+        return self._light_matches(
+            player_id, ("start_time", "player_slot", "radiant_win", "duration", "double_down"), since_ts)
 
     def get_match_sides(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
         """Лёгкая выборка для совместных игр: id матча, сторона, исход и размер пати."""
@@ -937,34 +1152,35 @@ class Storage:
             player_id, ("match_id", "start_time", "player_slot", "radiant_win", "party_size"), since_ts)
 
     def get_matches(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
-        """Ранкед-история игрока по времени. Строки берутся из кэша, пока players.data_ver не изменился.
+        """Ранкед-история аккаунта игрока по времени. Строки берутся из кэша, пока accounts.data_ver не изменился.
 
-        Словари общие с кэшем — их нельзя менять; список — копия, его можно резать и сортировать.
+        Кэш общий для всех чатов, где отслеживается аккаунт. Словари общие с кэшем — их нельзя менять;
+        список — копия, его можно резать и сортировать.
         """
         with self._conn() as conn:
-            row = conn.execute("SELECT data_ver FROM players WHERE id = ?", (player_id,)).fetchone()
+            row = conn.execute(self._VERSION_OF, (player_id,)).fetchone()
             if row is None:
                 return []
-            version = row[0]  # версию читаем до строк: гонка с записью даст лишь лишнюю перезагрузку
+            account_id, version = row["account_id"], row["data_ver"]  # версию читаем до строк: гонка даст лишь перезагрузку
             with self._matches_cache_lock:
-                cached = self._matches_cache.get(player_id)
+                cached = self._matches_cache.get(account_id)
                 if cached is not None and cached[0] == version:
-                    self._matches_cache.move_to_end(player_id)
+                    self._matches_cache.move_to_end(account_id)
                 else:
                     cached = None
             if cached is None:
                 rows = [dict(r) for r in conn.execute(
-                    "SELECT * FROM matches WHERE player_id = ? ORDER BY start_time", (player_id,)
+                    "SELECT * FROM matches WHERE account_id = ? ORDER BY start_time", (account_id,)
                 ).fetchall()]
                 cached = (version, rows, [r["start_time"] for r in rows])
-                self._remember_matches(player_id, cached)
+                self._remember_matches(account_id, cached)
         _, rows, starts = cached
         return list(rows) if since_ts is None else rows[bisect_left(starts, since_ts):]
 
-    def _remember_matches(self, player_id: int, entry: tuple) -> None:
+    def _remember_matches(self, account_id: int, entry: tuple) -> None:
         with self._matches_cache_lock:
-            self._matches_cache[player_id] = entry
-            self._matches_cache.move_to_end(player_id)
+            self._matches_cache[account_id] = entry
+            self._matches_cache.move_to_end(account_id)
             total = sum(len(v[1]) for v in self._matches_cache.values())
             while total > self.MATCH_CACHE_ROWS and len(self._matches_cache) > 1:
                 _, dropped = self._matches_cache.popitem(last=False)

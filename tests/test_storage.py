@@ -347,13 +347,19 @@ def test_has_matches_latest_and_data_version(store):
     a = store.add_player(100, 1, "A", None, 0, 0)
     b = store.add_player(100, 2, "B", None, 0, 0)
     assert store.has_matches(a.id) is False and store.latest_match_time(a.id) is None
-    assert store.data_version(100) == (0, None) and store.last_activity(100) is None
+    assert store.data_version(100) == (0, None, 0) and store.last_activity(100) is None
     store.add_matches(a.id, [match(1, 100), {**match(2, 300), "duration": 60}])
     store.add_matches(b.id, [match(3, 200)])
     assert store.has_matches(a.id) and store.latest_match_time(a.id) == 300
-    assert store.data_version(100) == (3, 300)
+    version = store.data_version(100)
+    assert version[:2] == (3, 300)
+    store.set_player_anchor(a.id, 5000, 10)                       # правка MMR тоже меняет отпечаток (график перерисуется)
+    after_mmr = store.data_version(100)
+    assert after_mmr[:2] == (3, 300) and after_mmr != version
+    store.set_double_down(a.id, 1, True)                          # и пометка дабл-дауна
+    assert store.data_version(100) not in (version, after_mmr)
     assert store.last_activity(100) == 360
-    assert store.data_version(999) == (0, None)                   # чужой чат не влияет
+    assert store.data_version(999) == (0, None, 0)                 # чужой чат не влияет
 
 
 def test_get_latest_match_across_players_and_by_id(store):
@@ -369,15 +375,10 @@ def test_get_latest_match_across_players_and_by_id(store):
 
 
 def test_migration_adds_new_player_columns(tmp_path):
-    import sqlite3
+    from tests.legacy_db import make_v0
     path = str(tmp_path / "old.db")
-    Storage(path)
-    conn = sqlite3.connect(path)
-    conn.execute("ALTER TABLE players DROP COLUMN profile_ts")
-    conn.execute("ALTER TABLE players DROP COLUMN history_ts")
-    conn.commit()
-    conn.close()
-    st = Storage(path)                                             # старая БД — колонки добавятся
+    make_v0(path).close()                                          # старая БД: profile_ts и history_ts ещё нет
+    st = Storage(path)                                             # колонки добавятся
     p = st.add_player(100, 1, "A", None, 0, 0)
     st.set_player_rank(p.id, 63, None, 500)
     st.touch_player(p.id, 700, deep=True)
