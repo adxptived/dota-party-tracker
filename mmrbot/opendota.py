@@ -474,6 +474,9 @@ class OpenDota:
         result.update(_player_build(player))
         result["party_size"] = _party_size(players, player)
         result["lineup"] = lineup_of(players)
+        # Стаки есть только в разобранном матче (version): в неразобранном OpenDota отдаёт пустой счётчик, и нулём
+        # его считать нельзя — «0 стаков» вытеснило бы настоящее значение.
+        result["stacks"] = player.get("camps_stacked") if match.get("version") else None
         # average_rank из OpenDota врёт на высоких лобби (Immortal-лобби → Divine 5), считаем сами по игрокам.
         result["average_rank"] = average_rank_tier([p.get("rank_tier") for p in players])
         benchmarks = {}

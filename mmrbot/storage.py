@@ -629,7 +629,7 @@ class Storage:
 
     _DETAIL_FIELDS = (
         "gpm", "xpm", "last_hits", "denies", "hero_damage",
-        "tower_damage", "hero_healing", "net_worth", "level", "leaver_status",
+        "tower_damage", "hero_healing", "net_worth", "level", "leaver_status", "wards", "stacks", "lane_result",
     )
 
     def update_match_details(self, player_id: int, match_id: int, details: dict, perf_score) -> None:

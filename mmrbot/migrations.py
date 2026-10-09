@@ -415,6 +415,23 @@ def _m008_match_lineups(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE accounts ADD COLUMN lineups_ts INTEGER")
 
 
+# --- 9: лейнинг и вижн --------------------------------------------------------------------------------------------
+
+def _m009_lanes_and_wards(conn: sqlite3.Connection) -> None:
+    """Исход линии игрока (−2…+2), число вардов и стаков по матчу — для номинаций саппортов.
+
+    Матчи, которые Stratz уже отдавал без этих полей, ставим в очередь повторно: свежие за три месяца (старше
+    история не нужна номинациям, а запросы к Stratz ограничены).
+    """
+    conn.execute("ALTER TABLE matches ADD COLUMN lane_result INTEGER")
+    conn.execute("ALTER TABLE matches ADD COLUMN wards INTEGER")
+    conn.execute("ALTER TABLE matches ADD COLUMN stacks INTEGER")
+    conn.execute(
+        "UPDATE matches SET stratz_done = 0, stratz_tries = 0, stratz_next_ts = 0 "
+        "WHERE stratz_done = 1 AND start_time >= CAST(strftime('%s', 'now') AS INTEGER) - 90 * 86400"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -424,6 +441,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (6, _m006_mmr_anchors),
     (7, _m007_double_down),
     (8, _m008_match_lineups),
+    (9, _m009_lanes_and_wards),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

@@ -104,6 +104,27 @@ def compute_standings(
     assists = averages("assists")
     add("assists", "🤝", "Больше всего ассистов", assists, lambda n: f"{assists[n]:.1f} ассистов/игра")
 
+    # Саппортам GPM и урон не светят — для них вижн, стаки и линия. Данные приходят из Stratz/OpenDota не по всем
+    # матчам, поэтому в сравнении только те, у кого их хотя бы в двух играх: «30 вардов в среднем» по одной игре не показатель.
+    samples = min(2, min_games)
+
+    def sampled(field: str, known=lambda v: True) -> dict[str, list]:
+        result = {}
+        for n, ms in regular.items():
+            values = [m[field] for m in ms if m.get(field) is not None and known(m[field])]
+            if len(values) >= samples:
+                result[n] = values
+        return result
+
+    wards = {n: sum(v) / len(v) for n, v in sampled("wards").items()}
+    add("wards", "👁️", "Лучший вижн", wards, lambda n: f"{wards[n]:.1f} вардов/игра", floor=1)
+    stacks = {n: sum(v) / len(v) for n, v in sampled("stacks").items()}
+    add("stacks", "🏕️", "Мастер стаков", stacks, lambda n: f"{stacks[n]:.1f} стаков/игра", floor=0.5)
+    lanes = sampled("lane_result")
+    lane_share = {n: sum(1 for x in v if x > 0) / len(v) for n, v in lanes.items()}
+    add("lane", "🛣️", "Победитель линии", lane_share,
+        lambda n: f"выиграл {lane_share[n] * 100:.0f}% линий")  # коротко: длинная подпись обрезается в карточке
+
     best_games: dict[str, tuple[float, dict]] = {}
     for n, ms in played.items():
         scored = [(k, m) for m in ms if (k := _kda(m)) is not None]

@@ -124,6 +124,28 @@ def test_v2_database_loses_dead_columns_and_keeps_data(tmp_path):
     assert storage.add_player(100, 3, "Коля", None, 0, 0).id > removed
 
 
+def test_lanes_and_wards_columns_added_and_recent_stratz_matches_requeued(tmp_path):
+    import time
+
+    path = str(tmp_path / "bot.db")
+    conn = make_v2(path)
+    player = add_player(conn, 100, 1, "Вася", 5000, 10, 5)
+    now = int(time.time())
+    add_match(conn, player, 1, now - 5 * 86400, stratz_done=1, stratz_tries=3, stratz_next_ts=999, position=5)  # свежий
+    add_match(conn, player, 2, now - 200 * 86400, stratz_done=1, position=1)                                    # старый
+    add_match(conn, player, 3, now - 2 * 86400, stratz_done=0, stratz_tries=2)                                  # и так в очереди
+    conn.commit()
+    conn.close()
+
+    storage = Storage(path)
+    assert {"lane_result", "wards", "stacks"} <= _columns(path, "matches")
+    rows = {m["match_id"]: m for m in storage.get_matches(player)}
+    assert (rows[1]["stratz_done"], rows[1]["stratz_tries"], rows[1]["stratz_next_ts"]) == (0, 0, 0)
+    assert rows[1]["position"] == 5 and rows[1]["lane_result"] is None  # данные не потеряны, ждут повторной выгрузки
+    assert rows[2]["stratz_done"] == 1                                    # старые не трогаем
+    assert rows[3]["stratz_tries"] == 2
+
+
 def test_newer_database_is_refused_with_clear_message(tmp_path):
     path = str(tmp_path / "future.db")
     Storage(path)
