@@ -17,6 +17,7 @@ import pytz
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from aiogram.types import BufferedInputFile
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from mmrbot.boards import ImageBoard
@@ -198,6 +199,10 @@ def setup_scheduler(
 
     def retry_heroes_in_an_hour() -> None:
         """OpenDota недоступен — справочник героев догоним через час, а не ждём следующих суток."""
+        try:  # replace_existing не видит отложенные задачи не запущенного планировщика — снимаем прежний повтор сами
+            scheduler.remove_job("heroes_retry")
+        except JobLookupError:
+            pass
         scheduler.add_job(
             heroes_refresh, "date", run_date=datetime.now(timezone.utc) + timedelta(hours=1),
             id="heroes_retry", replace_existing=True,
