@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import ErrorEvent
 
-from mmrbot import avatars, cards, hero_icons, item_icons, items, rank_icons
+from mmrbot import avatars, cards, errors, hero_icons, item_icons, items, rank_icons
 from mmrbot.access import ChatGateMiddleware
 from mmrbot.bot import PerfMiddleware, router, set_bot_commands
 from mmrbot.lifecycle import router as lifecycle_router
@@ -28,6 +28,7 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     config = load_config()
+    errors.setup_sentry(config.sentry_dsn, config.secrets())
 
     storage = Storage(
         config.db_path, default_digest_hour=config.default_digest_hour,
@@ -50,6 +51,8 @@ async def main() -> None:
     steam = Steam(config.steam_api_key) if config.steam_api_key else None
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(link_preview_is_disabled=True))
+    # Всё, что уходит в лог уровнем ERROR (сбой хендлера, упавшая задача планировщика), — владельцу в личку.
+    errors.install(bot, config.error_chat_id, config.secrets())
     dp = Dispatcher()
     dp["storage"] = storage
     dp["od"] = od
