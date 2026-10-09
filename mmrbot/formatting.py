@@ -681,7 +681,7 @@ def render_game_alert(event: dict) -> str:
     if event.get("average_rank"):
         lines.append(f"🎚 Лобби: {rank_emoji(event['average_rank'])} {_esc(rank_label(event['average_rank']))}".replace("  ", " "))
     for r in rows:
-        delta = r["step"] if r["won"] else -r["step"]
+        delta = r["delta"] if r.get("delta") is not None else (r["step"] if r["won"] else -r["step"])
         line = (
             f"{'🏆' if r['won'] else '💀'} {_b(r['name'])}{' ⭐' if r['name'] == mvp else ''} — {_esc(hero_name(r['hero_id']))} "
             f"{r['kills']}/{r['deaths']}/{r['assists']} · {_today_delta(delta)}"

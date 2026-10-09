@@ -393,6 +393,13 @@ def _m006_mmr_anchors(conn: sqlite3.Connection) -> None:
     )
 
 
+# --- 7: дабл-дауны -----------------------------------------------------------------------------------------------
+
+def _m007_double_down(conn: sqlite3.Connection) -> None:
+    """Игра с жетоном удвоения меняет MMR на два шага. Пометку ставят игроки (кнопка «×2», /double): API её не отдаёт."""
+    conn.execute("ALTER TABLE matches ADD COLUMN double_down INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -400,6 +407,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (4, _m004_accounts),
     (5, _m005_renamed_timezones),
     (6, _m006_mmr_anchors),
+    (7, _m007_double_down),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

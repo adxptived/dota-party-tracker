@@ -292,7 +292,8 @@ def setup_scheduler(
             warm = False
             for event in events:
                 board = await alert_board(event, chat.tz, image=not chat.prefer_text, od=od)
-                markup = alert_buttons(event["match_id"])
+                markup = alert_buttons(
+                    event["match_id"], [(r["account_id"], r["name"], bool(r.get("double"))) for r in event["rows"]])
                 delivered = True
                 try:
                     await send_board(bot, chat.chat_id, board, markup)

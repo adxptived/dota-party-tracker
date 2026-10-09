@@ -623,7 +623,7 @@ def test_get_outcomes_returns_light_rows_in_time_order(store):
     ])
     rows = store.get_outcomes(p.id)
     assert [r["start_time"] for r in rows] == [100, 200]
-    assert set(rows[0]) == {"start_time", "player_slot", "radiant_win", "duration"}
+    assert set(rows[0]) == {"start_time", "player_slot", "radiant_win", "duration", "double_down"}
 
 
 # --- достоверность и скорость сбора матчей -------------------------------------

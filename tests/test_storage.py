@@ -351,9 +351,13 @@ def test_has_matches_latest_and_data_version(store):
     store.add_matches(a.id, [match(1, 100), {**match(2, 300), "duration": 60}])
     store.add_matches(b.id, [match(3, 200)])
     assert store.has_matches(a.id) and store.latest_match_time(a.id) == 300
-    assert store.data_version(100) == (3, 300, 0)
+    version = store.data_version(100)
+    assert version[:2] == (3, 300)
     store.set_player_anchor(a.id, 5000, 10)                       # правка MMR тоже меняет отпечаток (график перерисуется)
-    assert store.data_version(100) == (3, 300, 1)
+    after_mmr = store.data_version(100)
+    assert after_mmr[:2] == (3, 300) and after_mmr != version
+    store.set_double_down(a.id, 1, True)                          # и пометка дабл-дауна
+    assert store.data_version(100) not in (version, after_mmr)
     assert store.last_activity(100) == 360
     assert store.data_version(999) == (0, None, 0)                 # чужой чат не влияет
 

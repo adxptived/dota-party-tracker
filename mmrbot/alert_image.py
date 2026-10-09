@@ -45,6 +45,9 @@ def _outcome(rows: list) -> tuple[str, str]:
 
 
 def _delta(row: dict) -> int:
+    """±MMR за матч: готовое значение строки (учитывает дабл-даун), у старых событий — шаг по исходу."""
+    if row.get("delta") is not None:
+        return row["delta"]
     step = row.get("step") or 0
     return step if row.get("won") else -step
 

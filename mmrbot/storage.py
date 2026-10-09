@@ -589,14 +589,18 @@ class Storage:
             ).fetchone()[0]
 
     def data_version(self, chat_id: int) -> tuple:
-        """Отпечаток данных чата: меняется, когда приходят новые игры или правятся данные игроков (MMR, пометки матчей)."""
+        """Отпечаток данных чата (число матчей, самый свежий, ревизия): меняется, когда приходят новые игры или
+        правятся данные игроков — заданный MMR, пометки матчей (дабл-даун), дозаполненные поля."""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*), MAX(m.start_time) FROM matches m "
                 "JOIN players p ON p.account_id = m.account_id WHERE p.chat_id = ?",
                 (chat_id,),
             ).fetchone()
-            rev = conn.execute("SELECT COALESCE(SUM(rev), 0) FROM players WHERE chat_id = ?", (chat_id,)).fetchone()[0]
+            rev = conn.execute(
+                "SELECT COALESCE(SUM(p.rev + a.data_ver), 0) FROM players p JOIN accounts a ON a.account_id = p.account_id "
+                "WHERE p.chat_id = ?", (chat_id,),
+            ).fetchone()[0]
         return (row[0], row[1], rev)
 
     def get_latest_match(self, player_ids: list[int], match_id: Optional[int] = None) -> Optional[dict]:
@@ -725,6 +729,35 @@ class Storage:
                 (player_id, match_id),
             ).fetchone()
         return None if row is None else row["player_slot"]
+
+    def set_double_down(self, player_id: int, match_id: int, enabled: Optional[bool] = None) -> Optional[bool]:
+        """Пометить матч игрока как сыгранный с дабл-дауном (±2 шага MMR). enabled=None — переключить.
+
+        Вернуть новое состояние; None — такого матча у игрока нет. Пометка — факт о матче аккаунта:
+        она общая для всех чатов, где аккаунт отслеживается.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT double_down FROM matches WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
+                (player_id, match_id),
+            ).fetchone()
+            if row is None:
+                return None
+            value = (not row["double_down"]) if enabled is None else bool(enabled)
+            if bool(row["double_down"]) != value:
+                conn.execute(
+                    f"UPDATE matches SET double_down = ? WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
+                    (1 if value else 0, player_id, match_id),
+                )
+            return value
+
+    def get_match(self, player_id: int, match_id: int) -> Optional[dict]:
+        """Строка матча игрока (None — нет такого)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                f"SELECT * FROM matches WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?", (player_id, match_id)
+            ).fetchone()
+        return dict(row) if row else None
 
     # Матчи аккаунтов, которые отслеживает хотя бы один активный чат (аккаунт в двух чатах считается один раз).
     _ACTIVE_MATCHES = (
@@ -877,7 +910,8 @@ class Storage:
 
     def get_outcomes(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
         """Лёгкая выборка исходов (время/длительность/слот/победа) — для графиков: из тёплого кэша матчей, иначе узким запросом."""
-        return self._light_matches(player_id, ("start_time", "player_slot", "radiant_win", "duration"), since_ts)
+        return self._light_matches(
+            player_id, ("start_time", "player_slot", "radiant_win", "duration", "double_down"), since_ts)
 
     def get_match_sides(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
         """Лёгкая выборка для совместных игр: id матча, сторона, исход и размер пати."""

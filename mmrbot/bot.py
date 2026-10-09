@@ -141,6 +141,7 @@ BOT_COMMANDS = [
     BotCommand(command="list", description="👥 Список игроков"),
     BotCommand(command="settings", description="⚙️ Настройки"),
     BotCommand(command="setmmr", description="✏️ Задать MMR"),
+    BotCommand(command="double", description="✖️ Отметить игру с дабл-дауном (×2 MMR)"),
     BotCommand(command="setstep", description="⚙️ Шаг MMR за игру"),
     BotCommand(command="settime", description="⏰ Час сводки"),
     BotCommand(command="me", description="🙋 Привязать себя к игроку"),
@@ -168,6 +169,7 @@ HELP_TEXT = (
     '/compare — кто сильнее\n'
     '/records · /graph · /achievements (соревнование чата)\n\n'
     'Управлять: /list · /remove · /setmmr · /settings\n'
+    '/double [имя] — игра с дабл-дауном (±2 шага MMR)\n'
     '/menu — всё кнопками, там же «Термины»\n\n'
     '≈MMR — оценка: старт ± шаг за игру, точный MMR Dota не отдаёт.\n'
     'Нужна опция «Выставлять публичные данные матчей».'
@@ -1341,3 +1343,10 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             return
         action = do_player_heroes if kind == "hp" else do_roles
         await action(message, storage, od, account, period, stratz, edit=True)
+
+
+# --- разделы в своих модулях ------------------------------------------------
+# Подключаются к этому роутеру: на них действуют те же middleware (удаление сообщения с командой, автопривязка).
+from mmrbot import doubles  # noqa: E402
+
+router.include_router(doubles.router)
