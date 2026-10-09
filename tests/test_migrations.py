@@ -146,6 +146,22 @@ def test_lanes_and_wards_columns_added_and_recent_stratz_matches_requeued(tmp_pa
     assert rows[3]["stratz_tries"] == 2
 
 
+def test_seasons_table_added_and_numbers_are_unique_per_chat(tmp_path):
+    path = str(tmp_path / "bot.db")
+    conn = make_v2(path)
+    conn.commit()
+    conn.close()
+    storage = Storage(path)
+    assert {"chat_id", "number", "start_ts", "planned_end_ts", "end_ts", "champion", "table_json", "renew"} \
+        <= _columns(path, "seasons")
+    storage.get_or_create_chat(1)
+    assert storage.start_season(1, 1000, 30).number == 1
+    with sqlite3.connect(path) as raw:
+        with pytest.raises(sqlite3.IntegrityError):  # номер сезона в чате не повторяется
+            raw.execute("INSERT INTO seasons (chat_id, number, start_ts, length_days, planned_end_ts) "
+                        "VALUES (1, 1, 0, 7, 1)")
+
+
 def test_newer_database_is_refused_with_clear_message(tmp_path):
     path = str(tmp_path / "future.db")
     Storage(path)

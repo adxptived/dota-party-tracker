@@ -432,6 +432,22 @@ def _m009_lanes_and_wards(conn: sqlite3.Connection) -> None:
     )
 
 
+# --- 10: сезоны соревнования ---------------------------------------------------------------------------------------
+
+def _m010_seasons(conn: sqlite3.Connection) -> None:
+    """Сезон соревнования чата: окно времени, в котором считаются очки; итоги остаются в зале славы.
+
+    end_ts пуст — сезон идёт (в чате он один). champion и table_json (итоговая таблица очков) пишутся при закрытии.
+    renew — после окончания сразу начинать такой же следующий сезон.
+    """
+    conn.execute(
+        "CREATE TABLE seasons (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, number INTEGER NOT NULL, "
+        "start_ts INTEGER NOT NULL, length_days INTEGER NOT NULL, planned_end_ts INTEGER NOT NULL, end_ts INTEGER, "
+        "champion TEXT, table_json TEXT, renew INTEGER NOT NULL DEFAULT 1, UNIQUE (chat_id, number))"
+    )
+    conn.execute("CREATE INDEX idx_seasons_chat ON seasons (chat_id, end_ts)")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -442,6 +458,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (7, _m007_double_down),
     (8, _m008_match_lineups),
     (9, _m009_lanes_and_wards),
+    (10, _m010_seasons),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

@@ -61,7 +61,7 @@ from mmrbot.match_image import render_match_image
 from mmrbot.matchups_image import render_matchups_image
 from mmrbot.opendota import OpenDota
 from mmrbot.ranks import rank_label
-from mmrbot import matchups, stats
+from mmrbot import matchups, seasons, stats
 from mmrbot.player_image import render_player_image
 from mmrbot.records_image import render_records_image
 from mmrbot.stats import period_since
@@ -515,12 +515,12 @@ async def records_board(
     return board
 
 
-def _contest_png(period: str, table: list, noms: list, note) -> bytes:
+def _contest_png(period: str, table: list, noms: list, note, subtitle=None) -> bytes:
     """В потоке: аватары (кэш/CDN) + рендер соревнования."""
     avatar_loader = avatars.shared()
     found = avatar_loader.get_many({r.get("avatar") for r in table[:CONTEST_TABLE_LIMIT]}
                                    | {e.get("avatar") for n in noms for e in n["entries"]}) if avatar_loader is not None else {}
-    return render_contest_image(period, table, noms, found, note)
+    return render_contest_image(period, table, noms, found, note, subtitle)
 
 
 async def contest_board(
@@ -1020,3 +1020,51 @@ async def render_matchups_board(
 ) -> str:
     board = await matchups_board(storage, od, chat_id, name, period, stratz, image=False)
     return NOT_FOUND if board is None else board.text
+
+
+# --- сезоны ------------------------------------------------------------------------------------------------------
+
+SEASON_MIN_GAMES = 3  # порог игр для номинаций-средних: как у недели и месяца
+
+
+async def season_board(
+    storage: Storage, od: Optional[OpenDota], chat_id: int, stratz=None, image: Optional[bool] = None,
+) -> Optional[ImageBoard]:
+    """Зачёт идущего сезона: очки только по играм с его начала. None — в чате сезона нет."""
+    season = storage.current_season(chat_id)
+    if season is None:
+        return None
+    if od is not None:
+        await refresh_for("records", storage, od, chat_id, stratz)
+    now = int(time.time())
+    tz = storage.get_or_create_chat(chat_id).tz
+    data = await _build(build_contest, storage, chat_id, season.start_ts, SEASON_MIN_GAMES)
+    head = seasons.status_head(season, now, tz)
+    body = render_contest(f"сезона {season.number}", data["standings"], data["points"])
+    board = ImageBoard(_with_stale(storage, chat_id, f"{head}\n\n{body}", od))
+    if want_image(storage, chat_id, image):
+        avatar_of = {p.display_name: p.steam_avatar for p in storage.list_players(chat_id)}
+        table, noms = contest_view(data["standings"], data["points"], avatar_of)
+        note = _stale_line(storage, chat_id, od)
+        subtitle = f"сезон {season.number} · {seasons.span(season, tz)} · осталось {seasons.days_left(season, now)} дн."
+        board.png = await _render_png("сезон", _contest_png, f"СЕЗОН {season.number}", table, noms, _plain(note), subtitle)
+        if board.png is not None:
+            board.caption = fit_caption(seasons.status_caption(season, now, table) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def season_end_board(
+    storage: Storage, chat_id: int, result: dict, image: Optional[bool] = None,
+) -> ImageBoard:
+    """Итоги закрытого сезона для чата (результат tracker.close_season): чемпион, таблица, начало следующего."""
+    season, nxt = result["season"], result["next"]
+    tz = storage.get_or_create_chat(chat_id).tz
+    board = ImageBoard(seasons.render_end(season, result["champion"], result["table"], nxt, tz))
+    if want_image(storage, chat_id, image) and result["points"]:
+        avatar_of = {p.display_name: p.steam_avatar for p in storage.list_players(chat_id)}
+        table, noms = contest_view(result["standings"], result["points"], avatar_of)
+        subtitle = f"итоги сезона {season.number} · {seasons.span(season, tz)}"
+        board.png = await _render_png("итоги сезона", _contest_png, f"ИТОГИ СЕЗОНА {season.number}", table, noms, None, subtitle)
+        if board.png is not None:
+            board.caption = fit_caption(seasons.end_caption(season, result["champion"], result["table"], nxt))
+    return board

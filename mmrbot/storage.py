@@ -16,7 +16,7 @@ import sqlite3
 import threading
 from bisect import bisect_left
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from mmrbot.migrations import LATEST_VERSION, migrate
@@ -70,6 +70,21 @@ class Player:
     lineups_ts: Optional[int] = None  # когда история аккаунта целиком перечитана вместе с составами команд
     tg_user_id: Optional[int] = None  # Telegram-аккаунт игрока (командой /me) — для тега участника
     last_tag: Optional[str] = None  # тег, который бот поставил в последний раз
+
+
+@dataclass
+class Season:
+    """Сезон соревнования чата: очки считаются по играм с start_ts. end_ts пуст, пока сезон идёт."""
+    id: int
+    chat_id: int
+    number: int
+    start_ts: int
+    length_days: int
+    planned_end_ts: int
+    end_ts: Optional[int] = None
+    champion: Optional[str] = None  # ник чемпиона на момент итогов; None — ничья или никто не играл
+    table: list = field(default_factory=list)  # итоговая таблица очков [{player, points, golds}]
+    renew: bool = True  # после окончания начинать такой же следующий сезон
 
 
 class _Connection(sqlite3.Connection):
@@ -188,6 +203,8 @@ class Storage:
             conn.execute("DELETE FROM chats WHERE chat_id = ?", (new_chat_id,))
             conn.execute("UPDATE chats SET chat_id = ?, active = 1 WHERE chat_id = ?", (new_chat_id, old_chat_id))
             conn.execute("UPDATE players SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+            conn.execute("DELETE FROM seasons WHERE chat_id = ?", (new_chat_id,))
+            conn.execute("UPDATE seasons SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
         return True
 
     def set_chat_notify_games(self, chat_id: int, enabled: bool) -> None:
@@ -920,6 +937,72 @@ class Storage:
                 "INSERT INTO contest_leaders (chat_id, period, key, leader) VALUES (?, ?, ?, ?)",
                 [(chat_id, period, key, leader) for key, leader in leaders.items()],
             )
+
+    # --- сезоны соревнования ------------------------------------------------------
+
+    @staticmethod
+    def _season_from_row(row: sqlite3.Row) -> Season:
+        return Season(
+            id=row["id"], chat_id=row["chat_id"], number=row["number"], start_ts=row["start_ts"],
+            length_days=row["length_days"], planned_end_ts=row["planned_end_ts"], end_ts=row["end_ts"],
+            champion=row["champion"], table=json.loads(row["table_json"] or "[]"), renew=bool(row["renew"]),
+        )
+
+    @staticmethod
+    def _insert_season(conn: sqlite3.Connection, chat_id: int, start_ts: int, length_days: int, renew: bool) -> Season:
+        number = (conn.execute("SELECT MAX(number) FROM seasons WHERE chat_id = ?", (chat_id,)).fetchone()[0] or 0) + 1
+        cursor = conn.execute(
+            "INSERT INTO seasons (chat_id, number, start_ts, length_days, planned_end_ts, renew) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, number, start_ts, length_days, start_ts + length_days * 86_400, 1 if renew else 0),
+        )
+        return Storage._season_from_row(conn.execute("SELECT * FROM seasons WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+    def start_season(self, chat_id: int, now: int, length_days: int, renew: bool = True) -> Optional[Season]:
+        """Начать сезон. None — в чате уже идёт сезон (он один)."""
+        with self._conn() as conn:
+            if conn.execute("SELECT 1 FROM seasons WHERE chat_id = ? AND end_ts IS NULL", (chat_id,)).fetchone():
+                return None
+            return self._insert_season(conn, chat_id, now, length_days, renew)
+
+    def current_season(self, chat_id: int) -> Optional[Season]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM seasons WHERE chat_id = ? AND end_ts IS NULL", (chat_id,)).fetchone()
+        return self._season_from_row(row) if row else None
+
+    def finish_season(
+        self, season_id: int, end_ts: int, champion: Optional[str], table: list, renew: bool,
+    ) -> tuple[bool, Optional[Season]]:
+        """Закрыть сезон с итогами и (renew) сразу начать такой же следующий. → (закрыт ли, следующий сезон).
+
+        Закрывается один раз: повторный вызов для уже закрытого сезона ничего не меняет — (False, None).
+        """
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM seasons WHERE id = ?", (season_id,)).fetchone()
+            updated = conn.execute(
+                "UPDATE seasons SET end_ts = ?, champion = ?, table_json = ? WHERE id = ? AND end_ts IS NULL",
+                (end_ts, champion, json.dumps(table, ensure_ascii=False), season_id),
+            ).rowcount
+            if not updated:
+                return False, None
+            nxt = self._insert_season(conn, row["chat_id"], end_ts, row["length_days"], bool(row["renew"])) if renew else None
+        return True, nxt
+
+    def list_seasons(self, chat_id: int) -> list[Season]:
+        """Завершённые сезоны чата по возрастанию номера."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM seasons WHERE chat_id = ? AND end_ts IS NOT NULL ORDER BY number", (chat_id,)
+            ).fetchall()
+        return [self._season_from_row(r) for r in rows]
+
+    def due_seasons(self, now: int) -> list[Season]:
+        """Идущие сезоны, которым пора закончиться (чаты, откуда бота убрали, не трогаем)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT s.* FROM seasons s JOIN chats c ON c.chat_id = s.chat_id "
+                "WHERE s.end_ts IS NULL AND s.planned_end_ts <= ? AND c.active = 1 ORDER BY s.id", (now,)
+            ).fetchall()
+        return [self._season_from_row(r) for r in rows]
 
     # --- история матчей: кэш в памяти по аккаунту ------------------------------
 

@@ -32,13 +32,16 @@ from mmrbot.formatting import (
     render_steam_change,
 )
 from mmrbot.status import write_heartbeat
-from mmrbot.service import _chat_lock, alert_board, refresh_only, split_message, stats_board, warm_chat, weekly_board
+from mmrbot.service import (
+    _chat_lock, alert_board, refresh_only, season_end_board, split_message, stats_board, warm_chat, weekly_board,
+)
 from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
 from mmrbot.timezones import zone
 from mmrbot.tracker import (
     backfill_opendota,
     check_contest_leaders,
+    close_season,
     backfill_stratz,
     detect_new_games,
     detect_presence,
@@ -67,6 +70,32 @@ async def send_board(bot: Bot, chat_id: int, board: ImageBoard, markup=None) -> 
     for i, chunk in enumerate(chunks):  # без картинки длинный отчёт (много игроков) идёт несколькими сообщениями
         last = markup if i == len(chunks) - 1 else None
         await send_with_retry(partial(bot.send_message, chat_id, chunk, parse_mode="HTML", reply_markup=last))
+
+
+async def close_due_seasons(bot: Bot, storage: Storage, od, now: int, stratz=None) -> int:
+    """Закрыть сезоны, у которых вышел срок: итоги в зал славы, следующий сезон (если продлевается), объявление в чат.
+
+    Итоги записываются до отправки: недоставленное объявление не откатывает и не повторяет закрытие — результат
+    всё равно виден в /hall. → сколько сезонов закрыто.
+    """
+    closed = 0
+    for season in storage.due_seasons(now):
+        try:
+            result = await asyncio.to_thread(close_season, storage, season.chat_id, season, now, season.renew)
+        except Exception:
+            log.exception("Не удалось закрыть сезон %s чата %s", season.number, season.chat_id)
+            continue
+        if result is None:  # уже закрыт (например, командой /season end)
+            continue
+        closed += 1
+        try:
+            await send_board(bot, season.chat_id, await season_end_board(storage, season.chat_id, result))
+        except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
+            chat_gone(storage, season.chat_id, exc)
+        except Exception:
+            log.warning("Итоги сезона %s не доставлены в чат %s — они сохранены, смотреть: /hall",
+                        season.number, season.chat_id, exc_info=True)
+    return closed
 
 
 def due_local_date(chat: Chat, now_utc: datetime) -> Optional[str]:
@@ -344,6 +373,13 @@ def setup_scheduler(
             except Exception:
                 log.exception("Недельная сводка в чат %s не удалась", chat.chat_id)
 
+    async def season_watch() -> None:
+        """Раз в полчаса: сезоны с вышедшим сроком закрываются, чемпион объявляется в чате."""
+        try:
+            await close_due_seasons(bot, storage, od, int(datetime.now(timezone.utc).timestamp()), stratz)
+        except Exception:
+            log.exception("Проверка сезонов не удалась")
+
     async def daily_backup() -> None:
         try:
             await asyncio.to_thread(backup_db, storage.db_path, backup_keep)
@@ -358,6 +394,8 @@ def setup_scheduler(
         scheduler.add_job(presence_watch, "interval", minutes=2, misfire_grace_time=120, max_instances=1,
                           next_run_time=datetime.now(timezone.utc) + timedelta(seconds=75))
     scheduler.add_job(weekly_summary, "cron", minute=5, misfire_grace_time=300)
+    scheduler.add_job(season_watch, "interval", minutes=30, misfire_grace_time=300, max_instances=1,
+                      next_run_time=datetime.now(timezone.utc) + timedelta(seconds=150))
     # Бэкап БД: раз в сутки ночью + один раз вскоре после старта (если за сегодня копии ещё нет).
     scheduler.add_job(daily_backup, "cron", hour=4, minute=30, misfire_grace_time=3600)
     scheduler.add_job(daily_backup, "date", run_date=datetime.now(timezone.utc) + timedelta(seconds=20))

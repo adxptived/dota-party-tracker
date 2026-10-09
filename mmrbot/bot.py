@@ -15,7 +15,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, ForceReply, InlineKeyboardButton, InputMediaPhoto, Message
 
 from mmrbot import commands as cmd
-from mmrbot import perf
+from mmrbot import perf, seasons
 from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, is_chat_admin, may_manage
 from mmrbot.formatting import render_mmr_set, render_player_list, render_settings, render_steam_profile, tz_label
@@ -41,6 +41,8 @@ from mmrbot.service import (
     render_heroes_board,
     match_board,
     matchups_board,
+    season_board,
+    season_end_board,
     player_board,
     player_heroes_board,
     render_match_board,
@@ -57,7 +59,7 @@ from mmrbot.storage import Storage
 from mmrbot.tags import auto_link_user, clear_member_tag, link_adder, sync_member_tags
 from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
 from mmrbot.ranks import rank_label
-from mmrbot.tracker import build_leaderboard, refresh_player, set_player_mmr
+from mmrbot.tracker import build_leaderboard, close_season, refresh_player, set_player_mmr
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -139,6 +141,8 @@ BOT_COMMANDS = [
     BotCommand(command="records", description="🌟 Рекорды пати"),
     BotCommand(command="graph", description="📈 График MMR"),
     BotCommand(command="achievements", description="🏅 Соревнование чата"),
+    BotCommand(command="season", description="🏆 Сезон соревнования"),
+    BotCommand(command="hall", description="🏛 Зал славы"),
     BotCommand(command="steam", description="🎭 Steam-профиль"),
     BotCommand(command="add", description="➕ Добавить игрока"),
     BotCommand(command="list", description="👥 Список игроков"),
@@ -171,7 +175,8 @@ HELP_TEXT = (
     '/match [id] — разбор матча\n'
     '/together — игры вместе\n'
     '/compare — кто сильнее\n'
-    '/records · /graph · /achievements (соревнование чата)\n\n'
+    '/records · /graph · /achievements (соревнование чата)\n'
+    '/season — сезон соревнования, /hall — зал славы\n\n'
     'Управлять: /list · /remove · /setmmr · /settings\n'
     '/double [имя] — игра с дабл-дауном (±2 шага MMR)\n'
     '/menu — всё кнопками, там же «Термины»\n\n'
@@ -1087,6 +1092,68 @@ async def cmd_achievements(message: Message, command: CommandObject, storage: St
     await do_contest(message, storage, od, period if (command.args or "").strip() else "week", stratz)
 
 
+SEASON_USAGE = "🤔 Не понял. Формат: /season — зачёт сезона, /season start [дней 7–365], /season end"
+
+
+async def do_season(message: Message, storage: Storage, od: Optional[OpenDota], stratz=None) -> None:
+    """Зачёт идущего сезона картинкой (не вышло — текстом); сезона нет — подсказка, как начать."""
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await season_board(storage, od, message.chat.id, stratz)
+    except Exception:
+        log.exception("Ошибка сборки сезона для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board is None:
+        await _delete(status)
+        await message.answer("🏆 Сезона сейчас нет. Начать: /season start [дней] (по умолчанию 30). "
+                             "Прошлые сезоны — /hall.", reply_markup=nav_menu())
+        return
+    await _reply_image(message, board, nav_menu(), status)
+
+
+@router.message(Command("season"))
+async def cmd_season(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
+    action, days = cmd.parse_season_args(command.args or "")
+    chat_id = message.chat.id
+    if action == "error":
+        await message.answer(SEASON_USAGE)
+        return
+    if action == "show":
+        await do_season(message, storage, od, stratz)
+        return
+    if not await _can_manage(message, storage):
+        return
+    tz = storage.get_or_create_chat(chat_id).tz
+    now = int(time.time())
+    if action == "start":
+        season = storage.start_season(chat_id, now, days)
+        if season is None:
+            current = storage.current_season(chat_id)
+            await message.answer(f"⏳ Сезон {current.number} уже идёт до {seasons.date_text(current.planned_end_ts, tz)}. "
+                                 "Завершить досрочно: /season end", reply_markup=nav_menu())
+            return
+        await message.answer(seasons.render_start(season, tz), parse_mode="HTML", reply_markup=nav_menu())
+        return
+    current = storage.current_season(chat_id)  # action == "end"
+    if current is None:
+        await message.answer("🏆 Сезона нет — завершать нечего. Начать: /season start", reply_markup=nav_menu())
+        return
+    result = await asyncio.to_thread(close_season, storage, chat_id, current, now, False)
+    if result is None:
+        await message.answer("🏆 Сезон уже завершён.", reply_markup=nav_menu())
+        return
+    await _reply_image(message, await season_end_board(storage, chat_id, result), nav_menu())
+
+
+@router.message(Command("hall"))
+async def cmd_hall(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
+    tz = storage.get_or_create_chat(message.chat.id).tz
+    await message.answer(seasons.render_hall(storage.list_seasons(message.chat.id), tz), parse_mode="HTML",
+                         reply_markup=nav_menu())
+
+
 @router.message(Command("steam"))
 async def cmd_steam(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
     name = (command.args or "").strip().lstrip("@").strip()
@@ -1277,6 +1344,12 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await message.answer(f"{category_title(key)} — выберите действие:", reply_markup=category_menu(key))
             else:
                 await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
+        elif action == "season":
+            await do_season(message, storage, od, stratz)
+        elif action == "hall":
+            await message.answer(seasons.render_hall(storage.list_seasons(message.chat.id),
+                                                     storage.get_or_create_chat(message.chat.id).tz),
+                                 parse_mode="HTML", reply_markup=nav_menu())
         elif action == "matchups":
             if await _has_players(message, storage):
                 await do_matchups(message, storage, od, None, "all", stratz)

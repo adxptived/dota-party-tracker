@@ -591,6 +591,27 @@ def contest_champion(points: list[dict]) -> Optional[dict]:
     return points[0]
 
 
+def close_season(storage: Storage, chat_id: int, season, now: int, renew: bool) -> Optional[dict]:
+    """Закрыть сезон: подсчитать итоги по играм с его начала, записать чемпиона и таблицу, начать следующий (renew).
+
+    → {season (закрытый), champion, table, standings, points, next}; None — сезон уже закрыт (повторно не объявляем).
+    """
+    from dataclasses import replace
+
+    from mmrbot import seasons
+
+    data = build_contest(storage, chat_id, season.start_ts)
+    champion = contest_champion(data["points"])
+    table = seasons.table_of(data["points"])
+    finished, nxt = storage.finish_season(season.id, now, champion["player"] if champion else None, table, renew)
+    if not finished:
+        return None
+    return {
+        "season": replace(season, end_ts=now, champion=champion["player"] if champion else None, table=table),
+        "champion": champion, "table": table, "standings": data["standings"], "points": data["points"], "next": nxt,
+    }
+
+
 def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
     """Итоги недели чата из кэша БД: таблица периода, герой недели, лучшая серия, совместные игры."""
     chat = storage.get_or_create_chat(chat_id)
