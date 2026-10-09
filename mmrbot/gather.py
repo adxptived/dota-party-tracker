@@ -85,14 +85,18 @@ async def _clear_keyboard(bot, chat_id: int, message_id: Optional[int]) -> None:
 
 @router.message(Command("go"))
 async def cmd_go(message: Message, command: CommandObject, storage: Storage) -> None:
-    """`/go [текст]` — позвать пати играть. Автор сразу отмечен «иду»; новый сбор закрывает прежний."""
-    user = getattr(message, "from_user", None)
+    """`/go [текст]` — позвать пати играть."""
+    await start(message, storage, getattr(message, "from_user", None), command.args)
+
+
+async def start(message: Message, storage: Storage, user, text: Optional[str] = None) -> None:
+    """Позвать пати играть (команда и кнопка меню). Автор сразу отмечен «иду»; новый сбор закрывает прежний."""
     if user is None:
         await message.answer("🎮 Сбор пати запускается от имени пользователя (не анонимного админа).")
         return
     chat_id = message.chat.id
     now = int(time.time())
-    note = " ".join((command.args or "").split())[:NOTE_LIMIT] or None
+    note = " ".join((text or "").split())[:NOTE_LIMIT] or None
     linked = linked_players(storage, chat_id)
     name = linked.get(user.id) or user.full_name
     for old in storage.close_gathers(chat_id):
