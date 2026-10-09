@@ -168,7 +168,7 @@ def test_light_selects_use_warm_cache_and_stay_correct(env):
     warm = storage.get_outcomes(player.id)
     sides = storage.get_match_sides(player.id, since_ts=NOW - 1000 + 3)
     assert not any("FROM matches" in s for s in spy.statements)
-    assert warm == cold and set(warm[0]) == {"start_time", "player_slot", "radiant_win"}
+    assert warm == cold and set(warm[0]) == {"start_time", "player_slot", "radiant_win", "duration"}
     assert [m["match_id"] for m in sides] == [3, 4, 5] and "kills" not in sides[0]
     storage.add_matches(player.id, [_m(9, NOW - 100)])
     assert len(storage.get_outcomes(player.id)) == 6  # новая игра — кэш не отдаёт устаревшее

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from mmrbot.stats import estimate_mmr_delta, is_win, longest_win_streak
+from mmrbot.stats import is_win, longest_win_streak, mmr_delta
 
 
 def _games(n: int) -> str:
@@ -75,11 +75,7 @@ def compute_standings(
     played = {n: ms for n, ms in players.items() if len(ms) >= 1}
     regular = {n: ms for n, ms in played.items() if len(ms) >= min_games}
 
-    deltas = {
-        n: estimate_mmr_delta(sum(is_win(m["player_slot"], m["radiant_win"]) for m in ms),
-                              sum(not is_win(m["player_slot"], m["radiant_win"]) for m in ms), step)
-        for n, ms in played.items()
-    }
+    deltas = {n: mmr_delta(ms, step) for n, ms in played.items()}
     add("climb", "🚀", "Больше всех поднялся", deltas, lambda n: f"{deltas[n]:+d} MMR", keep=lambda v: v > 0)
     add("drop", "📉", "Больше всех просел", deltas, lambda n: f"{deltas[n]:+d} MMR", lowest=True, anti=True,
         keep=lambda v: v < 0)

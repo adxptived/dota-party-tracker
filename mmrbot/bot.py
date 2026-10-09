@@ -18,7 +18,7 @@ from mmrbot import commands as cmd
 from mmrbot import perf
 from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, is_chat_admin, may_manage
-from mmrbot.formatting import render_player_list, render_settings, render_steam_profile, tz_label
+from mmrbot.formatting import render_mmr_set, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
@@ -55,7 +55,7 @@ from mmrbot.storage import Storage
 from mmrbot.tags import auto_link_user, clear_member_tag, link_adder, sync_member_tags
 from mmrbot.texts import FAILED, NOT_FOUND as NOT_FOUND_TEXT, NO_PLAYERS, TERMS, WAIT
 from mmrbot.ranks import rank_label
-from mmrbot.tracker import build_leaderboard, refresh_player
+from mmrbot.tracker import build_leaderboard, refresh_player, set_player_mmr
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -529,8 +529,8 @@ async def cmd_setmmr(message: Message, command: CommandObject, storage: Storage)
     if player is None:
         await message.answer(NOT_FOUND_TEXT)
         return
-    storage.set_player_anchor(player.id, mmr, int(time.time()))
-    await message.answer(f"✅ {player.display_name}: ≈{mmr} MMR")
+    before, after = set_player_mmr(storage, message.chat.id, player, mmr, int(time.time()))
+    await message.answer(render_mmr_set(player.display_name, mmr, before, after), parse_mode="HTML")
 
 
 @router.message(Command("setstep"))
@@ -1100,8 +1100,9 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
     except ValueError as exc:
         await message.answer(f"⚠️ {exc}")
         return
-    storage.set_player_anchor(player.id, mmr, int(time.time()))
-    await message.answer(f"✅ {player.display_name}: ≈{mmr} MMR", reply_markup=nav_menu())
+    before, after = set_player_mmr(storage, message.chat.id, player, mmr, int(time.time()))
+    await message.answer(render_mmr_set(player.display_name, mmr, before, after), parse_mode="HTML",
+                         reply_markup=nav_menu())
 
 
 # --- кнопки -------------------------------------------------------------

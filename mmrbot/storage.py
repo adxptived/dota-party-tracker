@@ -182,7 +182,7 @@ class Storage:
                 (new_chat_id, old_chat_id),
             ).fetchall()
             for row in clash:  # история аккаунта общая и остаётся у переносимого игрока
-                conn.execute("DELETE FROM pending_notices WHERE player_id = ?", (row["id"],))
+                self._delete_player_data(conn, row["id"])
                 conn.execute("DELETE FROM players WHERE id = ?", (row["id"],))
             conn.execute("DELETE FROM chats WHERE chat_id = ?", (new_chat_id,))
             conn.execute("UPDATE chats SET chat_id = ?, active = 1 WHERE chat_id = ?", (new_chat_id, old_chat_id))
@@ -365,6 +365,10 @@ class Storage:
             except sqlite3.IntegrityError as exc:
                 raise ValueError("Этот аккаунт уже добавлен в этот чат.") from exc
             conn.execute("INSERT OR IGNORE INTO accounts (account_id) VALUES (?)", (account_id,))
+            if anchor_mmr is not None:
+                conn.execute(
+                    "INSERT INTO mmr_anchors (player_id, ts, mmr) VALUES (?, ?, ?)", (cur.lastrowid, anchor_ts, anchor_mmr)
+                )
             row = conn.execute(f"{self._PLAYER_SELECT} WHERE p.id = ?", (cur.lastrowid,)).fetchone()
             return self._player_from_row(row)
 
@@ -419,11 +423,19 @@ class Storage:
     @staticmethod
     def _delete_player_rows(conn: sqlite3.Connection, player_id: int, account_id: int) -> None:
         """Убрать игрока чата; историю и состояние аккаунта — только если его больше никто не отслеживает."""
-        conn.execute("DELETE FROM pending_notices WHERE player_id = ?", (player_id,))
+        Storage._delete_player_data(conn, player_id)
         conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
         if conn.execute("SELECT 1 FROM players WHERE account_id = ? LIMIT 1", (account_id,)).fetchone() is None:
             conn.execute("DELETE FROM matches WHERE account_id = ?", (account_id,))
             conn.execute("DELETE FROM accounts WHERE account_id = ?", (account_id,))
+
+    # Таблицы с данными игрока чата (ключ player_id): чистятся вместе с игроком.
+    _PLAYER_TABLES = ("pending_notices", "mmr_anchors")
+
+    @staticmethod
+    def _delete_player_data(conn: sqlite3.Connection, player_id: int) -> None:
+        for table in Storage._PLAYER_TABLES:
+            conn.execute(f"DELETE FROM {table} WHERE player_id = ?", (player_id,))
 
     def remove_player(self, chat_id: int, key: str) -> bool:
         player = self.get_player(chat_id, key)
@@ -437,11 +449,23 @@ class Storage:
         return True
 
     def set_player_anchor(self, player_id: int, anchor_mmr: int, anchor_ts: int) -> None:
+        """Задать MMR игрока на момент anchor_ts: запись добавляется в журнал правок, прежние остаются."""
         with self._conn() as conn:
+            if conn.execute("SELECT 1 FROM players WHERE id = ?", (player_id,)).fetchone() is None:
+                return
             conn.execute(
                 "UPDATE players SET anchor_mmr = ?, anchor_ts = ?, rev = rev + 1 WHERE id = ?",
                 (anchor_mmr, anchor_ts, player_id),
             )
+            conn.execute("INSERT INTO mmr_anchors (player_id, ts, mmr) VALUES (?, ?, ?)", (player_id, anchor_ts, anchor_mmr))
+
+    def get_anchors(self, player_id: int) -> list[tuple[int, int]]:
+        """Журнал заданий MMR игрока по времени: [(когда, MMR)]. Пусто — MMR не задавали."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ts, mmr FROM mmr_anchors WHERE player_id = ? ORDER BY ts, id", (player_id,)
+            ).fetchall()
+        return [(r["ts"], r["mmr"]) for r in rows]
 
     def update_player_rank(
         self, player_id: int, rank_tier: Optional[int], leaderboard_rank: Optional[int], updated_ts: int
@@ -852,8 +876,8 @@ class Storage:
         return [dict(r) for r in rows]
 
     def get_outcomes(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
-        """Лёгкая выборка исходов (время/слот/победа) — для графиков: из тёплого кэша матчей, иначе узким запросом."""
-        return self._light_matches(player_id, ("start_time", "player_slot", "radiant_win"), since_ts)
+        """Лёгкая выборка исходов (время/длительность/слот/победа) — для графиков: из тёплого кэша матчей, иначе узким запросом."""
+        return self._light_matches(player_id, ("start_time", "player_slot", "radiant_win", "duration"), since_ts)
 
     def get_match_sides(self, player_id: int, since_ts: Optional[int] = None) -> list[dict]:
         """Лёгкая выборка для совместных игр: id матча, сторона, исход и размер пати."""

@@ -106,7 +106,9 @@ class PlayerSummary:
     hero_pool: int = 0
     wins_losses: dict = field(default_factory=dict)
     steam_name: Optional[str] = None
-    anchor_games: int = 0  # игр, по которым считается ±MMR (с момента задания MMR)
+    anchor_games: int = 0  # игр, по которым считается ±MMR (с первого задания MMR)
+    mmr_corrections: int = 0  # сумма правок /setmmr: anchor_mmr + mmr_delta + mmr_corrections == current_mmr
+    mmr_log: list = field(default_factory=list)  # журнал заданий MMR: [{ts, mmr, drift, games}]
     mmr_drift: bool = False  # оценка MMR разошлась с медалью — стоит обновить /setmmr
     history_closed: bool = False  # история матчей закрыта у OpenDota — цифры могут быть неполными
 
@@ -671,7 +673,7 @@ def build_daily_report(storage: Storage, chat_id: int, now: int) -> dict:
             "games": agg.games,
             "wins": agg.wins,
             "losses": agg.losses,
-            "delta": stats.estimate_mmr_delta(agg.wins, agg.losses, chat.mmr_step),
+            "delta": stats.mmr_delta(matches, chat.mmr_step),
             "winrate": agg.winrate,
             "kda": agg.kda_ratio,
             "kills": agg.sum_kills,
@@ -870,16 +872,7 @@ def _refresh_player_impl(
     return inserted
 
 
-def _counts_for_mmr(match: dict, anchor_ts: int) -> bool:
-    """Матч влияет на оценку MMR, если закончился после якоря.
-
-    MMR, который игрок ввёл в момент якоря, уже включает все завершённые игры; игра, шедшая
-    в этот момент (началась раньше), ещё не включена — её считаем. Без длительности — по началу.
-    """
-    duration = match.get("duration")
-    if duration:
-        return match["start_time"] + duration > anchor_ts
-    return match["start_time"] >= anchor_ts
+_counts_for_mmr = stats.counts_after  # прежнее имя: матч влияет на оценку MMR, если закончился после её задания
 
 
 SUMMARY_CACHE_LIMIT = 256
@@ -910,17 +903,16 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
 
     all_matches = storage.get_matches(player.id)  # вся ранкед-история; MMR-оценка — от якоря ниже
     # Матчи отсортированы по start_time: окна — срезы той же выборки, без лишних запросов к БД.
-    anchor_matches = [m for m in all_matches if _counts_for_mmr(m, player.anchor_ts)]
+    # Оценка MMR — по журналу заданий MMR: «старт», заработанное игрой и правки /setmmr считаются раздельно.
+    ledger = stats.mmr_ledger(all_matches, storage.get_anchors(player.id), step, player.anchor_ts)
     day_start = stats.local_day_start(now, chat.tz)
     today_matches = [m for m in all_matches if m["start_time"] >= day_start]
 
     agg_all = stats.aggregate(all_matches)
-    agg_anchor = stats.aggregate(anchor_matches)
     agg_today = stats.aggregate(today_matches)
 
-    mmr_delta = stats.estimate_mmr_delta(agg_anchor.wins, agg_anchor.losses, step)
-    current_mmr = player.anchor_mmr + mmr_delta if player.anchor_mmr is not None else None
-    delta_today = stats.estimate_mmr_delta(agg_today.wins, agg_today.losses, step)
+    mmr_delta, current_mmr = ledger["earned"], ledger["current"]
+    delta_today = stats.mmr_delta(today_matches, step)
 
     streak_type, streak_len = stats.current_streak(all_matches)
     top = stats.top_heroes(all_matches, k=3)
@@ -959,7 +951,7 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         account_id=player.account_id,
         rank=rank_label(player.last_rank_tier, player.last_leaderboard_rank),
         rank_emoji=rank_emoji(player.last_rank_tier),
-        anchor_mmr=player.anchor_mmr,
+        anchor_mmr=ledger["start"],
         current_mmr=current_mmr,
         mmr_delta=mmr_delta,
         games_total=agg_all.games,
@@ -1007,9 +999,20 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         hero_pool=pool,
         wins_losses=wins_losses,
         history_closed=player.fh_unavailable,
-        anchor_games=agg_anchor.games,
+        anchor_games=ledger["games"],
+        mmr_corrections=ledger["corrections"],
+        mmr_log=ledger["entries"],
         mmr_drift=mmr_rank_mismatch(current_mmr, player.last_rank_tier),
     )
+
+
+def set_player_mmr(storage: Storage, chat_id: int, player: Player, mmr: int, now: int) -> tuple:
+    """Задать MMR игрока (запись в журнал правок). Вернуть сводки до и после — по ним видно расхождение с оценкой."""
+    chat = storage.get_or_create_chat(chat_id)
+    before = build_player_summary(storage, chat, player, now)
+    storage.set_player_anchor(player.id, mmr, now)
+    fresh = storage.get_player_by_id(player.id) or player
+    return before, build_player_summary(storage, chat, fresh, now)
 
 
 def refresh_chat(
@@ -1078,13 +1081,14 @@ def build_period_leaderboard(storage: Storage, chat_id: int, since_ts: Optional[
     chat = storage.get_or_create_chat(chat_id)
     rows: list[dict] = []
     for player in storage.list_players(chat_id):
-        agg = stats.aggregate(storage.get_matches(player.id, since_ts=since_ts))
+        matches = storage.get_matches(player.id, since_ts=since_ts)
+        agg = stats.aggregate(matches)
         rows.append({
             "name": player.display_name,
             "games": agg.games,
             "wins": agg.wins,
             "losses": agg.losses,
-            "delta": stats.estimate_mmr_delta(agg.wins, agg.losses, chat.mmr_step),
+            "delta": stats.mmr_delta(matches, chat.mmr_step),
             "winrate": agg.winrate,
             "kda": agg.kda_ratio,
         })

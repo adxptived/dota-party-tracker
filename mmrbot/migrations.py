@@ -374,12 +374,32 @@ def _m005_renamed_timezones(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE chats SET tz = 'Europe/Kyiv' WHERE tz = 'Europe/Kiev'")
 
 
+# --- 6: журнал правок MMR ---------------------------------------------------------------------------------------
+
+def _m006_mmr_anchors(conn: sqlite3.Connection) -> None:
+    """Каждое задание MMR (`/add … MMR`, `/setmmr`) остаётся в журнале, а не затирает предыдущее.
+
+    players.anchor_mmr/anchor_ts по-прежнему хранят последнюю запись (от неё считается текущая оценка);
+    журнал нужен, чтобы после правки не терялась история: «старт», заработанное игрой и сумма правок.
+    """
+    conn.execute(
+        "CREATE TABLE mmr_anchors (id INTEGER PRIMARY KEY AUTOINCREMENT, player_id INTEGER NOT NULL, "
+        "ts INTEGER NOT NULL, mmr INTEGER NOT NULL)"
+    )
+    conn.execute("CREATE INDEX idx_mmr_anchors_player ON mmr_anchors (player_id, ts)")
+    conn.execute(
+        "INSERT INTO mmr_anchors (player_id, ts, mmr) SELECT id, anchor_ts, anchor_mmr FROM players "
+        "WHERE anchor_mmr IS NOT NULL ORDER BY id"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
     (3, _m003_drop_dead_player_columns),
     (4, _m004_accounts),
     (5, _m005_renamed_timezones),
+    (6, _m006_mmr_anchors),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

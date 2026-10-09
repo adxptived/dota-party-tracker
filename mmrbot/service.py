@@ -610,9 +610,14 @@ def _player_png(card: dict) -> bytes:
 
 
 def _mmr_values(storage: Storage, chat_id: int, player_id: int) -> list[int]:
-    """Накопленное ±MMR по последним играм игрока — для линии на карточке."""
+    """Оценка MMR после каждой из последних игр игрока — для линии на карточке.
+
+    Считается по журналу заданий MMR, поэтому линия непрерывна через правки /setmmr (в момент правки — скачок
+    на расхождение). MMR не задан — накопленное ±MMR от нуля.
+    """
     step = storage.get_or_create_chat(chat_id).mmr_step
-    return [value for _, value in stats.mmr_series(storage.get_outcomes(player_id), step)[-60:]]
+    timeline = stats.mmr_timeline(storage.get_outcomes(player_id), storage.get_anchors(player_id), step)
+    return [value for _, value in timeline[-60:]]
 
 
 async def player_board(
@@ -628,14 +633,15 @@ async def player_board(
     else:
         return None
     standing = standing_line(comparison, summary.display_name)
-    board = ImageBoard(_with_stale(storage, chat_id, render_player_card(summary, standing=standing), od))
+    tz = storage.get_or_create_chat(chat_id).tz
+    board = ImageBoard(_with_stale(storage, chat_id, render_player_card(summary, standing=standing, tz=tz), od))
     if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         plain = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
         player = storage.get_player_by_account_id(chat_id, summary.account_id)
         series = await _build(_mmr_values, storage, chat_id, player.id) if player is not None else []
         position = dict(comparison["players"].get(summary.display_name) or {}, size=comparison["size"])
-        card = player_card(summary, position, series, plain)
+        card = player_card(summary, position, series, plain, absolute=True)
         board.png = await asyncio.to_thread(build_png, "карточку игрока", lambda: _player_png(card))
         if board.png is not None:
             board.caption = fit_caption(player_caption(summary) + (f"\n{note}" if note else ""))
