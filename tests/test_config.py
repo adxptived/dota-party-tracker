@@ -40,3 +40,9 @@ def test_opendota_proxy_with_unknown_scheme_fails_without_echoing_the_value(monk
     with pytest.raises(RuntimeError) as err:
         _cfg(monkeypatch, OPENDOTA_PROXY="ftp://user:secret@host:1")
     assert "secret" not in str(err.value) and "OPENDOTA_PROXY" in str(err.value)
+
+
+def test_inline_cache_chat(monkeypatch):
+    monkeypatch.delenv("INLINE_CACHE_CHAT", raising=False)
+    assert _cfg(monkeypatch).inline_cache_chat is None
+    assert _cfg(monkeypatch, INLINE_CACHE_CHAT="-100123").inline_cache_chat == -100123

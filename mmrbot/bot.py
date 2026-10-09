@@ -1472,7 +1472,8 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
 
 # --- разделы в своих модулях ------------------------------------------------
 # Подключаются к этому роутеру: на них действуют те же middleware (удаление сообщения с командой, автопривязка).
-from mmrbot import doubles, gather  # noqa: E402
+from mmrbot import doubles, gather, inline  # noqa: E402
 
 router.include_router(doubles.router)
 router.include_router(gather.router)
+router.include_router(inline.router)

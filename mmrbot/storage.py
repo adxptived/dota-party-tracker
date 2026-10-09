@@ -445,6 +445,14 @@ class Storage:
             rows = conn.execute(f"{self._PLAYER_SELECT} WHERE p.chat_id = ? ORDER BY p.id", (chat_id,)).fetchall()
         return [self._player_from_row(r) for r in rows]
 
+    def user_chats(self, user_id: int) -> list[int]:
+        """Чаты, где Telegram-аккаунт привязан к игроку (/me), — по возрастанию ID."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT chat_id FROM players WHERE tg_user_id = ? ORDER BY chat_id", (user_id,)
+            ).fetchall()
+        return [r["chat_id"] for r in rows]
+
     def chats_of_account(self, account_id: int) -> list[int]:
         """Чаты (в т.ч. приостановленные), где отслеживается аккаунт."""
         with self._conn() as conn:

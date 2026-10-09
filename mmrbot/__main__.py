@@ -57,6 +57,7 @@ async def main() -> None:
     dp["storage"] = storage
     dp["od"] = od
     dp["stratz"] = stratz
+    dp["inline_cache_chat"] = config.inline_cache_chat
     gate = ChatGateMiddleware(config.allowed_chats, storage)
     dp.message.outer_middleware(gate)
     dp.callback_query.outer_middleware(gate)

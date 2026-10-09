@@ -31,6 +31,7 @@ class Config:
     command_refresh_wait: float = 4.0  # сек: команда ждёт обновление игроков не дольше, дальше — ответ из БД
     opendota_proxy: Optional[str] = None  # прокси только для OpenDota (socks5h://… или http://…); в нём может быть пароль
     error_chat_id: Optional[int] = None  # куда слать отчёты об ошибках (Telegram ID владельца или чата); None — никуда
+    inline_cache_chat: Optional[int] = None  # чат-хранилище картинок для inline-режима; None — inline отвечает текстом
     sentry_dsn: Optional[str] = None  # адрес проекта Sentry; нужен пакет sentry-sdk
 
     def secrets(self) -> tuple:
@@ -130,5 +131,6 @@ def load_config() -> Config:
         command_refresh_wait=_float_env("COMMAND_REFRESH_WAIT", 4.0),
         opendota_proxy=_proxy_env("OPENDOTA_PROXY"),
         error_chat_id=_chat_id_env("ERROR_CHAT_ID"),
+        inline_cache_chat=_chat_id_env("INLINE_CACHE_CHAT"),
         sentry_dsn=(os.getenv("SENTRY_DSN") or "").strip() or None,
     )

@@ -623,10 +623,14 @@ def _mmr_values(storage: Storage, chat_id: int, player_id: int) -> list[int]:
 
 
 async def player_board(
-    storage: Storage, od: OpenDota, chat_id: int, name: str, stratz=None, image: Optional[bool] = None
+    storage: Storage, od: Optional[OpenDota], chat_id: int, name: str, stratz=None, image: Optional[bool] = None,
+    refresh: bool = True,
 ) -> Optional[ImageBoard]:
-    """Карточка игрока: текст всегда, картинка с короткой подписью — если нарисовалась; None — игрока нет."""
-    summaries = await gather_summaries(storage, od, chat_id, refresh=True, stratz=stratz, command="player")
+    """Карточка игрока: текст всегда, картинка с короткой подписью — если нарисовалась; None — игрока нет.
+
+    refresh=False — только из БД, без обращений к OpenDota (inline-режим: ответить нужно за секунды).
+    """
+    summaries = await gather_summaries(storage, od, chat_id, refresh=refresh, stratz=stratz, command="player")
     comparison = build_chat_comparison(summaries)
     name_lower = name.strip().lower()
     for summary in summaries:
