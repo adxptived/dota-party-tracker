@@ -367,11 +367,19 @@ def _m004_accounts(conn: sqlite3.Connection) -> None:
     _v4_data_ver_triggers(conn)
 
 
+# --- 5: переименованные часовые пояса -------------------------------------------------------------------------
+
+def _m005_renamed_timezones(conn: sqlite3.Connection) -> None:
+    """Europe/Kiev в базе IANA стал Europe/Kyiv: в урезанных наборах поясов старого имени может не быть."""
+    conn.execute("UPDATE chats SET tz = 'Europe/Kyiv' WHERE tz = 'Europe/Kiev'")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
     (3, _m003_drop_dead_player_columns),
     (4, _m004_accounts),
+    (5, _m005_renamed_timezones),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

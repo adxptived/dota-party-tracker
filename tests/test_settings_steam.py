@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-import pytz
 
 import mmrbot.bot as botmod
 from mmrbot.formatting import render_player_card, render_settings, render_steam_change
@@ -129,9 +128,10 @@ def test_settings_menu_buttons_short_and_marked(store):
     assert next(b for b in buttons if b.callback_data == "s:step:25").text.startswith("•")
 
 
-def test_timezones_are_valid_pytz_names():
+def test_timezones_are_valid_iana_names():
+    from zoneinfo import ZoneInfo
     for _, name in TIMEZONES:
-        pytz.timezone(name)
+        ZoneInfo(name)
 
 
 # --- обработчики --------------------------------------------------------

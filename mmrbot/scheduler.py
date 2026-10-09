@@ -13,7 +13,6 @@ from functools import partial
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import pytz
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
 from aiogram.types import BufferedInputFile
@@ -36,6 +35,7 @@ from mmrbot.status import write_heartbeat
 from mmrbot.service import _chat_lock, alert_board, refresh_only, split_message, stats_board, warm_chat, weekly_board
 from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
+from mmrbot.timezones import zone
 from mmrbot.tracker import (
     backfill_opendota,
     check_contest_leaders,
@@ -75,11 +75,7 @@ def due_local_date(chat: Chat, now_utc: datetime) -> Optional[str]:
     Нужен, если по локальному времени час >= digest_hour и за эти локальные сутки
     дайджест ещё не отправляли.
     """
-    try:
-        tz = pytz.timezone(chat.tz)
-    except Exception:
-        tz = pytz.timezone("Europe/Moscow")
-    local = now_utc.astimezone(tz)
+    local = now_utc.astimezone(zone(chat.tz))
     today = local.date().isoformat()
     if chat.last_digest_date == today:
         return None
@@ -90,11 +86,7 @@ def due_local_date(chat: Chat, now_utc: datetime) -> Optional[str]:
 
 def due_weekly_key(chat: Chat, now_utc: datetime) -> Optional[str]:
     """Ключ ISO-недели (ГГГГ-Wнн), если недельную сводку пора слать (понедельник после часа сводки)."""
-    try:
-        tz = pytz.timezone(chat.tz)
-    except Exception:
-        tz = pytz.timezone("Europe/Moscow")
-    local = now_utc.astimezone(tz)
+    local = now_utc.astimezone(zone(chat.tz))
     if local.weekday() != 0 or local.hour < chat.digest_hour:
         return None
     iso = local.isocalendar()

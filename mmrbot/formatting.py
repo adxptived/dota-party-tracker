@@ -89,13 +89,10 @@ def _mmr_str(current: Optional[int]) -> str:
 
 def fmt_local(ts: int, tz_name: str = "UTC", fmt: str = "%d.%m.%Y") -> str:
     """Unix-время → дата в часовом поясе чата (так же, как «сегодня»); для UTC добавляет пометку времени."""
-    from datetime import datetime, timezone
-    import pytz
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz, tz_name = pytz.utc, "UTC"
-    text = datetime.fromtimestamp(ts or 0, tz=timezone.utc).astimezone(tz).strftime(fmt)
+    from mmrbot.timezones import is_valid, to_local
+    if not is_valid(tz_name):
+        tz_name = "UTC"
+    text = to_local(ts or 0, tz_name, "UTC").strftime(fmt)
     return f"{text} UTC" if tz_name == "UTC" and "%H" in fmt else text
 
 
@@ -771,13 +768,8 @@ DAILY_RECORD_ORDER = ("kills", "kda", "gpm", "hero_damage", "imp", "assists", "l
 
 
 def local_time(ts: int, tz_name: str):
-    from datetime import datetime, timezone
-    import pytz
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz = pytz.utc
-    return datetime.fromtimestamp(ts or 0, tz=timezone.utc).astimezone(tz)
+    from mmrbot.timezones import to_local
+    return to_local(ts or 0, tz_name, "UTC")
 
 
 def fmt_stamp(ts: int, tz_name: str = "UTC") -> str:

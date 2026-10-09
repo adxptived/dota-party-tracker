@@ -8,6 +8,8 @@ services:
       DB_PATH: /data/mmrbot.db
     volumes:
       - bot_data:/data
+    security_opt:
+      - no-new-privileges:true  # процесс бота (uid 10001) не может вернуть себе права root
     logging:
       driver: json-file
       options:

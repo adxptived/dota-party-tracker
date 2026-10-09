@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-import pytz
+from mmrbot.timezones import to_local, zone
 
 RANKED_LOBBY_TYPE = 7
 
@@ -121,10 +121,7 @@ def top_heroes(matches: list[dict], k: int = 3) -> list[dict]:
 
 def winrate_by_hour(matches: list[dict], tz_name: str) -> dict[int, tuple[int, int]]:
     """Разбивка по локальному часу старта: hour -> (игр, побед)."""
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz = pytz.timezone("Europe/Moscow")
+    tz = zone(tz_name)
     by_hour: dict[int, list[int]] = {}
     for match in matches:
         start_time = match.get("start_time")
@@ -313,12 +310,8 @@ def period_since(period: str, now: int) -> Optional[int]:
 
 def local_day_start(now: int, tz_name: str) -> int:
     """Unix-время начала текущих календарных суток (00:00) в часовом поясе чата."""
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz = pytz.timezone("Europe/Moscow")
-    local = datetime.fromtimestamp(now, tz=timezone.utc).astimezone(tz)
-    midnight = tz.localize(datetime(local.year, local.month, local.day))
+    local = to_local(now, tz_name)
+    midnight = datetime(local.year, local.month, local.day, tzinfo=zone(tz_name))
     return int(midnight.timestamp())
 
 

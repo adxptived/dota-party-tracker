@@ -46,7 +46,7 @@ _CLOSE = ("✖️ Закрыть", "x:close")
 
 STEPS = [10, 20, 25, 30, 50]
 TIMEZONES = [
-    ("Москва", "Europe/Moscow"), ("Киев", "Europe/Kiev"), ("Минск", "Europe/Minsk"), ("Алматы", "Asia/Almaty"),
+    ("Москва", "Europe/Moscow"), ("Киев", "Europe/Kyiv"), ("Минск", "Europe/Minsk"), ("Алматы", "Asia/Almaty"),
     ("Самара", "Europe/Samara"), ("Екатеринбург", "Asia/Yekaterinburg"),
     ("Новосибирск", "Asia/Novosibirsk"), ("Владивосток", "Asia/Vladivostok"),
 ]

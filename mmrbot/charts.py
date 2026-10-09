@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Optional
 
-import pytz
+from mmrbot.timezones import zone
 
 # Категориальная палитра для тёмной поверхности: восемь оттенков в фиксированном порядке. Порядок —
 # часть защиты от неразличимости при дальтонизме (соседние слоты проверены), поэтому не переставлять.
@@ -171,10 +171,7 @@ def render_mmr_chart(
     from matplotlib.path import Path
     from matplotlib.ticker import FuncFormatter, MaxNLocator
 
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz = pytz.timezone("Europe/Moscow")
+    tz = zone(tz_name)
     family = list(_font_family())
 
     def to_dt(ts: int) -> datetime:

@@ -5,10 +5,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-import pytz
 from dotenv import load_dotenv
 
 from mmrbot.storage import DEFAULT_DIGEST_HOUR, DEFAULT_MMR_STEP, DEFAULT_TZ
+from mmrbot.timezones import RENAMED, is_valid
 
 
 @dataclass
@@ -48,11 +48,7 @@ def _chat_ids(raw: str) -> frozenset:
 
 def _tz_env(name: str, default: str) -> str:
     value = (os.getenv(name) or "").strip() or default
-    try:
-        pytz.timezone(value)
-    except Exception:
-        return default
-    return value
+    return RENAMED.get(value, value) if is_valid(value) else default
 
 
 def _int_env(name: str, default: int) -> int:

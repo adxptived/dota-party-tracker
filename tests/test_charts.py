@@ -70,11 +70,11 @@ def test_date_num_matches_matplotlib_for_aware_datetimes():
     from datetime import datetime, timezone
 
     import matplotlib.dates as mdates
-    import pytz
+    from zoneinfo import ZoneInfo
 
     from mmrbot.charts import date_num
     for name in ("Europe/Moscow", "America/New_York", "Asia/Kolkata"):
-        tz = pytz.timezone(name)
+        tz = ZoneInfo(name)
         for ts in (0, 1_700_000_000, 1_711_846_800, 1_730_000_000, 1_760_000_123.5):
             expected = mdates.date2num(datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz))
             assert abs(date_num(ts) - expected) < 1e-9, (name, ts)
