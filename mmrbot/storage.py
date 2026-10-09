@@ -67,6 +67,7 @@ class Player:
     fh_unavailable: bool = False  # OpenDota: история матчей игрока закрыта — цифры могут быть неполными
     ingame_since: Optional[int] = None  # когда зашёл в Dota 2 (по Steam); None — не в игре
     ingame_misses: int = 0  # опросов подряд без Dota (гасит дребезг статуса)
+    lineups_ts: Optional[int] = None  # когда история аккаунта целиком перечитана вместе с составами команд
     tg_user_id: Optional[int] = None  # Telegram-аккаунт игрока (командой /me) — для тега участника
     last_tag: Optional[str] = None  # тег, который бот поставил в последний раз
 
@@ -288,7 +289,7 @@ class Storage:
     _PLAYER_SELECT = (
         "SELECT p.id, p.chat_id, p.account_id, p.display_name, p.anchor_mmr, p.anchor_ts, p.created_ts, "
         "p.tg_user_id, p.last_tag, a.last_rank_tier, a.last_leaderboard_rank, a.updated_ts, a.steam_name, "
-        "a.steam_avatar, a.profile_ts, a.history_ts, a.fh_unavailable, a.ingame_since, a.ingame_misses "
+        "a.steam_avatar, a.profile_ts, a.history_ts, a.fh_unavailable, a.ingame_since, a.ingame_misses, a.lineups_ts "
         "FROM players p JOIN accounts a ON a.account_id = p.account_id"
     )
     # Аккаунт игрока — для запросов к матчам по id игрока чата.
@@ -313,6 +314,7 @@ class Storage:
             fh_unavailable=bool(row["fh_unavailable"]),
             ingame_since=row["ingame_since"],
             ingame_misses=row["ingame_misses"] or 0,
+            lineups_ts=row["lineups_ts"],
             tg_user_id=row["tg_user_id"],
             last_tag=row["last_tag"],
         )
@@ -428,6 +430,7 @@ class Storage:
         if conn.execute("SELECT 1 FROM players WHERE account_id = ? LIMIT 1", (account_id,)).fetchone() is None:
             conn.execute("DELETE FROM matches WHERE account_id = ?", (account_id,))
             conn.execute("DELETE FROM accounts WHERE account_id = ?", (account_id,))
+            conn.execute("DELETE FROM match_lineups WHERE match_id NOT IN (SELECT match_id FROM matches)")
 
     # Таблицы с данными игрока чата (ключ player_id): чистятся вместе с игроком.
     _PLAYER_TABLES = ("pending_notices", "mmr_anchors")
@@ -558,6 +561,7 @@ class Storage:
                 rows,
             )
             new_ids = sorted({m["match_id"] for m in matches} - known)
+            self._save_lineups(conn, [(m["match_id"], m["lineup"]) for m in matches if m.get("lineup")])
             if new_ids:
                 watchers = [r[0] for r in conn.execute("SELECT id FROM players WHERE account_id = ?", (account_id,))]
                 conn.executemany(
@@ -639,6 +643,7 @@ class Storage:
         params = [details.get(field) for field in fields]
         params += [perf_score, bench_json, player_id, match_id]
         with self._conn() as conn:
+            self._save_lineups(conn, [(match_id, details.get("lineup"))])
             conn.execute(
                 f"UPDATE matches SET {assignments}, perf_score = ?, bench_json = ?, enriched = 1 "
                 f"WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
@@ -652,6 +657,7 @@ class Storage:
         params += [info.get(f) for f in self._DETAIL_FIELDS + ("party_size",)]
         params += [player_id, match_id]
         with self._conn() as conn:
+            self._save_lineups(conn, [(match_id, info.get("lineup"))])
             conn.execute(
                 f"UPDATE matches SET position = ?, role = ?, lane = ?, imp = ?, stratz_done = 1, {fill} "
                 f"WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
@@ -796,6 +802,55 @@ class Storage:
                 "AND match_id = ?",
                 (player_id, match_id),
             )
+
+    # --- составы команд ------------------------------------------------------------
+
+    @staticmethod
+    def _save_lineups(conn: sqlite3.Connection, lineups: list) -> None:
+        """Сохранить составы: [(match_id, (герои света, герои тьмы))]. Более полный состав заменяет неполный."""
+        rows = []
+        for match_id, lineup in lineups:
+            if not lineup:
+                continue
+            radiant = [int(h) for h in lineup[0] if h]
+            dire = [int(h) for h in lineup[1] if h]
+            if radiant and dire:
+                rows.append((match_id, ",".join(map(str, radiant)), ",".join(map(str, dire))))
+        if rows:
+            conn.executemany(
+                "INSERT INTO match_lineups (match_id, radiant, dire) VALUES (?, ?, ?) "
+                "ON CONFLICT(match_id) DO UPDATE SET radiant = excluded.radiant, dire = excluded.dire "
+                "WHERE length(excluded.radiant) + length(excluded.dire) > length(radiant) + length(dire)",
+                rows,
+            )
+
+    def get_lineups(self, player_id: int, since_ts: Optional[int] = None) -> dict[int, tuple[tuple, tuple]]:
+        """Составы матчей игрока: {match_id: (герои света, герои тьмы)}; матчей без известного состава в ответе нет."""
+        query = (
+            "SELECT l.match_id, l.radiant, l.dire FROM match_lineups l JOIN matches m ON m.match_id = l.match_id "
+            f"WHERE m.account_id = {self._ACCOUNT_OF}"
+        )
+        params: list = [player_id]
+        if since_ts is not None:
+            query += " AND m.start_time >= ?"
+            params.append(since_ts)
+        with self._conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return {
+            r["match_id"]: (tuple(int(h) for h in r["radiant"].split(",")), tuple(int(h) for h in r["dire"].split(",")))
+            for r in rows
+        }
+
+    def lineups_synced_ts(self, player_id: int) -> Optional[int]:
+        """Когда история аккаунта перечитана вместе с составами (из БД: объект игрока в руках вызывающего мог устареть)."""
+        with self._conn() as conn:
+            row = conn.execute(f"SELECT lineups_ts FROM accounts WHERE account_id = {self._ACCOUNT_OF}", (player_id,)).fetchone()
+        return row["lineups_ts"] if row else None
+
+    def mark_lineups_synced(self, player_id: int, ts: int) -> None:
+        """История аккаунта целиком перечитана вместе с составами — повторять полную выгрузку не нужно."""
+        with self._conn() as conn:
+            conn.execute(f"UPDATE accounts SET lineups_ts = ? WHERE account_id = {self._ACCOUNT_OF}", (ts, player_id))
 
     # --- оповещения о матчах: очередь «игрок чата × матч» ----------------------
 

@@ -20,6 +20,7 @@ from mmrbot.presence import advance
 from mmrbot.awards import compute_period_awards, compute_standings, contest_points, current_leaders, leader_changes
 from mmrbot.health import log_network_error
 from mmrbot.health import provider_down as _provider_down
+from mmrbot.opendota import lineup_of
 from mmrbot.ranks import mmr_rank_mismatch, rank_emoji, rank_label
 from mmrbot.storage import Chat, Player, Storage
 
@@ -135,6 +136,8 @@ def _normalize(raw: dict) -> dict:
         "tower_damage": raw.get("tower_damage"),
         "hero_healing": raw.get("hero_healing"),
         "leaver_status": raw.get("leaver_status"),
+        # Есть только в списке матчей (project=heroes): герои обеих команд — составы без запроса на матч.
+        "lineup": lineup_of(raw.get("heroes")),
     }
 
 
@@ -736,12 +739,17 @@ def build_mmr_series(storage: Storage, chat_id: int, since_ts: Optional[int]) ->
     return result
 
 
-def _fetch_matches(storage: Storage, client: OpenDotaClient, player: Player, now: int) -> tuple[list[dict], bool]:
-    """Сырые матчи для сверки и признак «сверяли глубоко».
+def _fetch_matches(
+    storage: Storage, client: OpenDotaClient, player: Player, now: int, fast: bool = False,
+) -> tuple[list[dict], bool, bool]:
+    """Сырые матчи для сверки и признаки «сверяли глубоко» и «выгружена вся история».
 
     Первая загрузка — вся ранкед-история. Дальше — лёгкий список последних матчей (один запрос,
     сразу с GPM/уроном), если он достаёт до нашего последнего матча. Иначе, и раз в DEEP_SYNC_SEC
     для самопроверки, — 200 ранкед-матчей; если и они все новые (бот долго стоял) — вся история.
+
+    Составы команд приходят только со списком матчей. Аккаунту, чья история сохранена до появления составов
+    (lineups_ts пуст), всю историю один раз перечитывает фоновое обновление (не команда пользователя: fast).
     """
     recent_fn = getattr(client, "get_recent_matches", None)
     if not storage.has_matches(player.id):
@@ -751,20 +759,22 @@ def _fetch_matches(storage: Storage, client: OpenDotaClient, player: Player, now
         if recent_fn is not None and checked:
             recent = recent_fn(player.account_id)
             if not any(stats.is_ranked_lobby(m.get("lobby_type")) for m in recent):
-                return recent, False
-        return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True
+                return recent, False, False
+        return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True, True
+    if not fast and player.lineups_ts is None and storage.lineups_synced_ts(player.id) is None:
+        return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True, True
     last = storage.latest_match_time(player.id)
     deep_due = player.history_ts is None or now - player.history_ts >= DEEP_SYNC_SEC
     if recent_fn is not None and not deep_due:
         recent = recent_fn(player.account_id)
         times = [m["start_time"] for m in recent if m.get("start_time") is not None]
         if times and last is not None and min(times) <= last:  # выдача перекрывает сохранённое — пропусков нет
-            return recent, False
+            return recent, False, False
     raw = client.get_matches(player.account_id, limit=HISTORY_LIMIT_REFRESH)
     times = [m["start_time"] for m in raw if m.get("start_time") is not None]
     if len(raw) >= HISTORY_LIMIT_REFRESH and last is not None and min(times, default=0) > last:
-        raw = client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST)  # разрыв больше 200 игр
-    return raw, True
+        return client.get_matches(player.account_id, limit=HISTORY_LIMIT_FIRST), True, True  # разрыв больше 200 игр
+    return raw, True, False
 
 
 class _Flight:
@@ -842,7 +852,7 @@ def _refresh_player_impl(
 
     # Храним ВСЮ ранкед-историю (для героев/позиций/матчей за любой период). Окно «с момента
     # добавления» применяется только в лидерборде (build_player_summary).
-    raw_matches, deep = _fetch_matches(storage, client, player, now)
+    raw_matches, deep, full = _fetch_matches(storage, client, player, now, fast)
     fresh = [
         _normalize(m)
         for m in raw_matches
@@ -851,6 +861,8 @@ def _refresh_player_impl(
     ]
     inserted = storage.add_matches(player.id, fresh)
     storage.touch_player(player.id, now, deep=deep)
+    if full:  # вся история пришла списком матчей — вместе с составами команд; повторять выгрузку не нужно
+        storage.mark_lineups_synced(player.id, now)
 
     # Ранг меняется только после игр: без новых матчей перечитываем профиль изредка
     # (его же раз в полчаса обновляет проверка Steam-профилей).
@@ -1149,6 +1161,30 @@ def build_hero_view(
             entries.append((player, rows[0]))
     entries.sort(key=lambda e: (e[1]["games"], e[1]["winrate"]), reverse=True)
     return entries
+
+
+def build_matchups(
+    storage: Storage, chat_id: int, name: Optional[str], since_ts: Optional[int], min_games: Optional[int] = None,
+) -> Optional[tuple[Optional[str], dict]]:
+    """Соперники и союзники по героям (из кэша БД): игрока `name` или, без имени, всей пати.
+
+    → (ник игрока | None для пати, отчёт matchups.player_matchups / party_matchups); None — игрока с таким ником нет.
+    """
+    from mmrbot import matchups
+
+    kwargs = {} if min_games is None else {"min_games": min_games}
+    if name:
+        player = storage.get_player(chat_id, name)
+        if player is None:
+            return None
+        report = matchups.player_matchups(
+            storage.get_matches(player.id, since_ts=since_ts), storage.get_lineups(player.id, since_ts), **kwargs)
+        return player.display_name, report
+    named, lineups = [], {}
+    for player in storage.list_players(chat_id):
+        named.append((player.display_name, storage.get_matches(player.id, since_ts=since_ts)))
+        lineups.update(storage.get_lineups(player.id, since_ts))
+    return None, matchups.party_matchups(named, lineups, **kwargs)
 
 
 def median_rank_tier(tiers: list[int]) -> Optional[int]:

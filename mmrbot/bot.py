@@ -40,10 +40,12 @@ from mmrbot.service import (
     heroes_board,
     render_heroes_board,
     match_board,
+    matchups_board,
     player_board,
     player_heroes_board,
     render_match_board,
     render_player_board,
+    render_matchups_board,
     render_player_heroes_board,
     render_roles_board,
     together_board,
@@ -133,6 +135,7 @@ BOT_COMMANDS = [
     BotCommand(command="last", description="🏁 Последний матч"),
     BotCommand(command="match", description="🎮 Разбор матча"),
     BotCommand(command="player", description="🪪 Карточка игрока"),
+    BotCommand(command="matchups", description="⚔️ Против кого и с кем"),
     BotCommand(command="records", description="🌟 Рекорды пати"),
     BotCommand(command="graph", description="📈 График MMR"),
     BotCommand(command="achievements", description="🏅 Соревнование чата"),
@@ -163,6 +166,7 @@ HELP_TEXT = (
     '/stats — рейтинг и награды (сегодня, неделя, месяц)\n'
     '/player имя — карточка игрока\n'
     '/heroes [имя или герой] — герои\n'
+    '/matchups [имя] — против каких героев тяжело и с кем лучше\n'
     '/last [игрок] — последний матч\n'
     '/match [id] — разбор матча\n'
     '/together — игры вместе\n'
@@ -830,8 +834,15 @@ async def _text_records(storage: Storage, od: OpenDota, chat_id: int, args: list
     return await render_records_board(storage, od, chat_id, args[0], stratz)
 
 
+async def _text_matchups(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:mu:<account_id|0>:<period> — соперники и союзники текстом (0 — вся пати)."""
+    if len(args) != 2 or args[1] not in PERIODS_KEYS:
+        return None
+    return await render_matchups_board(storage, od, chat_id, None if args[0] == "0" else args[0], args[1], stratz)
+
+
 TEXT_VIEWS = {"together": _text_together, "compare": _text_compare, "records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
-              "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_contest}
+              "mu": _text_matchups, "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_contest}
 
 
 async def on_text_view(message: Message, storage: Storage, od: OpenDota, args: list[str], stratz=None) -> None:
@@ -870,6 +881,28 @@ async def do_records(message: Message, storage: Storage, od: OpenDota, period: s
     """Рекорды пати картинкой (периоды меняют её на месте, «📝 Текстом» — текстом); не вышло — текстом."""
     await _image_report(message, records_board(storage, od, message.chat.id, period, stratz),
                         with_text_button(records_buttons(period), "records", period), "рекордов", edit=edit)
+
+
+async def do_matchups(message: Message, storage: Storage, od: Optional[OpenDota], name: Optional[str], period: str,
+                      stratz=None, edit: bool = False) -> None:
+    """Против каких героев тяжело и с кем в команде лучше (игрок или вся пати) + периоды и «📝 Текстом»."""
+    if name and storage.get_player(message.chat.id, name) is None:
+        await message.answer(NOT_FOUND_TEXT)
+        return
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await matchups_board(storage, od, message.chat.id, name, period, stratz)
+    except Exception:
+        log.exception("Ошибка сборки соперников и союзников для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board is None:
+        await _delete(status)
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    markup = with_text_button(period_buttons("mu", board.account_id, period), "mu", board.account_id, period)
+    await _reply_image(message, board, markup, status, edit=edit)
 
 
 async def do_graph(
@@ -998,6 +1031,14 @@ async def cmd_heroes(message: Message, command: CommandObject, storage: Storage,
         await do_hero(message, storage, od, name, period, stratz)
     else:
         await message.answer(f"🔍 Не нашёл ни игрока, ни героя «{name}». Список: /list. Героя пишите по-английски: /heroes Axe")
+
+
+@router.message(Command("matchups"))
+async def cmd_matchups(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
+    if not await _has_players(message, storage):
+        return
+    name, period = cmd.parse_target_period(command.args or "")
+    await do_matchups(message, storage, od, name, period, stratz)
 
 
 @router.message(Command("match"))
@@ -1171,7 +1212,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "x", "s", "g", "r", "c", "mt", "tx", "mx"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -1236,6 +1277,9 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await message.answer(f"{category_title(key)} — выберите действие:", reply_markup=category_menu(key))
             else:
                 await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
+        elif action == "matchups":
+            if await _has_players(message, storage):
+                await do_matchups(message, storage, od, None, "all", stratz)
         elif action == "records":
             if await _has_players(message, storage):
                 await do_records(message, storage, od, "week", stratz)
@@ -1335,6 +1379,12 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
             else:
                 await _prompt_setmmr(message, player)
+        return
+
+    if kind == "mu" and len(args) == 2:
+        account, period = args
+        if period in {"day", "week", "month", "all"}:
+            await do_matchups(message, storage, od, None if account == "0" else account, period, stratz, edit=True)
         return
 
     if kind in {"hp", "rp"} and len(args) == 2:

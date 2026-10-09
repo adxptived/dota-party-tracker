@@ -14,6 +14,7 @@ from typing import Optional
 import requests
 
 from .health import ProviderHealth, ProviderUnavailable
+from .opendota import lineup_of
 
 URL = "https://api.stratz.com/graphql"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
@@ -201,6 +202,7 @@ class Stratz:
                     "role": row.get("role"),
                     "lane": row.get("lane"),
                     "imp": row.get("imp"),
+                    "lineup": lineup_of([{"hero_id": r.get("heroId"), "isRadiant": r.get("isRadiant")} for r in rows]),
                 }
                 for src, out in _FIELD_MAP.items():
                     info[out] = row.get(src)

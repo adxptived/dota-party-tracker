@@ -400,6 +400,21 @@ def _m007_double_down(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE matches ADD COLUMN double_down INTEGER NOT NULL DEFAULT 0")
 
 
+# --- 8: составы команд ------------------------------------------------------------------------------------------
+
+def _m008_match_lineups(conn: sqlite3.Connection) -> None:
+    """Герои обеих команд по каждому матчу — для статистики «против кого» и «с кем» (id героев через запятую).
+
+    accounts.lineups_ts — когда история аккаунта целиком перечитана вместе с составами (NULL — ещё нет:
+    у матчей, сохранённых до этой версии, составов нет, и их один раз дозагружает фоновое обновление).
+    """
+    conn.execute(
+        "CREATE TABLE match_lineups (match_id INTEGER PRIMARY KEY, radiant TEXT NOT NULL, dire TEXT NOT NULL) "
+        "WITHOUT ROWID"
+    )
+    conn.execute("ALTER TABLE accounts ADD COLUMN lineups_ts INTEGER")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -408,6 +423,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (5, _m005_renamed_timezones),
     (6, _m006_mmr_anchors),
     (7, _m007_double_down),
+    (8, _m008_match_lineups),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

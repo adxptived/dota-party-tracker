@@ -15,7 +15,7 @@ from typing import Optional
 
 from mmrbot import avatars, hero_icons, item_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
-from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, build_png, fit_caption
+from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, MatchupsBoard, build_png, fit_caption
 from mmrbot.contest_image import MAX_TABLE as CONTEST_TABLE_LIMIT, render_contest_image
 from mmrbot.daily_image import render_daily_image
 from mmrbot.card_data import (
@@ -58,9 +58,10 @@ from mmrbot.heroes import find_hero, hero_name
 from mmrbot.heroes_image import LIMIT as HEROES_LIMIT
 from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image
 from mmrbot.match_image import render_match_image
+from mmrbot.matchups_image import render_matchups_image
 from mmrbot.opendota import OpenDota
 from mmrbot.ranks import rank_label
-from mmrbot import stats
+from mmrbot import matchups, stats
 from mmrbot.player_image import render_player_image
 from mmrbot.records_image import render_records_image
 from mmrbot.stats import period_since
@@ -74,6 +75,7 @@ from mmrbot.tracker import (
     build_chat_comparison,
     build_daily_report,
     build_hero_view,
+    build_matchups,
     build_weekly_report,
     build_leaderboard,
     refresh_chat,
@@ -159,7 +161,7 @@ _background_refreshes: set = set()
 WAITS_FOR_REFRESH = {
     "stats": True, "player": True, "compare": True, "together": True, "records": True, "graph": True,
     "period": True, "match": True,
-    "heroes": False, "player_heroes": False, "roles": False, "hero": False,
+    "heroes": False, "player_heroes": False, "roles": False, "hero": False, "matchups": False,
 }
 
 
@@ -975,3 +977,46 @@ async def render_hero_board(
     storage: Storage, od: OpenDota, chat_id: int, query: str, period: str, stratz=None
 ) -> str:
     return (await hero_board(storage, od, chat_id, query, period, stratz, image=False)).text
+
+
+# --- соперники и союзники по героям ---------------------------------------------------------------------------
+
+def _matchups_png(view: dict, note) -> bytes:
+    """В потоке: иконки героев (кэш/CDN) + рендер карточки."""
+    icon_loader = hero_icons.shared()
+    icons = icon_loader.get_many(matchups.hero_ids(view)) if icon_loader is not None else {}
+    return render_matchups_image(view, icons, note)
+
+
+async def matchups_board(
+    storage: Storage, od: Optional[OpenDota], chat_id: int, name: Optional[str], period: str, stratz=None,
+    image: Optional[bool] = None,
+) -> Optional[MatchupsBoard]:
+    """Против каких героев игрок (или вся пати, name=None) проигрывает и с кем в команде выигрывает.
+
+    Составы берутся из БД (их дозагружает фон), поэтому обновления не ждём. None — игрока с таким ником нет.
+    """
+    if od is not None:
+        await refresh_for("matchups", storage, od, chat_id, stratz)
+    since = period_since(period, int(time.time()))
+    result = await _build(build_matchups, storage, chat_id, name, since, matchups.threshold(period))
+    if result is None:
+        return None
+    who, report = result
+    account_id = storage.get_player(chat_id, who).account_id if who else 0
+    board = MatchupsBoard(_with_stale(storage, chat_id, matchups.render_matchups(who, period, report), od),
+                          account_id=account_id)
+    if want_image(storage, chat_id, image) and report["games"] and not matchups.is_empty(report):
+        note = _stale_line(storage, chat_id, od)
+        view = matchups.matchups_view(who, period, report)
+        board.png = await _render_png("соперников и союзников", _matchups_png, view, _plain(note))
+        if board.png is not None:
+            board.caption = fit_caption(matchups.matchups_caption(who, period, report) + (f"\n{note}" if note else ""))
+    return board
+
+
+async def render_matchups_board(
+    storage: Storage, od: Optional[OpenDota], chat_id: int, name: Optional[str], period: str, stratz=None,
+) -> str:
+    board = await matchups_board(storage, od, chat_id, name, period, stratz, image=False)
+    return NOT_FOUND if board is None else board.text
