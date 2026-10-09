@@ -11,10 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from mmrbot.cards import ACCENT, FG, GOLD, LOSS, MUTED, WIN  # noqa: E402
 from mmrbot.contest_image import render_contest_image  # noqa: E402
 from mmrbot.alert_image import render_alert_image  # noqa: E402
 from mmrbot.compare_image import render_compare_image  # noqa: E402
 from mmrbot.together_image import render_together_image  # noqa: E402
+from mmrbot.daily_image import render_daily_image  # noqa: E402
 from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image  # noqa: E402
 from mmrbot.match_image import render_match_image  # noqa: E402
 from mmrbot.player_image import render_player_image  # noqa: E402
@@ -73,8 +75,8 @@ def sample_alert(kind: str = "win") -> dict:
 def sample_stats_rows() -> list[dict]:
     def row(name, mmr, delta, wins, losses, form, hero, rank_tier, rank_text, **extra):
         data = {"name": name, "avatar": None, "rank_tier": rank_tier, "rank_text": rank_text, "big": f"≈{mmr}",
-                "big_color": "#e8eef5", "sub": f"{'+' if delta >= 0 else '−'}{abs(delta)} за {wins + losses} игр",
-                "sub_color": "#3ddc84" if delta >= 0 else "#ff5c5c", "wins": wins, "losses": losses, "form": form,
+                "big_color": FG, "sub": f"{'+' if delta >= 0 else '−'}{abs(delta)} за {wins + losses} игр",
+                "sub_color": WIN if delta >= 0 else LOSS, "wins": wins, "losses": losses, "form": form,
                 "hero_id": hero, "hero_note": "×12"}
         data.update(extra)
         return data
@@ -93,15 +95,29 @@ def build() -> dict[str, bytes]:
     out = {
         "match.png": render_match_image(match, {1: "Вася", 7: "Петя"}, focus=1, tz="Europe/Moscow", icons={}),
     }
+    items = {i: fake_photo(40 + i, 88) for i in range(1, 12)}
+    built = sample_match()
+    for i, p in enumerate(built["players"]):
+        p.update(items=[1 + (i + k) % 9 for k in range(6)], item_times=[60 * (k * 6 + i) for k in range(6)],
+                 neutral_item=10, shard=i % 2 == 0, scepter=i % 3 == 0, tower_damage=1200 * i)
+    built["players"][2].update(bear_items=[1, 2, 3, 4], bear_item_times=[300, 900, 1500, 2000], bear_neutral=11)
+    out["match_build.png"] = render_match_image(built, {1: "Вася", 7: "Петя"}, focus=7, tz="Europe/Moscow", icons={},
+                                                item_icons=items)
+    event = sample_alert("win")
+    for i, row in enumerate(event["rows"]):
+        row.update(items=[1 + (i + k) % 9 for k in range(6)], item_times=[60 * (k * 6 + i) for k in range(6)],
+                   neutral_item=10, shard=True, shard_time=1500, scepter=i == 0, scepter_time=2100,
+                   net_worth=18200 + i * 900, last_hits=312, denies=14, tower_damage=4200, rank_tier=55 - i * 10)
+    out["alert_build.png"] = render_alert_image(event, "Europe/Moscow", icons={12: fake_photo(1, 256)}, item_icons=items)
     for kind in ("win", "loss", "mixed"):
         out[f"alert_{kind}.png"] = render_alert_image(
             sample_alert(kind), "Europe/Moscow", icons={12: fake_photo(1, 256), 1: fake_photo(2, 256)},
             avatars={"https://avatars.steamstatic.com/a.jpg": fake_photo(7)})
     tiles = [
-        {"label": "Сегодня", "value": "4 игры", "sub": "3–1 (75%) · +50", "color": "#3ddc84"},
-        {"label": "За неделю", "value": "18 игр", "sub": "11–7 (61%) · +100", "color": "#e8eef5"},
-        {"label": "Лидер недели", "value": "Вася", "sub": "+75 (9–3)", "color": "#f0b429"},
-        {"label": "Лучшая серия", "value": "6 побед", "sub": "Вася", "color": "#e8eef5"},
+        {"label": "Сегодня", "value": "4 игры", "sub": "3–1 (75%) · +50", "color": WIN},
+        {"label": "За неделю", "value": "18 игр", "sub": "11–7 (61%) · +100", "color": FG},
+        {"label": "Лидер недели", "value": "Вася", "sub": "+75 (9–3)", "color": GOLD},
+        {"label": "Лучшая серия", "value": "6 побед", "sub": "Вася", "color": FG},
     ]
     records = [
         {"label": "Макс. GPM", "value": "812 GPM", "player": "Вася", "hero_id": 12},
@@ -116,12 +132,12 @@ def build() -> dict[str, bytes]:
     icons = {12: fake_photo(1, 256), 1: fake_photo(2, 256), 26: fake_photo(5, 256)}
     avatars = {"https://avatars.steamstatic.com/a.jpg": fake_photo(7)}
     out["stats.png"] = render_stats_image(
-        "Рейтинг", "оценка MMR: старт ± шаг за игру", ("СЕЗОН", "#3987e5"), sample_stats_rows(), tiles, records, awards,
+        "Рейтинг", "оценка MMR: старт ± шаг за игру", ("СЕЗОН", ACCENT), sample_stats_rows(), tiles, records, awards,
         "данные обновлены 12:30", icons, avatars)
     out["stats_today.png"] = render_stats_image("Сегодня", None, None, sample_stats_rows()[:2], tiles[:2], icons=icons)
-    weekly_rows = [dict(r, big="+75", sub="12 игр · KDA 3.10", sub_color="#8b98a9", big_color="#3ddc84", form=[]) for r in sample_stats_rows()[:3]]
+    weekly_rows = [dict(r, big="+75", sub="12 игр · KDA 3.10", sub_color=MUTED, big_color=WIN, form=[]) for r in sample_stats_rows()[:3]]
     out["weekly.png"] = render_stats_image(
-        "Итоги недели", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", "#3987e5"), weekly_rows, tiles,
+        "Итоги недели", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", ACCENT), weekly_rows, tiles,
         [{"label": "Герой недели", "value": "Phantom Lancer", "player": "9 игр · 67%", "hero_id": 12}],
         awards[1:], None, icons, avatars, "±MMR")
     out["stats_empty.png"] = render_stats_image("Рейтинг", None, None, [])
@@ -130,11 +146,73 @@ def build() -> dict[str, bytes]:
     card.update(warnings=[], steam_name=None, perf=None, streak=None, series=[], split=[], hours=None, skills=[],
                 heroes=[], last_game=None, lobby_rank=None, standing=None)
     out["player_sparse.png"] = render_player_image(card)
+    out["daily.png"] = render_daily_image(sample_daily(), icons, avatars, items)
     out.update(sample_heroes(icons, avatars))
     out.update(sample_records(icons))
+    out.update(sample_charts())
     out.update(sample_party(avatars))
     out.update(sample_contest(avatars))
     return out
+
+
+def sample_daily() -> dict:
+    since, until = NOW - 86_400, NOW
+    rows = sample_stats_rows()
+
+    def row(base, games, wins, big, color, series, **extra):
+        data = dict(base, games=games, wins=wins, losses=games - wins, big=big, big_color=color,
+                    sub=f"≈{base['big'][1:]} · {games} игр" if games else "не играл", series=series)
+        data.update(extra)
+        return data
+
+    def game(hours_ago, won, minutes=38):
+        return {"start": until - hours_ago * 3600, "end": until - hours_ago * 3600 + minutes * 60, "won": won}
+    return {
+        "title": "Ежедневная сводка", "window": "Последние 24 часа · 08.10 12:00 — 09.10 12:00",
+        "span": "Играли с 14:10 до 02:35", "badge": ("24 ЧАСА", ACCENT),
+        "big": {"value": "+75", "color": WIN, "label": "оценка ±MMR пати за 24 часа", "sub": "11 игр · 64% побед"},
+        "tiles": [{"label": "Игр за сутки", "value": "11", "sub": "7–4 (64%)", "color": FG},
+                  {"label": "Лидер суток", "value": "Вася", "sub": "+75 (4–1)", "color": GOLD},
+                  {"label": "Лучшая серия", "value": "4 победы", "sub": "Вася", "color": WIN},
+                  {"label": "В игре", "value": "7 ч 10 мин", "sub": "ср. 39 мин", "color": FG}],
+        "rows": [row(rows[0], 5, 4, "+75", WIN, [0, 25, 50, 25, 50, 75]),
+                 row(rows[2], 4, 2, "0", MUTED, [0, 25, 0, 25, 0]),
+                 row(rows[1], 2, 1, "−25", LOSS, [0, -25, -50, -25]),
+                 row(rows[3], 0, 0, "", MUTED, [], hero_id=None)],
+        "timeline": {"since": since, "until": until,
+                     "ticks": [(since + h * 3600, f"{(12 + h) % 24:02d}:00") for h in range(0, 25, 4)],
+                     "lanes": [{"name": "Вася", "avatar": "https://avatars.steamstatic.com/a.jpg",
+                                "games": [game(21, True), game(20, True), game(19, False), game(11, True), game(10, True, 52)]},
+                               {"name": "Оооочень длинный ник игрока", "avatar": None,
+                                "games": [game(21, True), game(20, True), game(13, False), game(12, False, 44)]},
+                               {"name": "Петя", "avatar": None, "games": [game(19, False), game(11, True)]}]},
+        "records": [{"label": "Макс. GPM", "value": "812 GPM", "player": "Вася", "hero_id": 12},
+                    {"label": "Больше всего убийств", "value": "21 убийство", "player": "Петя", "hero_id": 1},
+                    {"label": "Лучший IMP", "value": "IMP +64", "player": "Вася", "hero_id": 26}],
+        "best_game": {"player": "Вася", "hero_id": 12, "won": True, "kills": 20, "deaths": 2, "assists": 10, "kda": "15.0",
+                      "stats": [{"label": "GPM", "value": "812"}, {"label": "XPM", "value": "790"},
+                                {"label": "Нетворт", "value": "31.4k"}, {"label": "Урон по героям", "value": "42.0k"},
+                                {"label": "Урон по зданиям", "value": "9.8k"}, {"label": "IMP", "value": "+64"}],
+                      "build": {"items": [1, 2, 3, 4, 5, 6], "item_times": [420, 900, 1260, 1620, 1980, 2200],
+                                "neutral_item": 10, "shard": True, "shard_time": 1500, "scepter": True, "scepter_time": 2100}},
+        "footer": "Оценка MMR: ±25 за игру · учтены игры за последние 24 часа до отправки", "note": None,
+    }
+
+
+def sample_charts() -> dict[str, bytes]:
+    """График MMR (/graph): пати по времени и один игрок по номеру игры."""
+    from mmrbot.charts import render_mmr_chart
+
+    def walk(seed: int, games: int) -> list[tuple[int, int]]:
+        total, points = 0, []
+        for i in range(games):
+            total += 25 if (seed * 7 + i * i * 3 + i) % 5 < 3 else -25
+            points.append((NOW - 7 * 86_400 + i * 7 * 86_400 // games, total))
+        return points
+    series = {"Вася": walk(1, 22), "Петя": walk(2, 14), "Ира": walk(3, 18), "Макс": walk(5, 9)}
+    return {"graph.png": render_mmr_chart(series, "Динамика MMR · неделя", "Europe/Moscow", NOW - 7 * 86_400, NOW,
+                                          order=list(series)),
+            "graph_solo.png": render_mmr_chart({"Вася": walk(1, 30)}, "Динамика MMR · Вася", "Europe/Moscow", by_games=True)}
 
 
 def sample_party(avatars: dict) -> dict[str, bytes]:
@@ -198,10 +276,10 @@ def sample_heroes(icons: dict, avatars: dict) -> dict[str, bytes]:
     players = [dict(row, name=nm, avatar=av) for row, nm, av in zip(
         rows, ("Вася", "Петя", "Оооочень длинный ник игрока"), ("https://avatars.steamstatic.com/a.jpg", None, None))]
     return {
-        "heroes_player.png": render_player_heroes_image("Герои · Вася", None, ("ЗА НЕДЕЛЮ", "#3987e5"), rows, roles, icons,
+        "heroes_player.png": render_player_heroes_image("Герои · Вася", None, ("ЗА НЕДЕЛЮ", ACCENT), rows, roles, icons,
                                                          note="данные обновлены 12:30"),
-        "heroes_player_empty.png": render_player_heroes_image("Герои · Вася", None, ("ЗА СУТКИ", "#3987e5"), []),
-        "roles_player.png": render_player_heroes_image("Позиции · Вася", None, ("ВСЁ ВРЕМЯ", "#3987e5"), [], roles),
+        "heroes_player_empty.png": render_player_heroes_image("Герои · Вася", None, ("ЗА СУТКИ", ACCENT), []),
+        "roles_player.png": render_player_heroes_image("Позиции · Вася", None, ("ВСЁ ВРЕМЯ", ACCENT), [], roles),
         "heroes_party.png": render_party_heroes_image(party, icons, avatars),
         "hero.png": render_hero_image(12, "Phantom Lancer", "за месяц", players, icons, avatars),
         "hero_empty.png": render_hero_image(12, "Phantom Lancer", "за сутки", [], icons),
@@ -239,7 +317,7 @@ def sample_player() -> dict:
         "warnings": ["Оценка MMR расходится с медалью Legend 5 — обновите стартовый: /setmmr",
                      "История матчей закрыта у OpenDota — игры могли не загрузиться, цифры неполные."],
         "tiles": [
-            {"label": "Результат", "value": "35–21", "sub": "62% винрейт", "color": "#3ddc84"},
+            {"label": "Результат", "value": "35–21", "sub": "62% винрейт", "color": WIN},
             {"label": "KDA", "value": "3.10", "sub": "8/5/11"},
             {"label": "GPM", "value": "540", "sub": "по 40 из 56"},
             {"label": "Нетворт", "value": "18.2k", "sub": "по 40 из 56"},

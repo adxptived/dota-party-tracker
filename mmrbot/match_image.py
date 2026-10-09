@@ -1,6 +1,8 @@
 """Картинка матча (PNG в памяти): шапка с исходом и таблица команд — иконка героя, ник, билд, K/D/A, экономика.
 
-Рисуем на Pillow (ставится вместе с matplotlib), шрифт DejaVu берём из matplotlib — в нём есть кириллица.
+Шапка — табло: слева номер и время матча, по центру счёт по убийствам цветом сторон, справа исход.
+В строке игрока под нетвортом — полоска доли от самого богатого в матче, IMP — цветной плашкой.
+Рисуем на Pillow (ставится вместе с matplotlib), шрифты — из cards.py.
 Чистая функция: иконки приходят готовыми байтами (см. hero_icons.py), сети здесь нет.
 Палитра — тёмная, как у графиков (charts.py). Ширина больше карточек (1560 против 1280): в строке рядом
 с ником помещается билд, и колонки не наезжают друг на друга; Telegram держит фото до 2560 px.
@@ -36,8 +38,8 @@ SLOT_W, SLOT_H, SLOT_GAP = 44, 33, 3
 TAGS_X = 800  # иконки шарда и скипетра — после предметов и нейтралки
 UPGRADE_SIZE = 24
 # центры колонок (x) и их заголовки
-COLUMNS = [("kda", 940, "K / D / A"), ("nw", 1090, "Нетворт"), ("gpm", 1225, "GPM / XPM"),
-           ("dmg", 1360, "Урон"), ("imp", 1480, "IMP")]
+COLUMNS = [("kda", 940, "K / D / A"), ("nw", 1090, "НЕТВОРТ"), ("gpm", 1225, "GPM / XPM"),
+           ("dmg", 1360, "УРОН"), ("imp", 1480, "IMP")]
 
 
 def _sorted_team(players: list[dict]) -> list[dict]:
@@ -85,14 +87,6 @@ def render_match_image(match: dict, tracked: dict, focus=None, tz: str = "UTC",
     build = _has_build(players)
     height = _height([team for _, team in teams]) if teams else HEAD_H + PAD
 
-    canvas = cards.Canvas(height, MATCH_WIDTH)
-    img, draw = canvas.img, canvas.draw
-
-    # --- шапка ---
-    draw_text(draw, (PAD, 30), f"Матч {match.get('match_id')}", 40, FG, bold=True)
-    when = fmt_local(match.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
-    sub = when + (f"  ·  {match['duration'] // 60} мин" if match.get("duration") else "")
-    draw_text(draw, (PAD, 84), sub, 24, MUTED)
     radiant_win = match.get("radiant_win")
     if me is not None and radiant_win is not None:
         won = bool(me.get("is_radiant")) == bool(radiant_win)
@@ -101,30 +95,55 @@ def render_match_image(match: dict, tracked: dict, focus=None, tz: str = "UTC",
         label, color = ("ПОБЕДА RADIANT", RADIANT) if radiant_win else ("ПОБЕДА DIRE", DIRE)
     else:
         label, color = None, None
+
+    canvas = cards.Canvas(height, MATCH_WIDTH, accent=color or ACCENT)
+    img, draw = canvas.img, canvas.draw
+
+    # --- шапка: слева матч и время, по центру счёт по убийствам, справа исход ---
+    draw_text(draw, (PAD, 26), f"Матч {match.get('match_id')}", 40, FG, bold=True)
+    when = fmt_local(match.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
+    sub = when + (f"  ·  {match['duration'] // 60} мин" if match.get("duration") else "")
+    draw_text(draw, (PAD, 82), sub, 22, MUTED)
     if label:
-        cards.pill(img, draw, MATCH_WIDTH - PAD, 68, label, BG, color, size=28, align="right", pad=24)
+        cards.pill(img, draw, MATCH_WIDTH - PAD, 62, label, BG, color, size=28, align="right", pad=24)
+    if len(teams) == 2:
+        _draw_score(draw, MATCH_WIDTH / 2, 62, *(sum(p.get("kills") or 0 for p in team) for _, team in teams))
+    top_nw = max((p.get("net_worth") or 0 for p in players), default=0)
 
     # --- команды ---
     y = HEAD_H
     for side, team in teams:
         team_color = RADIANT if side else DIRE
-        cards.stripe(img, PAD, y + 12, y + 44, team_color)
+        cards.stripe(img, PAD, y + 14, y + 42, team_color)
         title = "RADIANT" if side else "DIRE"
-        draw_text(draw, (PAD + 20, y + 28), title, 28, team_color, bold=True, anchor="lm")
-        tx = PAD + 20 + cards.text_width(title, 28, True) + 14
+        draw_text(draw, (PAD + 20, y + 28), title, 26, team_color, bold=True, anchor="lm")
+        tx = PAD + 20 + cards.text_width(title, 26, True) + 14
         if radiant_win is not None and bool(radiant_win) == side:
-            draw_text(draw, (tx, y + 29), "победа", 20, MUTED, anchor="lm")
+            cards.chip(img, draw, tx, y + 28, "победа", team_color, size=18, pad=12)
         if build:
-            draw_text(draw, (ITEMS_X, y + 30), "Билд · время покупки", 18, MUTED, anchor="lm")
+            draw_text(draw, (ITEMS_X, y + 30), "БИЛД · ВРЕМЯ ПОКУПКИ", 18, MUTED, anchor="lm")
         for _key, cx, head in COLUMNS:
             draw_text(draw, (cx, y + 30), head, 18, MUTED, anchor="mm")
         y += TEAM_HEAD_H
         for p in team:
-            _draw_row(img, draw, y, p, tracked, icons, item_icons, build)
+            _draw_row(img, draw, y, p, tracked, icons, item_icons, build, top_nw)
             y += _row_h(p) + ROW_GAP
         y += TEAM_GAP
 
     return canvas.png(fmt=fmt)
+
+
+def _draw_score(draw, cx: float, cy: float, radiant: int, dire: int) -> None:
+    """Счёт по убийствам, как на табло: числа цветом сторон, по бокам подписи команд."""
+    gap = 26
+    draw_text(draw, (cx, cy - 2), ":", 44, cards.mix(MUTED, BG, 0.3), bold=True, anchor="mm")
+    draw_text(draw, (cx - gap, cy), str(radiant), 60, RADIANT, bold=True, anchor="rm")
+    draw_text(draw, (cx + gap, cy), str(dire), 60, DIRE, bold=True, anchor="lm")
+    left = cx - gap - cards.text_width(str(radiant), 60, True) - 22
+    right = cx + gap + cards.text_width(str(dire), 60, True) + 22
+    draw_text(draw, (left, cy + 2), "RADIANT", 18, cards.mix(RADIANT, BG, 0.2), bold=True, anchor="rm")
+    draw_text(draw, (right, cy + 2), "DIRE", 18, cards.mix(DIRE, BG, 0.2), bold=True, anchor="lm")
+    draw_text(draw, (cx, cy + 46), "УБИЙСТВА", 18, cards.mix(MUTED, BG, 0.25), anchor="mm")
 
 
 def _draw_items(img, draw, top: float, items, times, neutral, item_icons: dict) -> None:
@@ -159,12 +178,16 @@ def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
 
 
 def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons: Optional[dict] = None,
-              build: bool = False) -> None:
+              build: bool = False, top_nw: float = 0) -> None:
     mine = p.get("account_id") is not None and p.get("account_id") in tracked
     row_h = _row_h(p)
-    cards.panel(img, (PAD, y, MATCH_WIDTH - PAD, y + row_h), TRACKED_PANEL if mine else PANEL, radius=12)
-    if mine:
-        cards.stripe(img, PAD, y, y + row_h, TRACKED_MARK)
+    box = (PAD, y, MATCH_WIDTH - PAD, y + row_h)
+    if mine:  # свой игрок: золотой отсвет слева, полоса и звезда у ника
+        cards.gradient_panel(img, box, cards.mix(TRACKED_PANEL, TRACKED_MARK, 0.2), TRACKED_PANEL, radius=12,
+                             outline=cards.mix(TRACKED_PANEL, TRACKED_MARK, 0.28))
+        cards.stripe(img, PAD, y + 12, y + row_h - 12, TRACKED_MARK)
+    else:
+        cards.panel(img, box, PANEL, radius=12)
     mid = y + row_h / 2
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)
@@ -183,7 +206,14 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
     cols = {key: cx for key, cx, _ in COLUMNS}
     cards.kda(draw, cols["kda"], mid, p.get("kills"), p.get("deaths"), p.get("assists"), 28)
 
-    draw_text(draw, (cols["nw"], mid), _k(p.get("net_worth")), 26, GOLD, bold=True, anchor="mm")
+    net_worth = p.get("net_worth")
+    if isinstance(net_worth, (int, float)) and not isinstance(net_worth, bool) and net_worth > 0 and top_nw > 0:
+        # полоска — доля от самого богатого в матче: расклад по золоту виден без чтения десяти чисел
+        draw_text(draw, (cols["nw"], mid - 8), _k(net_worth), 26, GOLD, bold=True, anchor="mm")
+        cards.bar(img, (cols["nw"] - 48, mid + 16, cols["nw"] + 48, mid + 22), net_worth / top_nw,
+                  cards.mix(GOLD, PANEL, 0.25), track=cards.mix(PANEL, "#ffffff", 0.08))
+    else:
+        draw_text(draw, (cols["nw"], mid), _k(net_worth), 26, GOLD, bold=True, anchor="mm")
     gpm, xpm = p.get("gpm"), p.get("xpm")
     econ = f"{gpm:.0f} / {xpm:.0f}" if gpm is not None and xpm is not None else (f"{gpm:.0f}" if gpm is not None else "—")
     draw_text(draw, (cols["gpm"], mid), econ, 24, FG, anchor="mm")
@@ -192,5 +222,8 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
     if tower:  # урон по зданиям — вторым рядом: в колонке нет места для двух чисел в строку
         draw_text(draw, (cols["dmg"], mid + 15), f"{_k(tower)} здания", 17, MUTED, anchor="mm")
     imp = p.get("imp")
-    imp_color = MUTED if imp is None or round(imp) == 0 else (WIN if imp > 0 else LOSS)
-    draw_text(draw, (cols["imp"], mid), cards.signed(imp), 26, imp_color, bold=True, anchor="mm")
+    if imp is None or round(imp) == 0:
+        draw_text(draw, (cols["imp"], mid), cards.signed(imp), 24, MUTED, bold=True, anchor="mm")
+    else:  # знак дублирует цвет; плашка — чтобы столбец читался полосой «кто тащил, кто тонул»
+        cards.chip(img, draw, cols["imp"], mid, cards.signed(imp), WIN if imp > 0 else LOSS, size=22, pad=12,
+                   align="center", base=TRACKED_PANEL if mine else PANEL)

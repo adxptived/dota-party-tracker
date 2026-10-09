@@ -62,6 +62,11 @@ def _podium(img, draw, y: int, table: list, places: list[int], avatars: dict) ->
         first = place == 1
         size = 112 if first else 88
         ring = _place_color(place)
+        # «ступень» подиума: подсвеченная колонка цвета места, у первого — выше остальных
+        half = min(inner / len(shown) / 2 - 10, 190)
+        cards.panel(img, (cx - half, y + (12 if first else 36), cx + half, y + PODIUM_H - 12),
+                    cards.mix(PANEL, ring, 0.11 if first else 0.07), radius=16,
+                    outline=cards.mix(PANEL, ring, 0.3 if first else 0.18))
         top = y + (24 if first else 48)
         name = clean(row.get("name")) or "Игрок"
         sprite = cards.avatar(avatars.get(row.get("avatar")), name, size, ring=ring, ring_w=4)
@@ -101,7 +106,8 @@ def _nom_height(nom: dict) -> int:
 def _card(img, draw, x0: int, y0: int, nom: dict, height: int, avatars: dict) -> None:
     anti = bool(nom.get("anti"))
     color = LOSS if anti else ACCENT
-    cards.panel(img, (x0, y0, x0 + CARD_W, y0 + height), PANEL_HI, radius=18, outline=color if anti else None)
+    cards.panel(img, (x0, y0, x0 + CARD_W, y0 + height), cards.mix(PANEL_HI, LOSS, 0.07) if anti else PANEL_HI, radius=18,
+                outline=cards.mix(PANEL_HI, LOSS, 0.5) if anti else None)
     cards.stripe(img, x0 + 12, y0 + 16, y0 + CARD_HEAD - 12, color, width=5)
     draw_text(draw, (x0 + 30, y0 + CARD_HEAD / 2), clean(nom.get("title")), 26, FG, bold=True, anchor="lm", max_w=CARD_W - 54)
     for i, entry in enumerate(nom.get("entries") or []):
