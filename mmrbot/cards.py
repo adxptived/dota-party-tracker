@@ -182,6 +182,22 @@ def panel(img, box, fill: str = PANEL, radius: int = 16, outline: Optional[str] 
         img.paste(fill, (x0, y0), _rr_mask(w, h, r))
 
 
+def gradient_panel(img, box, left: str, right: str, radius: int = 16, outline: Optional[str] = None) -> None:
+    """Скруглённая панель с горизонтальным градиентом left → right; outline — рамка в 1 px."""
+    from PIL import Image
+    x0, y0, x1, y1 = (round(v) for v in box)
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    r = max(0, min(radius, w // 2, h // 2))
+    if outline and w > 2 and h > 2:
+        img.paste(outline, (x0, y0), _rr_mask(w, h, r))
+        x0, y0, w, h, r = x0 + 1, y0 + 1, w - 2, h - 2, max(r - 1, 0)
+    strip = Image.new("RGB", (w, 1))
+    strip.putdata([_rgb(mix(left, right, i / max(w - 1, 1))) for i in range(w)])
+    img.paste(strip.resize((w, h), Image.NEAREST), (x0, y0), _rr_mask(w, h, r))
+
+
 def dot(img, cx: float, cy: float, r: float, fill: str) -> None:
     d = max(2, round(r * 2))
     img.paste(fill, (round(cx - d / 2), round(cy - d / 2)), _circle_mask(d))

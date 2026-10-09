@@ -585,6 +585,20 @@ def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
     rows = build_period_leaderboard(storage, chat_id, since)
     players = storage.list_players(chat_id)
     named = [(p.display_name, storage.get_matches(p.id, since_ts=since)) for p in players]
+    hero, streak = _period_highlights(named)
+    return {
+        "rows": rows,
+        "champion": contest_champion(build_contest(storage, chat_id, since)["points"]),
+        "hero": hero,
+        "streak": streak,
+        "shared": party.together_summary(named),
+        "step": chat.mmr_step,
+        "awards": build_period_awards(storage, chat_id, since),
+    }
+
+
+def _period_highlights(named: list[tuple[str, list[dict]]]) -> tuple[Optional[dict], Optional[tuple[str, int]]]:
+    """Герой периода (по числу игр пати, затем побед) и лучшая серия побед (имя, длина ≥ 2) среди игроков."""
     by_hero: dict[int, list[int]] = {}
     best_streak = ("", 0)
     for name, matches in named:
@@ -600,14 +614,100 @@ def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
     if by_hero:
         hero_id, (games, wins) = max(by_hero.items(), key=lambda kv: (kv[1][0], kv[1][1]))
         hero = {"hero_id": hero_id, "games": games, "wins": wins}
+    return hero, (best_streak if best_streak[1] >= 2 else None)
+
+
+DAY_SEC = 86_400
+DEFAULT_GAME_SEC = 2400  # на таймлайне суток игра без известной длительности рисуется такой длины (40 мин)
+
+
+def daily_best_game(named: list[tuple[str, list[dict]]]) -> Optional[dict]:
+    """Лучшая игра окна среди всех игроков: максимум KDA при k+a >= порога, при равенстве — больше нетворс.
+
+    {player, match (строка из БД), kills, deaths, assists, kda, won}; нет содержательных игр — None. Билда здесь нет:
+    его дописывает сервис из OpenDota (best-effort), чистая сборка отчёта остаётся без сети.
+    """
+    best, best_key = None, None
+    for name, matches in named:
+        for match in matches:
+            kills, deaths, assists = match.get("kills") or 0, match.get("deaths") or 0, match.get("assists") or 0
+            if kills + assists < stats.BEST_GAME_MIN_KA:
+                continue
+            kda = (kills + assists) / max(deaths, 1)
+            key = (kda, match.get("net_worth") or 0, match.get("start_time") or 0)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = {"player": name, "match": match, "kills": kills, "deaths": deaths, "assists": assists,
+                        "kda": kda, "won": stats.is_win(match["player_slot"], match["radiant_win"])}
+    return best
+
+
+def build_daily_report(storage: Storage, chat_id: int, now: int) -> dict:
+    """Итоги скользящих 24 часов до момента `now` — для ежедневной сводки (из кэша БД, сети нет).
+
+    Окно — [now − 24 ч, now]: сводка показывает сутки, предшествующие самому сообщению, а не календарное
+    «сегодня» и тем более не неделю. Всё внутри (таблица, герой, серия, рекорды, лучшая игра) считается только по этим играм.
+    """
+    chat = storage.get_or_create_chat(chat_id)
+    since = now - DAY_SEC
+    named: list[tuple[str, list[dict]]] = []
+    rows: list[dict] = []
+    timed_games = 0  # игр с известной длительностью: средняя длина считается только по ним
+    for player in storage.list_players(chat_id):
+        matches = storage.get_matches(player.id, since_ts=since)  # по возрастанию start_time
+        named.append((player.display_name, matches))
+        agg = stats.aggregate(matches)
+        top = stats.top_heroes(matches, 1)
+        timed_games += sum(1 for m in matches if m.get("duration"))
+        rows.append({
+            "name": player.display_name,
+            "games": agg.games,
+            "wins": agg.wins,
+            "losses": agg.losses,
+            "delta": stats.estimate_mmr_delta(agg.wins, agg.losses, chat.mmr_step),
+            "winrate": agg.winrate,
+            "kda": agg.kda_ratio,
+            "kills": agg.sum_kills,
+            "deaths": agg.sum_deaths,
+            "assists": agg.sum_assists,
+            "series": [total for _, total in stats.mmr_series(matches, chat.mmr_step)],
+            "hero": top[0] if top else None,
+            "minutes": sum(m.get("duration") or 0 for m in matches) / 60,
+            "timeline": [{
+                "start": m["start_time"], "end": m["start_time"] + (m.get("duration") or DEFAULT_GAME_SEC),
+                "won": stats.is_win(m["player_slot"], m["radiant_win"]), "hero_id": m.get("hero_id"),
+            } for m in matches],
+        })
+    rows.sort(key=lambda r: (r["games"] > 0, r["delta"], r["games"]), reverse=True)
+
+    minutes = sum(r["minutes"] for r in rows)
+    totals = {
+        "games": sum(r["games"] for r in rows),
+        "wins": sum(r["wins"] for r in rows),
+        "losses": sum(r["losses"] for r in rows),
+        "delta": sum(r["delta"] for r in rows),
+        "kills": sum(r["kills"] for r in rows),
+        "deaths": sum(r["deaths"] for r in rows),
+        "assists": sum(r["assists"] for r in rows),
+        "minutes": minutes,
+        "avg_minutes": minutes / timed_games if timed_games else 0,
+    }
+    hero, streak = _period_highlights(named)
+    games = [g for r in rows for g in r["timeline"]]
     return {
-        "rows": rows,
-        "champion": contest_champion(build_contest(storage, chat_id, since)["points"]),
-        "hero": hero,
-        "streak": best_streak if best_streak[1] >= 2 else None,
-        "shared": party.together_summary(named),
+        "since": since,
+        "until": now,
+        "tz": chat.tz,
         "step": chat.mmr_step,
-        "awards": build_period_awards(storage, chat_id, since),
+        "rows": rows,
+        "totals": totals,
+        "hero": hero,
+        "streak": streak,
+        "shared": party.together_summary(named),
+        "records": records.compute_records(named)["records"],
+        "best_game": daily_best_game(named),
+        "first_start": min((g["start"] for g in games), default=None),
+        "last_end": max((g["end"] for g in games), default=None),
     }
 
 

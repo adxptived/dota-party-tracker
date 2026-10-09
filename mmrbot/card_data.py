@@ -7,8 +7,11 @@ from __future__ import annotations
 import html
 from typing import Optional
 
-from mmrbot.cards import GOLD, MUTED, clean, delta_color, signed
-from mmrbot.formatting import PERIOD_LABELS, fmt_local, POSITION_NAMES, PULSE_RECORDS, plural_games, plural_heroes
+from mmrbot.cards import ACCENT, GOLD, MUTED, clean, delta_color, signed
+from mmrbot.formatting import (
+    PERIOD_LABELS, POSITION_NAMES, PULSE_RECORDS, best_game_stats, daily_record_picks, fmt_clock, fmt_local,
+    fmt_minutes, fmt_window, local_time, plural_games, plural_heroes,
+)
 from mmrbot.heroes import hero_name
 
 
@@ -113,15 +116,14 @@ def award_items(awards: list[dict]) -> list[dict]:
 
 
 def leader_caption(summaries: list, week_rows: list[dict], mode: str) -> str:
-    """Подпись под рейтингом: «🏆 Рейтинг · Лидер: Вася ≈5420 (+75 за неделю)»; для «Сегодня» и сводки дня — лидер дня."""
-    if mode in ("today", "digest"):
+    """Подпись под рейтингом: «🏆 Рейтинг · Лидер: Вася ≈5420 (+75 за неделю)»; для «Сегодня» — лидер дня."""
+    if mode == "today":
         played = [s for s in summaries if s.games_today]
-        head = "📅 <b>Статистика за сегодня</b>" if mode == "today" else "📰 <b>Ежедневная сводка</b>"
+        head = "📅 <b>Статистика за сегодня</b>"
         if not played:
             return head + " · игр пока не было"
         best = max(played, key=lambda s: (s.delta_today, s.wins_today))
-        word = "Лидер" if mode == "today" else "Лидер дня"
-        return f"{head} · {word}: <b>{_esc(best.display_name)}</b> {signed(best.delta_today)} ({best.wins_today}–{best.losses_today})"
+        return f"{head} · Лидер: <b>{_esc(best.display_name)}</b> {signed(best.delta_today)} ({best.wins_today}–{best.losses_today})"
     head = "🏆 <b>Рейтинг</b>"
     if not summaries:
         return head
@@ -378,6 +380,157 @@ def weekly_caption(report: dict) -> str:
     best = max(rows, key=lambda r: r["delta"])
     lead = f" · Лидер: <b>{_esc(best['name'])}</b> {signed(best['delta'])}" if best["delta"] > 0 and len(rows) >= 2 else ""
     return f"{head} · {plural_games(games)}{lead}"
+
+
+# --- ежедневная сводка: скользящие 24 часа ---------------------------------------------------------------
+
+DAILY_TICK_HOURS = 3  # подписи оси таймлайна — каждые 3 часа по часам чата
+
+
+def _daily_rank_text(meta: dict) -> str:
+    """«Legend 5 · ≈5420» — ранг и оценка MMR под ником (что известно)."""
+    parts = [clean(meta["rank_text"])] if meta.get("rank_text") else []
+    if meta.get("mmr") is not None:
+        parts.append(f"≈{meta['mmr']}")
+    return " · ".join(parts)
+
+
+def daily_rows(report: dict, info: dict) -> list[dict]:
+    """Строки таблицы суток: крупно ±MMR за 24 часа, под ним игры и KDA, динамика дня, любимый герой дня.
+
+    Игравшие идут первыми (как их отсортировал отчёт), не игравшие — в конце коротким «не играл».
+    """
+    rows = []
+    for r in report["rows"]:
+        meta = info.get(r["name"]) or {}
+        row = {"name": r["name"], "avatar": meta.get("avatar"), "rank_tier": meta.get("rank_tier"),
+               "rank_text": _daily_rank_text(meta), "games": r["games"], "wins": r["wins"], "losses": r["losses"]}
+        if r["games"]:
+            top = r.get("hero")
+            row.update(big=signed(r["delta"]), big_color=delta_color(r["delta"]),
+                       sub=f"{plural_games(r['games'])} · KDA {r['kda']:.2f}",
+                       series=[0] + list(r["series"]),  # день начинается с нуля: линия растёт/падает от стартовой точки
+                       hero_id=top["hero_id"] if top else None, hero_note=f"×{top['games']}" if top else "")
+        else:
+            row.update(big="0", big_color=MUTED, sub="не играл", series=[], hero_id=None, hero_note="")
+        rows.append(row)
+    return rows
+
+
+def _daily_ticks(since: int, until: int, tz_name: str) -> list[tuple[int, str]]:
+    """Подписи оси времени: круглые часы чата, кратные DAILY_TICK_HOURS, внутри окна → [(время, «15:00»)]."""
+    ticks = []
+    ts = -(-since // 900) * 900  # шаг 15 минут: подходит и поясам со сдвигом в полчаса
+    while ts <= until:
+        local = local_time(ts, tz_name)
+        if local.minute == 0 and local.hour % DAILY_TICK_HOURS == 0:
+            ticks.append((ts, f"{local:%H:%M}"))
+        ts += 900
+    return ticks
+
+
+def _daily_tiles(report: dict) -> list[dict]:
+    """Плитки сводки суток: игры, лидер, время в игре, серия (или игры вместе)."""
+    totals = report["totals"]
+    games = totals["games"]
+    if not games:
+        return []
+    tiles = [{"label": "Игр за 24 часа", "value": plural_games(games),
+              "sub": f"{_wr(games, totals['wins'])} · {signed(totals['delta'])}", "color": delta_color(totals["delta"])}]
+    played = [r for r in report["rows"] if r["games"]]
+    best = max(played, key=lambda r: (r["delta"], r["wins"]))
+    if len(played) >= 2 and best["delta"] > 0:
+        tiles.append({"label": "Лидер суток", "value": clean(best["name"]),
+                      "sub": f"{signed(best['delta'])} ({best['wins']}–{best['losses']})", "color": GOLD})
+    if totals.get("minutes"):
+        avg = f"ср. {fmt_minutes(totals['avg_minutes'])} за игру" if totals.get("avg_minutes") else "суммарно у всех игроков"
+        tiles.append({"label": "В игре", "value": fmt_minutes(totals["minutes"]), "sub": avg, "color": None})
+    if report.get("streak"):
+        name, length = report["streak"]
+        tiles.append({"label": "Лучшая серия побед", "value": f"{length} подряд", "sub": clean(name), "color": GOLD})
+    elif (report.get("shared") or {}).get("games"):
+        shared = report["shared"]
+        tiles.append({"label": "Вместе", "value": plural_games(shared["games"]),
+                      "sub": f"{shared['wins']}–{shared['losses']}", "color": None})
+    return tiles[:4]
+
+
+def _daily_records(report: dict) -> list[dict]:
+    """«Герой суток» плиткой с иконкой, затем рекорды суток (до шести плиток всего)."""
+    items = []
+    hero = report.get("hero")
+    if hero:
+        items.append({"label": "Герой суток", "value": hero_name(hero["hero_id"]),
+                      "player": f"{plural_games(hero['games'])} · {round(hero['wins'] * 100 / hero['games'])}%",
+                      "hero_id": hero["hero_id"]})
+    for r in daily_record_picks(report.get("records") or [], 6 - len(items)):
+        items.append({"label": r["title"], "value": r["text"], "player": r["player"],
+                      "hero_id": (r.get("match") or {}).get("hero_id")})
+    return items
+
+
+def _daily_best_game(report: dict) -> Optional[dict]:
+    """Лучшая игра суток для карточки: игрок, герой, K/D/A, KDA, плитки показателей и билд (если известен)."""
+    best = report.get("best_game")
+    if not best:
+        return None
+    match = best["match"]
+    return {
+        "player": clean(best["player"]), "hero_id": match.get("hero_id"), "match_id": match.get("match_id"),
+        "won": bool(best.get("won")), "start_time": match.get("start_time"),
+        "kills": best["kills"], "deaths": best["deaths"], "assists": best["assists"], "kda": f"{best['kda']:.1f}",
+        "stats": [{"label": label, "value": value} for label, value in best_game_stats(match)],
+        "build": best.get("build"),
+    }
+
+
+def daily_card(report: dict, info: Optional[dict] = None) -> dict:
+    """Отчёт суток → описание карточки для daily_image.render_daily_image.
+
+    info — {ник: {avatar, rank_tier, rank_text, mmr}}: то, чего нет в отчёте (аватар, значок ранга, оценка MMR).
+    """
+    info = info or {}
+    totals = report["totals"]
+    games = totals["games"]
+    tz = report.get("tz", "UTC")
+    rows = daily_rows(report, info)
+    lanes = [{"name": r["name"], "avatar": (info.get(r["name"]) or {}).get("avatar"), "games": list(r["timeline"])}
+             for r in report["rows"] if r["games"]]
+    if games:
+        span = f"Играли с {fmt_clock(report['first_start'], tz, report['until'])} до {fmt_clock(report['last_end'], tz, report['until'])}"
+        sub = f"{plural_games(games)} · {_wr(games, totals['wins'])}"
+    else:
+        span, sub = "За эти сутки ранкед-игр не было", "игр не было"
+    return {
+        "title": "Ежедневная сводка",
+        "window": f"Последние 24 часа · {fmt_window(report)}",
+        "span": span,
+        "badge": ("24 ЧАСА", ACCENT),
+        "big": {"value": signed(totals["delta"]), "color": delta_color(totals["delta"]),
+                "label": "оценка ±MMR пати за 24 часа", "sub": sub},
+        "tiles": _daily_tiles(report),
+        "rows": rows,
+        "timeline": {"since": report["since"], "until": report["until"], "tz": tz, "lanes": lanes,
+                     "ticks": _daily_ticks(report["since"], report["until"], tz)},
+        "records": _daily_records(report),
+        "best_game": _daily_best_game(report),
+        "footer": f"Оценка MMR: ±{report.get('step', 25)} за игру · учтены игры за последние 24 часа до отправки",
+        "note": None,
+    }
+
+
+def daily_caption(report: dict) -> str:
+    """Подпись под картинкой сводки: игры за 24 часа и лидер суток."""
+    head = "📰 <b>Ежедневная сводка</b>"
+    totals = report.get("totals") or {}
+    if not totals.get("games"):
+        return head + " · за 24 часа ранкед-игр не было"
+    caption = f"{head} · 24 ч · {plural_games(totals['games'])} · {_wr(totals['games'], totals['wins'])}"
+    played = [r for r in report["rows"] if r["games"]]
+    best = max(played, key=lambda r: (r["delta"], r["wins"]))
+    if len(played) >= 2 and best["delta"] > 0:
+        caption += f"\n🚀 Лидер суток: <b>{_esc(best['name'])}</b> {signed(best['delta'])} ({best['wins']}–{best['losses']})"
+    return caption
 
 
 # --- сравнение и совместные игры -------------------------------------------------------------------------
