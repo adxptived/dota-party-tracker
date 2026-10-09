@@ -9,9 +9,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import ErrorEvent
 
-import mmrbot.bot as botmod
-from mmrbot import avatars, cards, hero_icons, item_icons, items, rank_icons, service
-import mmrbot.tracker as tracker
+from mmrbot import avatars, cards, hero_icons, item_icons, items, rank_icons
 from mmrbot.access import ChatGateMiddleware
 from mmrbot.bot import PerfMiddleware, router, set_bot_commands
 from mmrbot.lifecycle import router as lifecycle_router
@@ -33,15 +31,13 @@ async def main() -> None:
 
     storage = Storage(
         config.db_path, default_digest_hour=config.default_digest_hour,
-        default_mmr_step=config.default_mmr_step, default_tz=config.default_tz,
+        default_mmr_step=config.default_mmr_step, default_tz=config.default_tz, max_players=config.max_players,
     )
     od = OpenDota(
         api_key=config.opendota_api_key, min_interval=config.opendota_min_interval, burst=config.opendota_burst,
         background_reserve=config.opendota_daily_reserve, proxy=config.opendota_proxy,
+        enrich_days=config.opendota_enrich_days, command_wait=config.command_refresh_wait,
     )
-    tracker.ENRICH_DAYS = config.opendota_enrich_days
-    service.COMMAND_REFRESH_WAIT = config.command_refresh_wait
-    botmod.MAX_PLAYERS = config.max_players
     stratz = Stratz(config.stratz_api_key) if config.stratz_api_key else None
     data_dir = Path(config.db_path).resolve().parent
     icons = hero_icons.setup(str(data_dir / "hero_icons"))  # иконки для картинок

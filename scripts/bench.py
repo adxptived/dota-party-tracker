@@ -30,7 +30,8 @@ class OfflineOpenDota:
     """Любое обращение к сети — ошибка: бенч меряет только сборку из БД."""
 
     def __getattr__(self, name):
-        if name == "health" or name.startswith("__"):  # необязательные атрибуты, которые код проверяет через getattr
+        # необязательные атрибуты и настройки, которые код читает через getattr (у бенча — умолчания)
+        if name in ("health", "command_wait", "enrich_days") or name.startswith("__"):
             raise AttributeError(name)
         raise AssertionError(f"бенч не должен ходить в OpenDota ({name})")
 

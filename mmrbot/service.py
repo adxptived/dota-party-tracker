@@ -150,7 +150,7 @@ def _kick_finish(storage: Storage, od: OpenDota, chat_id: int) -> None:
     task.add_done_callback(_finish_tasks.discard)
 
 
-COMMAND_REFRESH_WAIT = 4.0  # сек: команда ждёт обновление игроков не дольше (настройка COMMAND_REFRESH_WAIT)
+COMMAND_REFRESH_WAIT = 4.0  # сек: ожидание обновления по умолчанию; настройка COMMAND_REFRESH_WAIT живёт в od.command_wait
 _background_refreshes: set = set()
 
 # Какие команды ждут обновление (в пределах бюджета), а какие отвечают сразу из БД, а обновление идёт фоном.
@@ -173,12 +173,12 @@ async def refresh_for(command: str, storage: Storage, od: OpenDota, chat_id: int
 async def refresh_with_budget(
     storage: Storage, od: OpenDota, chat_id: int, stratz=None, budget: Optional[float] = None
 ) -> bool:
-    """Обновить игроков чата, но ждать не дольше budget (по умолчанию COMMAND_REFRESH_WAIT).
+    """Обновить игроков чата, но ждать не дольше budget (по умолчанию od.command_wait).
 
     Уложились — True. Нет (OpenDota тормозит) — False: вызывающий отвечает из БД, а обновление, не
     отменяясь, доходит фоном. Ошибка обновления в пределах бюджета поднимается наверх, как раньше.
     """
-    wait = COMMAND_REFRESH_WAIT if budget is None else budget
+    wait = getattr(od, "command_wait", COMMAND_REFRESH_WAIT) if budget is None else budget
     task = asyncio.ensure_future(refresh_only(storage, od, chat_id, stratz))
     with perf.phase("refresh"):  # то, сколько команда реально прождала обновление
         done, _ = await asyncio.wait({task}, timeout=wait)

@@ -26,7 +26,7 @@ from mmrbot.storage import Chat, Player, Storage
 log = logging.getLogger(__name__)
 
 
-ENRICH_DAYS = 90  # детали (perf/benchmarks) догружаем только за столько последних дней: по запросу на матч
+ENRICH_DAYS = 90  # детали (perf/benchmarks) по умолчанию догружаем за столько дней; настройка — client.enrich_days
 EMPTY_RECHECK_SEC = 6 * 3600  # сек: игроку без единого матча всю историю перезапрашиваем не чаще
 ENRICH_CAP = 3  # матчей на refresh в запросе пользователя (~1с на матч); остальное — фоном, backfill_opendota
 RECENT_GAME_SEC = 3 * 3600  # о матче старше этого окна не оповещаем (история при /add, простой бота)
@@ -197,13 +197,14 @@ def _background_allowed(client) -> bool:
     return True if check is None else bool(check())
 
 
-def _enrich_since(now: Optional[int] = None, days: Optional[int] = None) -> int:
-    """Граница start_time для догрузки деталей: глубже ENRICH_DAYS историю не обогащаем.
+def _enrich_since(now: Optional[int] = None, days: Optional[int] = None, client=None) -> int:
+    """Граница start_time для догрузки деталей: глубже enrich_days клиента (OPENDOTA_ENRICH_DAYS) историю не обогащаем.
 
     Вся ранкед-история — это тысячи матчей, а детали стоят запроса на каждый: без границы бэкфилл
     одного игрока-ветерана съедал суточный лимит OpenDota. days=0 — без границы.
     """
-    days = ENRICH_DAYS if days is None else days
+    if days is None:
+        days = getattr(client, "enrich_days", ENRICH_DAYS)
     if days <= 0:
         return 0
     return (int(time.time()) if now is None else now) - days * 86_400
@@ -218,7 +219,8 @@ def _enrich_from_opendota(
     background=True — необязательная фоновая догрузка: перед каждым запросом сверяемся с остатком
     суточного лимита клиента и останавливаемся, когда пора беречь его для опроса игр и команд.
     """
-    ids = storage.get_unenriched_match_ids(player.id, _enrich_since() if since_ts is None else since_ts, cap)
+    ids = storage.get_unenriched_match_ids(
+        player.id, _enrich_since(client=client) if since_ts is None else since_ts, cap)
     done = 0
     for match_id in ids:
         if background and not _background_allowed(client):
@@ -248,15 +250,17 @@ def backfill_opendota(
 ) -> int:
     """Фоновое обогащение бэклога матчей (perf/benchmarks) — не в пути пользовательской команды.
 
-    Берём только матчи за последние `days` дней (по умолчанию ENRICH_DAYS) и только пока клиент
+    Берём только матчи за последние `days` дней (по умолчанию client.enrich_days) и только пока клиент
     разрешает фоновые запросы (остаток суточного лимита OpenDota выше резерва).
     """
     done = 0
-    since = _enrich_since(now, days)
+    since = None  # считаем при первом игроке: без игроков клиент не трогаем вовсе
     for chat in storage.list_chats():
         for player in storage.list_players(chat.chat_id):
             if not _background_allowed(client) or _provider_down(client):
                 return done
+            if since is None:
+                since = _enrich_since(now, days, client)
             done += _enrich_from_opendota(storage, client, player, per_player, since, background=True)
     return done
 
@@ -288,7 +292,7 @@ def finish_refresh(
             client.refresh(player.account_id)
         except Exception:
             pass
-        done += _enrich_from_opendota(storage, client, player, per_player, _enrich_since(now, days), background=True)
+        done += _enrich_from_opendota(storage, client, player, per_player, _enrich_since(now, days, client), background=True)
     return done
 
 
@@ -855,7 +859,7 @@ def _refresh_player_impl(
 
     if not fast and enrich_cap > 0:
         # Свежесыгранные матчи обогащаем сразу; без новых игр это разбор старого бэклога — он ждёт, если лимит на исходе.
-        _enrich_from_opendota(storage, client, player, enrich_cap, _enrich_since(now), background=not inserted)
+        _enrich_from_opendota(storage, client, player, enrich_cap, _enrich_since(now, client=client), background=not inserted)
 
     if stratz is not None:
         _enrich_from_stratz(storage, stratz, player, now)

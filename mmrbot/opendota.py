@@ -106,8 +106,14 @@ class OpenDota:
         background_reserve: Optional[int] = None,
         health: Optional[ProviderHealth] = None,
         proxy: Optional[str] = None,
+        enrich_days: int = 90,
+        command_wait: float = 4.0,
     ):
         self.api_key = api_key
+        # Политика расхода запросов (из .env): за сколько дней догружать детали матчей (0 — вся история)
+        # и сколько секунд команда пользователя ждёт обновление, прежде чем ответить из БД.
+        self.enrich_days = enrich_days
+        self.command_wait = command_wait
         # Прокси только для OpenDota (в нём может быть пароль — нигде не логируем и не выводим в repr).
         self._proxies = {"http": proxy, "https": proxy} if proxy else None
         # Предохранитель: недоступность по сети и 429 — одна логика «не ходить в сеть» (команды берут кэш БД).

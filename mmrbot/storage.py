@@ -18,6 +18,7 @@ from typing import Optional
 DEFAULT_DIGEST_HOUR = 10
 DEFAULT_MMR_STEP = 25
 DEFAULT_TZ = "Europe/Moscow"
+DEFAULT_MAX_PLAYERS = 16
 # Номер схемы (PRAGMA user_version). Колонки по-прежнему добавляются в _migrate; номер нужен, чтобы
 # будущая несовместимая миграция могла понять, с какой версии база, и чтобы старый код не открыл новую.
 SCHEMA_VERSION = 2
@@ -180,8 +181,10 @@ class Storage:
     def __init__(
         self, db_path: str, default_digest_hour: int = DEFAULT_DIGEST_HOUR,
         default_mmr_step: int = DEFAULT_MMR_STEP, default_tz: str = DEFAULT_TZ,
+        max_players: int = DEFAULT_MAX_PLAYERS,
     ):
         self.db_path = db_path
+        self.max_players = max_players  # предел игроков на чат (MAX_PLAYERS): каждый тратит общий лимит OpenDota
         # Значения для новых чатов (из .env: DEFAULT_DIGEST_HOUR / DEFAULT_MMR_STEP / DEFAULT_TZ).
         self.default_digest_hour = default_digest_hour
         self.default_mmr_step = default_mmr_step

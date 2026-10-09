@@ -1400,3 +1400,19 @@ def test_join_wait_is_bounded(store, monkeypatch):
     results = _in_threads(lambda: refresh_player(store, client, player, 2000, fast=True), joiner)
     assert results[0] == ("ok", 1) and results[1] == ("ok", 0)
     assert started["took"] < 0.3 and client.match_calls == 1
+
+
+def test_enrich_window_comes_from_client_setting(store):
+    """OPENDOTA_ENRICH_DAYS живёт в клиенте (od.enrich_days), а не в глобальной переменной модуля."""
+    from mmrbot.tracker import backfill_opendota
+    store.get_or_create_chat(100)
+    player = store.add_player(100, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [
+        {"match_id": 1, "start_time": T0 - 10 * DAY, "player_slot": 0, "radiant_win": True, "lobby_type": 7},
+        {"match_id": 2, "start_time": T0 - DAY, "player_slot": 0, "radiant_win": True, "lobby_type": 7},
+    ])
+    client = FakeOpenDota(match_stats={"gpm": 500, "benchmarks": {"gold_per_min": 0.5}})
+    client.enrich_days = 3
+    assert backfill_opendota(store, client, now=T0) == 1
+    client.enrich_days = 0  # 0 — без границы: догружается и старый матч
+    assert backfill_opendota(store, client, now=T0) == 1

@@ -62,8 +62,6 @@ log = logging.getLogger(__name__)
 
 PERIODS_KEYS = {"day", "week", "month", "year", "all"}
 
-MAX_PLAYERS = 16  # игроков на чат (переопределяется из конфига при старте): каждый тратит общий лимит OpenDota
-
 
 async def _can_manage(message, storage: Storage, user=None, bot=None) -> bool:
     """Право менять настройки/удалять игроков; при отказе отвечает сам. user — кто нажал кнопку (у команды — автор)."""
@@ -438,8 +436,8 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
 
     storage.get_or_create_chat(message.chat.id)
     now = int(time.time())
-    if storage.count_players(message.chat.id) >= MAX_PLAYERS:
-        await message.answer(f"⚠️ В чате уже {MAX_PLAYERS} игроков — это предел. Удалите кого-нибудь: /remove")
+    if storage.count_players(message.chat.id) >= storage.max_players:
+        await message.answer(f"⚠️ В чате уже {storage.max_players} игроков — это предел. Удалите кого-нибудь: /remove")
         return
 
     if not name:

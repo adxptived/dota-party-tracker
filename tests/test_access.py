@@ -139,8 +139,8 @@ def test_remove_needs_confirmation_and_admin_or_self(store):
 
 # --- /add: предел игроков и мусор на входе --------------------------------
 
-def test_add_respects_player_limit(store, monkeypatch):
-    monkeypatch.setattr(botmod, "MAX_PLAYERS", 1)
+def test_add_respects_player_limit(store):
+    store.max_players = 1
     store.add_player(7, 42, "Вася", None, 0, 0)
     msg = Msg(PRIVATE)
     run(botmod.do_add(msg, store, object(), "123456 Петя"))
