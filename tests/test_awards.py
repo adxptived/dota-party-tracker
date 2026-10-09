@@ -75,3 +75,66 @@ def test_digest_pulse_shows_last_24h_instead_of_today():
     text = render_party_pulse([], rows, {"records": []}, day_rows=rows)
     assert "За сутки: 3" in text and "Сегодня" not in text
     assert "Сегодня: игр пока не было" in render_party_pulse([], rows, {"records": []})
+
+
+# --- нормализация по герою/роли (пункт 17) --------------------------------------------------
+
+import json  # noqa: E402
+
+from mmrbot.awards import compute_standings  # noqa: E402
+from mmrbot.stats import match_benchmark  # noqa: E402
+
+
+def gb(t, gpm, dmg, gpm_pct=None, dmg_pct=None):
+    bench = {}
+    if gpm_pct is not None:
+        bench["gold_per_min"] = gpm_pct
+    if dmg_pct is not None:
+        bench["hero_damage_per_min"] = dmg_pct
+    return g(t, gpm=gpm, dmg=dmg) | {"hero_damage": dmg, "bench_json": json.dumps(bench) if bench else None}
+
+
+def nomination(standings, key):
+    return next((s for s in standings if s["key"] == key), None)
+
+
+def test_match_benchmark_reads_percentile_and_survives_garbage():
+    assert match_benchmark({"bench_json": '{"gold_per_min": 0.83}'}, "gold_per_min") == 0.83
+    assert match_benchmark({"bench_json": '{"gold_per_min": null}'}, "gold_per_min") is None
+    assert match_benchmark({"bench_json": "{}"}, "gold_per_min") is None
+    assert match_benchmark({"bench_json": "не json"}, "gold_per_min") is None
+    assert match_benchmark({"bench_json": None}, "gold_per_min") is None and match_benchmark({}, "gold_per_min") is None
+
+
+def test_support_can_win_gpm_and_damage_by_percentile_of_own_hero():
+    carry = [gb(i, 700, 30000, 0.50, 0.45) for i in range(1, 4)]      # много фарма, но для кора это норма
+    support = [gb(i, 380, 12000, 0.92, 0.88) for i in range(1, 4)]    # мало фарма, но лучше почти всех саппортов
+    standings = compute_standings([("Кор", carry), ("Саппорт", support)])
+    gpm, dmg = nomination(standings, "gpm"), nomination(standings, "damage")
+    assert gpm["entries"][0]["player"] == "Саппорт" and "380 GPM" in gpm["entries"][0]["text"]
+    assert "92%" in gpm["entries"][0]["text"]
+    assert dmg["entries"][0]["player"] == "Саппорт" and "12.0k" in dmg["entries"][0]["text"]
+    assert "героя" in gpm["title"]  # из названия ясно, что это не сырой GPM
+
+
+def test_raw_gpm_is_used_when_benchmarks_are_missing():
+    carry = [gb(i, 700, 30000) for i in range(1, 4)]
+    support = [gb(i, 380, 12000) for i in range(1, 4)]
+    gpm = nomination(compute_standings([("Кор", carry), ("Саппорт", support)]), "gpm")
+    assert gpm["entries"][0]["player"] == "Кор" and gpm["title"] == "Наибольший GPM"
+
+
+def test_one_player_with_benchmarks_is_not_compared_with_raw_numbers():
+    with_bench = [gb(i, 380, 12000, 0.9, 0.9) for i in range(1, 4)]
+    without = [gb(i, 700, 30000) for i in range(1, 4)]
+    gpm = nomination(compute_standings([("Саппорт", with_bench), ("Кор", without)]), "gpm")
+    assert gpm["title"] == "Наибольший GPM"  # сравнивать проценты не с кем — прежний способ
+    assert gpm["entries"][0]["player"] == "Кор"
+
+
+def test_player_with_too_few_benchmarked_games_is_left_out_of_relative_gpm():
+    a = [gb(i, 400, 12000, 0.9, 0.9) for i in range(1, 4)]
+    b = [gb(i, 700, 30000, 0.5, 0.5) for i in range(1, 4)]
+    c = [gb(1, 900, 40000, 0.99, 0.99), gb(2, 900, 40000), gb(3, 900, 40000)]  # процент только в одной игре
+    gpm = nomination(compute_standings([("A", a), ("B", b), ("C", c)]), "gpm")
+    assert [e["player"] for e in gpm["entries"]] == ["A", "B"]

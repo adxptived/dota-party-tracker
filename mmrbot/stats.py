@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -177,6 +178,21 @@ def perf_score(benchmarks: dict) -> Optional[float]:
     if not pcts:
         return None
     return sum(pcts) / len(pcts)
+
+
+def match_benchmark(match: dict, metric: str) -> Optional[float]:
+    """Перцентиль игрока в матче по метрике против других на ТОМ ЖЕ герое (0..1); None — бенчмарка нет.
+
+    Читает сохранённый `bench_json` строки матча. Битый или пустой JSON — не ошибка, а «данных нет».
+    """
+    raw = (match or {}).get("bench_json")
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw).get(metric)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return value if isinstance(value, (int, float)) else None
 
 
 def aggregate_skill(benchmarks_list: list[dict]) -> dict:

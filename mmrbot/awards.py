@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from mmrbot.stats import is_win, longest_win_streak, mmr_delta
+from mmrbot.stats import is_win, longest_win_streak, mmr_delta, match_benchmark
 
 
 def _games(n: int) -> str:
@@ -97,14 +97,7 @@ def compute_standings(
 
     perf = averages("perf_score")
     add("perf", "⭐", "Лучший перф", perf, lambda n: f"{perf[n] * 100:.0f}/100")
-    gpm = averages("gpm")
-    add("gpm", "💰", "Наибольший GPM", gpm, lambda n: f"{gpm[n]:.0f} GPM в среднем")
-    damage = averages("hero_damage")
-    add("damage", "💥", "Наибольший урон по героям", damage, lambda n: f"{damage[n] / 1000:.1f}k урона/игра")
-    assists = averages("assists")
-    add("assists", "🤝", "Больше всего ассистов", assists, lambda n: f"{assists[n]:.1f} ассистов/игра")
-
-    # Саппортам GPM и урон не светят — для них вижн, стаки и линия. Данные приходят из Stratz/OpenDota не по всем
+    # Для саппортов — вижн, стаки и линия. Данные приходят из Stratz/OpenDota не по всем
     # матчам, поэтому в сравнении только те, у кого их хотя бы в двух играх: «30 вардов в среднем» по одной игре не показатель.
     samples = min(2, min_games)
 
@@ -115,6 +108,35 @@ def compute_standings(
             if len(values) >= samples:
                 result[n] = values
         return result
+
+    # GPM и урон по-честному сравнивать нельзя: пятёрка никогда не нафармит как керри. Если бенчмарки OpenDota
+    # (перцентиль против других игроков на ТОМ ЖЕ герое) есть хотя бы у двоих, соревнуются проценты, а не цифры;
+    # иначе остаётся прежнее сравнение по сырым значениям. В подписи — и то и другое.
+    def hero_relative(field: str, metric: str) -> dict[str, tuple[float, float]]:
+        result = {}
+        for n, ms in regular.items():
+            pcts = [p for m in ms if (p := match_benchmark(m, metric)) is not None]
+            raws = [m[field] for m in ms if m.get(field) is not None]
+            if len(pcts) >= samples and raws:
+                result[n] = (sum(pcts) / len(pcts), sum(raws) / len(raws))
+        return result
+
+    gpm_rel = hero_relative("gpm", "gold_per_min")
+    if len(gpm_rel) >= 2:
+        add("gpm", "💰", "GPM для своего героя", {n: v[0] for n, v in gpm_rel.items()},
+            lambda n: f"{gpm_rel[n][1]:.0f} GPM · лучше {gpm_rel[n][0] * 100:.0f}%")
+    else:
+        gpm = averages("gpm")
+        add("gpm", "💰", "Наибольший GPM", gpm, lambda n: f"{gpm[n]:.0f} GPM в среднем")
+    damage_rel = hero_relative("hero_damage", "hero_damage_per_min")
+    if len(damage_rel) >= 2:
+        add("damage", "💥", "Урон для своего героя", {n: v[0] for n, v in damage_rel.items()},
+            lambda n: f"{damage_rel[n][1] / 1000:.1f}k · лучше {damage_rel[n][0] * 100:.0f}%")
+    else:
+        damage = averages("hero_damage")
+        add("damage", "💥", "Наибольший урон по героям", damage, lambda n: f"{damage[n] / 1000:.1f}k урона/игра")
+    assists = averages("assists")
+    add("assists", "🤝", "Больше всего ассистов", assists, lambda n: f"{assists[n]:.1f} ассистов/игра")
 
     wards = {n: sum(v) / len(v) for n, v in sampled("wards").items()}
     add("wards", "👁️", "Лучший вижн", wards, lambda n: f"{wards[n]:.1f} вардов/игра", floor=1)
