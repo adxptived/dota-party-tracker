@@ -1266,7 +1266,10 @@ async def _on_settings(message: Message, storage: Storage, args: list[str], bot=
 @router.message(Command("status"))
 async def cmd_status(message: Message, storage: Storage, od: OpenDota, stratz=None, bot: Optional[Bot] = None) -> None:
     """Состояние бота: внешние сервисы, очереди дозагрузки, свежесть данных. Только админам чата."""
-    actor = getattr(message, "from_user", None)
+    await do_status(message, storage, od, stratz, bot, getattr(message, "from_user", None))
+
+
+async def do_status(message: Message, storage: Storage, od: OpenDota, stratz, bot, actor) -> None:
     sender_chat = getattr(message, "sender_chat", None)
     if not await is_chat_admin(bot or getattr(message, "bot", None), message.chat, actor, sender_chat):
         await message.answer(DENIED)
@@ -1338,6 +1341,16 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
 
     if kind == "m":
         action = args[0] if args else "menu"
+        if action in {"go", "status", "last"}:  # отвечают новым сообщением и зависят от того, кто нажал
+            raw, user = query.message, query.from_user
+            if action == "go":
+                await gather.start(raw, storage, user)
+            elif action == "status":
+                await do_status(raw, storage, od, stratz, query.bot, user)
+            elif await _has_players(raw, storage):
+                mine = next((p for p in storage.list_players(raw.chat.id) if p.tg_user_id == user.id), None)
+                await do_match(raw, storage, od, mine.display_name if mine else None, None, stratz)
+            return
         if action == "menu":
             await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
         elif action == "c":
@@ -1403,9 +1416,9 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         elif action == "tags":
             chat = storage.get_or_create_chat(message.chat.id)
             await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
-        elif action in {"remove", "setmmr", "heroes", "roles", "player", "steam"}:
+        elif action in {"remove", "setmmr", "heroes", "roles", "player", "steam", "double"}:
             if await _has_players(message, storage):
-                label = {"remove": "Кого удалить", "setmmr": "Выберите игрока, чтобы задать MMR", "heroes": "Выберите игрока для просмотра героев", "roles": "Выберите игрока для просмотра позиций", "player": "Выберите игрока для просмотра карточки", "steam": "Выберите игрока для просмотра Steam-профиля"}[action]
+                label = {"remove": "Кого удалить", "setmmr": "Выберите игрока, чтобы задать MMR", "heroes": "Выберите игрока для просмотра героев", "roles": "Выберите игрока для просмотра позиций", "player": "Выберите игрока для просмотра карточки", "steam": "Выберите игрока для просмотра Steam-профиля", "double": "Чей последний матч отметить дабл-дауном (×2)"}[action]
                 await _ask_player(message, storage, action, f"{label}:")
         return
 
@@ -1419,6 +1432,12 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             await do_player_card(message, storage, od, account, stratz)
         elif pick == "steam":
             await do_steam(message, storage, od, account)
+        elif pick == "double":
+            player = storage.get_player(message.chat.id, account)
+            result = doubles.toggle(storage, message.chat.id, player, None, int(time.time())) if player else None
+            text = (doubles.describe(player.display_name, result) if result else
+                    (NOT_FOUND_TEXT if player is None else doubles.NO_MATCH))
+            await message.answer(text, parse_mode="HTML", reply_markup=nav_menu())
         elif pick == "remove":
             player = storage.get_player(message.chat.id, account)
             if player is None:
