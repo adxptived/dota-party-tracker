@@ -8,6 +8,7 @@ K/D/A, форма, полоска винрейта, спарклайн, плит
 стоят ровно); крупные жирные надписи — Inter Display. Символы, которых в Inter нет (редкие знаки в никах),
 рисуются запасным DejaVu из matplotlib. Скруглённые фигуры и круги сглажены (маска рисуется в крупном масштабе
 и ужимается). Панели — с тонкой светлой кромкой, фон — с мягким свечением акцентного цвета сверху (см. Canvas).
+Скорость: ширины строк и маски подписей с разрядкой кэшируются, свечение — готовая полоса из кэша.
 Здесь нет ни сети, ни БД — иконки и аватары приходят готовыми байтами; нет данных или файл битый — заглушка.
 """
 from __future__ import annotations
@@ -123,8 +124,10 @@ def fit(text: str, fnt, max_w: float) -> str:
     return text.rstrip() + "…"
 
 
+@lru_cache(maxsize=4096)
 def text_width(text: str, size: int, bold: bool = False, track: Optional[bool] = None) -> float:
-    """Ширина текста в пикселях. track: разрядка (None — по правилу `_tracked`, False — никогда)."""
+    """Ширина текста в пикселях. track: разрядка (None — по правилу `_tracked`, False — никогда).
+    Результат кэшируется: одни и те же подписи, ники и числа измеряются на каждой карточке."""
     width = sum(fnt.getlength(part) for fnt, part in _runs(text, size, bold))
     tracked = _tracked(text, size) if track is None else track
     return width + size * TRACKING * (len(text) - 1) if tracked else width
@@ -138,24 +141,50 @@ def _fit(text: str, size: int, bold: bool, max_w: float) -> str:
     return text.rstrip() + "…"
 
 
+# Сглаживание букв — LEVELS ступеней прозрачности вместо 256: глазу разницы нет даже при увеличении вдвое,
+# а оттенков на краях букв в десятки раз меньше, и PNG сжимает текст на 25–35% лучше (замер на карточках 1280 px).
+LEVELS = 8
+_ALPHA_STEPS = [round(round(v * (LEVELS - 1) / 255) * 255 / (LEVELS - 1)) for v in range(256)]
+
+
+@lru_cache(maxsize=1024)
+def _text_mask(text: str, size: int, bold: bool, tracked: bool):
+    """Готовая маска строки: (маска "L", подъём над базовой линией, высота строки, ширина, поле вокруг).
+
+    Растеризация букв — заметная доля времени карточки, а строки повторяются от картинки к картинке (подписи
+    столбцов, ники, ранги, числа), поэтому строка рисуется один раз и дальше ставится на холст из кэша.
+    Здесь же разрядка и запасной шрифт для символов, которых нет в Inter: строка собирается по кускам.
+    """
+    from PIL import Image, ImageDraw
+    runs = _runs(text, size, bold)
+    if tracked:
+        runs = [(fnt, ch) for fnt, part in runs for ch in part]
+    gap = size * TRACKING if tracked else 0.0
+    ascent, descent = font(size, bold).getmetrics()
+    total = sum(fnt.getlength(part) for fnt, part in runs) + gap * (len(runs) - 1)
+    pad = max(2, size // 5)  # запас под выносные элементы, свисающие буквы и сглаживание
+    mask = Image.new("L", (math.ceil(total) + pad * 2, ascent + descent + pad * 2), 0)
+    pen = ImageDraw.Draw(mask)
+    x = float(pad)
+    for fnt, part in runs:
+        pen.text((x, pad + ascent), part, font=fnt, fill=255, anchor="ls")
+        x += fnt.getlength(part) + gap
+    mask = mask.point(_ALPHA_STEPS)
+    return mask, ascent, ascent + descent, total, pad
+
+
 def draw_text(draw, xy, text: str, size: int, fill=FG, bold: bool = False, anchor: str = "la",
               max_w: Optional[float] = None, track: Optional[bool] = None) -> None:
     if max_w:
         text = _fit(text, size, bold, max_w)
-    tracked = _tracked(text, size) if track is None else track
-    runs = _runs(text, size, bold)
-    if len(runs) == 1 and not tracked:
-        draw.text(xy, text, font=runs[0][0], fill=fill, anchor=anchor)
+    if not text:
         return
-    # Несколько шрифтов или разрядка: рисуем по кускам слева направо, сами считая начало по якорю.
-    if tracked:
-        runs = [(fnt, ch) for fnt, part in runs for ch in part]
-    gap = size * TRACKING if tracked else 0.0
-    total = sum(fnt.getlength(part) for fnt, part in runs) + gap * (len(runs) - 1)
+    tracked = _tracked(text, size) if track is None else track
+    mask, ascent, line_h, total, pad = _text_mask(text, size, bold, tracked)
     x = xy[0] - (total if anchor[0] == "r" else total / 2 if anchor[0] == "m" else 0)
-    for fnt, part in runs:
-        draw.text((x, xy[1]), part, font=fnt, fill=fill, anchor="l" + anchor[1])
-        x += fnt.getlength(part) + gap
+    v = anchor[1]
+    top = xy[1] - (0 if v == "a" else line_h / 2 if v == "m" else line_h if v == "d" else ascent)
+    draw.bitmap((round(x) - pad, round(top) - pad), mask, fill=fill)
 
 
 def signed(value, zero: str = "0") -> str:
@@ -190,15 +219,20 @@ def _rgb(color: str) -> tuple[int, int, int]:
 class Canvas:
     """Тёмный холст шириной 1280 px. Рисуем на высоком, в конце `png(bottom)` обрезает по низу содержимого.
 
-    Рисуем по ровному BG, а при выдаче картинки пустой фон заменяется подложкой: сверху он чуть светлее и
-    подсвечен цветом `accent` (синий по умолчанию; карточка исхода матча ставит зелёный или красный).
+    Верх холста чуть светлее и подсвечен цветом `accent` (синий по умолчанию; карточка исхода матча ставит
+    зелёный или красный). accent=None — ровный фон BG без свечения.
     """
 
-    def __init__(self, height: int = 2400, width: int = WIDTH, accent: str = ACCENT) -> None:
+    def __init__(self, height: int = 2400, width: int = WIDTH, accent: Optional[str] = ACCENT) -> None:
         from PIL import Image, ImageDraw
         self.width = width
         self.accent = accent
         self.img = Image.new("RGB", (width, max(int(height), 1)), BG)
+        if accent:
+            try:  # готовая полоса свечения из кэша: одна копия блока пикселей, без масок
+                self.img.paste(_glow(width, accent), (0, 0))
+            except Exception:
+                log.warning("Свечение фона не собралось, рисуем на ровном", exc_info=True)
         self.draw = ImageDraw.Draw(self.img)
 
     def png(self, bottom: Optional[int] = None, fmt: str = "PNG") -> bytes:
@@ -206,46 +240,25 @@ class Canvas:
         img = self.img
         if bottom is not None:
             img = img.crop((0, 0, self.width, min(max(int(bottom) + PAD, 1), img.height)))
-        img = _with_backdrop(img, self.accent)
         return to_jpeg(img) if fmt == "JPEG" else to_png(img)
 
 
 GLOW_H = 560  # высота свечения сверху, px
-GLOW_STRENGTH = 0.13  # доля акцентного цвета в самой яркой точке
+GLOW_STRENGTH = 0.07  # доля акцентного цвета у верхнего края
 
 
 @lru_cache(maxsize=16)
 def _glow(width: int, accent: str):
-    """Верх подложки (width × GLOW_H): вертикальный переход BG_TOP → BG и пятно акцентного цвета из левого верхнего угла."""
+    """Верх фона (width × GLOW_H): сверху BG_TOP с примесью акцентного цвета, книзу плавно уходит в BG.
+
+    Переход только по вертикали: все пиксели строки одинаковые, PNG сжимает такой фон почти в ноль
+    (пятно с переходом ещё и по горизонтали добавляло карточке ~5% веса).
+    """
     from PIL import Image
-    cols, rows = 48, 24
-    small = Image.new("RGB", (cols, rows))
-    pixels = []
-    for j in range(rows):
-        fy = j / (rows - 1)
-        base = mix(BG_TOP, BG, fy ** 0.8)
-        for i in range(cols):
-            fx = i / (cols - 1)
-            dist = math.hypot((fx - 0.08) / 0.75, fy / 0.95)
-            pixels.append(_rgb(mix(base, accent, GLOW_STRENGTH * max(0.0, 1 - dist) ** 2)))
-    small.putdata(pixels)
-    return small.resize((width, GLOW_H), Image.BICUBIC)
-
-
-def _with_backdrop(img, accent: str):
-    """Заменяет пустой фон (пиксели ровно цвета BG) подложкой со свечением; всё нарисованное остаётся как есть."""
-    from PIL import Image, ImageChops
-    try:
-        glow = _glow(img.width, accent)
-        top = img.crop((0, 0, img.width, min(GLOW_H, img.height)))
-        flat = Image.new("RGB", top.size, BG)
-        empty = ImageChops.difference(top, flat).convert("L").point(lambda v: 0 if v else 255)
-        out = img.copy()
-        out.paste(glow.crop((0, 0, top.width, top.height)), (0, 0), empty)
-        return out
-    except Exception:
-        log.warning("Подложка карточки не собралась, отдаём ровный фон", exc_info=True)
-        return img
+    top = mix(BG_TOP, accent, GLOW_STRENGTH)
+    column = Image.new("RGB", (1, GLOW_H))
+    column.putdata([_rgb(mix(top, BG, (j / (GLOW_H - 1)) ** 0.8)) for j in range(GLOW_H)])
+    return column.resize((width, GLOW_H), Image.NEAREST)
 
 
 def to_jpeg(img, quality: int = 86) -> bytes:
@@ -281,7 +294,7 @@ def _scale(w: int, h: int) -> int:
     return 4 if w * h <= 200_000 else 2
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=1024)
 def _rr_mask(w: int, h: int, r: int):
     from PIL import Image, ImageDraw
     ss = _scale(w, h)
@@ -299,6 +312,34 @@ RIM_MIN = 44  # панели не меньше этого размера пол�
 RIM = 0.07  # насколько кромка светлее заливки
 
 
+@lru_cache(maxsize=64)
+def _rim_corners(r: int):
+    """Четыре угловые маски рамки в 1 px для радиуса r (лев-верх, прав-верх, лев-низ, прав-низ)."""
+    side = r * 2
+    ring = _rr_mask(side, side, r).copy()
+    if side > 2:
+        ring.paste(0, (1, 1), _rr_mask(side - 2, side - 2, max(r - 1, 0)))
+    return (ring.crop((0, 0, r, r)), ring.crop((r, 0, side, r)), ring.crop((0, r, r, side)), ring.crop((r, r, side, side)))
+
+
+def _rim(img, x0: int, y0: int, w: int, h: int, r: int, color: str) -> None:
+    """Рамка в 1 px поверх уже залитой панели: четыре прямые полоски и четыре маленьких сглаженных угла.
+    Так панель с рамкой стоит одной заливки по маске, а не двух во всю площадь."""
+    x1, y1 = x0 + w, y0 + h
+    if r <= 0:
+        for box in ((x0, y0, x1, y0 + 1), (x0, y1 - 1, x1, y1), (x0, y0, x0 + 1, y1), (x1 - 1, y0, x1, y1)):
+            img.paste(color, box)
+        return
+    for box in ((x0 + r, y0, x1 - r, y0 + 1), (x0 + r, y1 - 1, x1 - r, y1), (x0, y0 + r, x0 + 1, y1 - r), (x1 - 1, y0 + r, x1, y1 - r)):
+        if box[2] > box[0] and box[3] > box[1]:
+            img.paste(color, box)
+    tl, tr, bl, br = _rim_corners(r)
+    img.paste(color, (x0, y0), tl)
+    img.paste(color, (x1 - r, y0), tr)
+    img.paste(color, (x0, y1 - r), bl)
+    img.paste(color, (x1 - r, y1 - r), br)
+
+
 def panel(img, box, fill: str = PANEL, radius: int = 16, outline: Optional[str] = None) -> None:
     """Скруглённая панель со сглаженными углами; outline — рамка в 1 px.
 
@@ -312,11 +353,17 @@ def panel(img, box, fill: str = PANEL, radius: int = 16, outline: Optional[str] 
     r = max(0, min(radius, w // 2, h // 2))
     if outline is None and w >= RIM_MIN and h >= RIM_MIN and isinstance(fill, str):
         outline = mix(fill, "#ffffff", RIM)
+    img.paste(fill, (x0, y0), _rr_mask(w, h, r))
     if outline and w > 2 and h > 2:
-        img.paste(outline, (x0, y0), _rr_mask(w, h, r))
-        img.paste(fill, (x0 + 1, y0 + 1), _rr_mask(w - 2, h - 2, max(r - 1, 0)))
-    else:
-        img.paste(fill, (x0, y0), _rr_mask(w, h, r))
+        _rim(img, x0, y0, w, h, r, outline)
+
+
+@lru_cache(maxsize=128)
+def _gradient_strip(w: int, left: str, right: str):
+    from PIL import Image
+    strip = Image.new("RGB", (w, 1))
+    strip.putdata([_rgb(mix(left, right, i / max(w - 1, 1))) for i in range(w)])
+    return strip
 
 
 def gradient_panel(img, box, left: str, right: str, radius: int = 16, outline: Optional[str] = None) -> None:
@@ -327,12 +374,9 @@ def gradient_panel(img, box, left: str, right: str, radius: int = 16, outline: O
     if w <= 0 or h <= 0:
         return
     r = max(0, min(radius, w // 2, h // 2))
+    img.paste(_gradient_strip(w, left, right).resize((w, h), Image.NEAREST), (x0, y0), _rr_mask(w, h, r))
     if outline and w > 2 and h > 2:
-        img.paste(outline, (x0, y0), _rr_mask(w, h, r))
-        x0, y0, w, h, r = x0 + 1, y0 + 1, w - 2, h - 2, max(r - 1, 0)
-    strip = Image.new("RGB", (w, 1))
-    strip.putdata([_rgb(mix(left, right, i / max(w - 1, 1))) for i in range(w)])
-    img.paste(strip.resize((w, h), Image.NEAREST), (x0, y0), _rr_mask(w, h, r))
+        _rim(img, x0, y0, w, h, r, outline)
 
 
 def dot(img, cx: float, cy: float, r: float, fill: str) -> None:
@@ -495,14 +539,14 @@ def _drawn_badge(rank_tier: Optional[int], size: int = 64):
 
 def kda(draw, cx: float, cy: float, kills, deaths, assists, size: int = 28, bold: bool = True) -> None:
     """K / D / A по центру в cx: смерти — красным, чтобы читалось с одного взгляда."""
-    sep = font(max(size * 3 // 4, 14), False)  # косые черты мельче и тоньше цифр — цифры остаются главным
-    fnt = font(size, bold)
-    parts = [(str(kills or 0), FG, fnt), (" / ", mix(MUTED, PANEL, 0.35), sep), (str(deaths or 0), LOSS, fnt),
-             (" / ", mix(MUTED, PANEL, 0.35), sep), (str(assists or 0), FG, fnt)]
-    x = cx - sum(f.getlength(text) for text, _, f in parts) / 2
-    for text, color, f in parts:
-        draw.text((x, cy), text, font=f, fill=color, anchor="lm")
-        x += f.getlength(text)
+    small = max(size * 3 // 4, 14)  # косые черты мельче и тоньше цифр — цифры остаются главным
+    slash = mix(MUTED, PANEL, 0.35)
+    parts = [(str(kills or 0), FG, size, bold), (" / ", slash, small, False), (str(deaths or 0), LOSS, size, bold),
+             (" / ", slash, small, False), (str(assists or 0), FG, size, bold)]
+    x = cx - sum(text_width(text, sz, b, False) for text, _, sz, b in parts) / 2
+    for text, color, sz, b in parts:
+        draw_text(draw, (x, cy), text, sz, color, b, anchor="lm", track=False)
+        x += text_width(text, sz, b, False)
 
 
 def value_text(draw, xy, text: str, size: int, fill=FG, anchor: str = "rm") -> float:
@@ -614,7 +658,7 @@ def sparkline(img, box, values: Sequence[float], color: str = ACCENT, fill: bool
         lx, ly = xy[-1]
         rr = (width + 2) * ss
         d.ellipse((lx - rr, ly - rr, lx + rr, ly + rr), fill=color)
-    layer = layer.resize((w, h), Image.LANCZOS)
+    layer = layer.reduce(ss)  # усреднение блоками ss×ss: для сглаживания линии этого достаточно, а LANCZOS втрое медленнее
     img.paste(layer, (x0, y0), layer)
 
 
