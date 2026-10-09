@@ -369,15 +369,10 @@ def test_get_latest_match_across_players_and_by_id(store):
 
 
 def test_migration_adds_new_player_columns(tmp_path):
-    import sqlite3
+    from tests.legacy_db import make_v0
     path = str(tmp_path / "old.db")
-    Storage(path)
-    conn = sqlite3.connect(path)
-    conn.execute("ALTER TABLE players DROP COLUMN profile_ts")
-    conn.execute("ALTER TABLE players DROP COLUMN history_ts")
-    conn.commit()
-    conn.close()
-    st = Storage(path)                                             # старая БД — колонки добавятся
+    make_v0(path).close()                                          # старая БД: profile_ts и history_ts ещё нет
+    st = Storage(path)                                             # колонки добавятся
     p = st.add_player(100, 1, "A", None, 0, 0)
     st.set_player_rank(p.id, 63, None, 500)
     st.touch_player(p.id, 700, deep=True)

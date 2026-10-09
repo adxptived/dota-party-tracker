@@ -15,13 +15,14 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional
 
+from mmrbot.migrations import LATEST_VERSION, migrate
+
 DEFAULT_DIGEST_HOUR = 10
 DEFAULT_MMR_STEP = 25
 DEFAULT_TZ = "Europe/Moscow"
 DEFAULT_MAX_PLAYERS = 16
-# Номер схемы (PRAGMA user_version). Колонки по-прежнему добавляются в _migrate; номер нужен, чтобы
-# будущая несовместимая миграция могла понять, с какой версии база, и чтобы старый код не открыл новую.
-SCHEMA_VERSION = 2
+# Номер схемы (PRAGMA user_version) — номер последней миграции из mmrbot/migrations.py.
+SCHEMA_VERSION = LATEST_VERSION
 
 
 @dataclass
@@ -66,105 +67,6 @@ class Player:
     last_tag: Optional[str] = None  # тег, который бот поставил в последний раз
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS chats (
-    chat_id          INTEGER PRIMARY KEY,
-    digest_hour      INTEGER NOT NULL DEFAULT 10,
-    mmr_step         INTEGER NOT NULL DEFAULT 25,
-    tz               TEXT    NOT NULL DEFAULT 'Europe/Moscow',
-    last_digest_date TEXT,
-    notify_steam     INTEGER NOT NULL DEFAULT 1,
-    notify_games     INTEGER NOT NULL DEFAULT 1,
-    notify_weekly    INTEGER NOT NULL DEFAULT 1,
-    last_weekly      TEXT,
-    notify_start     INTEGER NOT NULL DEFAULT 1,
-    tag_mmr          INTEGER NOT NULL DEFAULT 0,
-    notify_digest    INTEGER NOT NULL DEFAULT 1,
-    admin_only       INTEGER NOT NULL DEFAULT 1,
-    active           INTEGER NOT NULL DEFAULT 1,
-    prefer_text      INTEGER NOT NULL DEFAULT 0
-);
--- прежние лидеры номинаций соревнования (по чату и периоду): по ним замечаем смену лидера
-CREATE TABLE IF NOT EXISTS contest_leaders (
-    chat_id INTEGER NOT NULL,
-    period  TEXT    NOT NULL,
-    key     TEXT    NOT NULL,
-    leader  TEXT    NOT NULL,
-    PRIMARY KEY (chat_id, period, key)
-);
--- last_gpm … last_gpm_best и insights_dirty больше не используются (карьерные средние бот не запрашивает);
--- колонки оставлены, чтобы старые базы открывались без пересборки таблицы.
-CREATE TABLE IF NOT EXISTS players (
-    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id               INTEGER NOT NULL,
-    account_id            INTEGER NOT NULL,
-    display_name          TEXT    NOT NULL,
-    anchor_mmr            INTEGER,
-    anchor_ts             INTEGER NOT NULL,
-    created_ts            INTEGER NOT NULL,
-    last_rank_tier        INTEGER,
-    last_leaderboard_rank INTEGER,
-    updated_ts            INTEGER,
-    last_gpm              REAL,
-    last_xpm              REAL,
-    last_last_hits        REAL,
-    last_lanes            TEXT,
-    last_gpm_median       REAL,
-    last_gpm_best         REAL,
-    steam_name            TEXT,
-    steam_avatar          TEXT,
-    profile_ts            INTEGER,
-    history_ts            INTEGER,
-    insights_dirty        INTEGER NOT NULL DEFAULT 0,
-    fh_unavailable        INTEGER NOT NULL DEFAULT 0,
-    ingame_since          INTEGER,
-    ingame_misses         INTEGER NOT NULL DEFAULT 0,
-    tg_user_id            INTEGER,
-    last_tag              TEXT,
-    UNIQUE(chat_id, account_id)
-);
-CREATE TABLE IF NOT EXISTS matches (
-    player_id   INTEGER NOT NULL,
-    match_id    INTEGER NOT NULL,
-    start_time  INTEGER NOT NULL,
-    player_slot INTEGER NOT NULL,
-    radiant_win INTEGER NOT NULL,
-    lobby_type  INTEGER,
-    kills       INTEGER NOT NULL DEFAULT 0,
-    deaths      INTEGER NOT NULL DEFAULT 0,
-    assists     INTEGER NOT NULL DEFAULT 0,
-    hero_id      INTEGER,
-    duration     INTEGER,
-    party_size   INTEGER,
-    average_rank INTEGER,
-    gpm          REAL,
-    xpm          REAL,
-    last_hits    INTEGER,
-    denies       INTEGER,
-    hero_damage  INTEGER,
-    tower_damage INTEGER,
-    hero_healing INTEGER,
-    net_worth    INTEGER,
-    level        INTEGER,
-    perf_score   REAL,
-    bench_json   TEXT,
-    enriched     INTEGER NOT NULL DEFAULT 0,
-    position     INTEGER,
-    role         TEXT,
-    lane         TEXT,
-    imp          INTEGER,
-    stratz_done  INTEGER NOT NULL DEFAULT 0,
-    stratz_tries INTEGER NOT NULL DEFAULT 0,
-    enrich_tries INTEGER NOT NULL DEFAULT 0,
-    stratz_next_ts INTEGER NOT NULL DEFAULT 0,
-    notified     INTEGER NOT NULL DEFAULT 0,
-    leaver_status INTEGER,
-    PRIMARY KEY (player_id, match_id)
-);
-CREATE INDEX IF NOT EXISTS idx_matches_player_time ON matches (player_id, start_time);
-"""
-
-
 class _Connection(sqlite3.Connection):
     """`with conn:` дополнительно закрывает соединение (стандартное только коммитит) — без утечек дескрипторов."""
 
@@ -192,80 +94,7 @@ class Storage:
         # B3: история матчей игрока в памяти по «версии данных» players.data_ver (её двигают триггеры на matches).
         self._matches_cache: OrderedDict = OrderedDict()
         self._matches_cache_lock = threading.Lock()
-        with self._conn() as conn:
-            conn.execute("PRAGMA journal_mode = WAL")  # режим хранится в файле БД — достаточно один раз
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version > SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"База {db_path} создана более новой версией бота (схема {version}, эта версия знает "
-                    f"{SCHEMA_VERSION}). Обновите бота или восстановите базу из бэкапа."
-                )
-            conn.executescript(_SCHEMA)
-            self._migrate(conn)
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-
-    @staticmethod
-    def _migrate(conn: sqlite3.Connection) -> None:
-        """Лёгкие миграции для БД, созданных предыдущими версиями схемы."""
-        def add_missing(table: str, columns: dict[str, str]) -> None:
-            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-            for name, decl in columns.items():
-                if name not in existing:
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
-
-        add_missing("chats", {
-            "last_digest_date": "TEXT", "notify_steam": "INTEGER NOT NULL DEFAULT 1",
-            "notify_games": "INTEGER NOT NULL DEFAULT 1", "notify_weekly": "INTEGER NOT NULL DEFAULT 1",
-            "last_weekly": "TEXT", "notify_start": "INTEGER NOT NULL DEFAULT 1",
-            "tag_mmr": "INTEGER NOT NULL DEFAULT 0",
-            "notify_digest": "INTEGER NOT NULL DEFAULT 1",
-            "admin_only": "INTEGER NOT NULL DEFAULT 1",
-            "active": "INTEGER NOT NULL DEFAULT 1",
-            "prefer_text": "INTEGER NOT NULL DEFAULT 0",
-        })
-        # Старая история — уже «оповещённая»: иначе после обновления бот завалил бы чат старыми играми.
-        had_notified = "notified" in {r["name"] for r in conn.execute("PRAGMA table_info(matches)").fetchall()}
-        if not had_notified:
-            conn.execute("ALTER TABLE matches ADD COLUMN notified INTEGER NOT NULL DEFAULT 0")
-            conn.execute("UPDATE matches SET notified = 1")
-        add_missing("players", {
-            "last_gpm": "REAL", "last_xpm": "REAL", "last_last_hits": "REAL",
-            "last_lanes": "TEXT", "last_gpm_median": "REAL", "last_gpm_best": "REAL",
-            "steam_name": "TEXT", "steam_avatar": "TEXT",
-            "profile_ts": "INTEGER", "history_ts": "INTEGER",
-            "insights_dirty": "INTEGER NOT NULL DEFAULT 0",
-            "fh_unavailable": "INTEGER NOT NULL DEFAULT 0",
-            "ingame_since": "INTEGER", "ingame_misses": "INTEGER NOT NULL DEFAULT 0",
-            "tg_user_id": "INTEGER", "last_tag": "TEXT",
-            "data_ver": "INTEGER NOT NULL DEFAULT 0",
-        })
-        add_missing("matches", {
-            "duration": "INTEGER", "party_size": "INTEGER", "average_rank": "INTEGER",
-            "gpm": "REAL", "xpm": "REAL", "last_hits": "INTEGER", "denies": "INTEGER",
-            "hero_damage": "INTEGER", "tower_damage": "INTEGER", "hero_healing": "INTEGER",
-            "net_worth": "INTEGER", "level": "INTEGER", "perf_score": "REAL",
-            "bench_json": "TEXT", "enriched": "INTEGER NOT NULL DEFAULT 0",
-            "position": "INTEGER", "role": "TEXT", "lane": "TEXT", "imp": "INTEGER",
-            "stratz_done": "INTEGER NOT NULL DEFAULT 0",
-            "stratz_tries": "INTEGER NOT NULL DEFAULT 0",
-            "enrich_tries": "INTEGER NOT NULL DEFAULT 0",
-            "stratz_next_ts": "INTEGER NOT NULL DEFAULT 0",
-            "leaver_status": "INTEGER",
-        })
-        # Кандидатов на оповещение ищут на каждом тике game_watch: частичный индекс по notified = 0 вместо скана истории.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_matches_unnotified ON matches(player_id, start_time) WHERE notified = 0"
-        )
-        # «Версия данных» игрока: любое изменение его матчей (кроме служебных счётчиков) двигает players.data_ver.
-        bump = "UPDATE players SET data_ver = data_ver + 1 WHERE id = {}.player_id"
-        conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_ins AFTER INSERT ON matches BEGIN {bump.format('NEW')}; END")
-        conn.execute(f"CREATE TRIGGER IF NOT EXISTS matches_bump_del AFTER DELETE ON matches BEGIN {bump.format('OLD')}; END")
-        conn.execute(
-            "CREATE TRIGGER IF NOT EXISTS matches_bump_upd AFTER UPDATE ON matches "
-            "WHEN OLD.notified IS NEW.notified AND OLD.enrich_tries IS NEW.enrich_tries "
-            "AND OLD.stratz_tries IS NEW.stratz_tries AND OLD.stratz_next_ts IS NEW.stratz_next_ts "
-            f"BEGIN {bump.format('NEW')}; END"
-        )
+        migrate(db_path)  # схема: нумерованные миграции (mmrbot/migrations.py)
 
     def _conn(self) -> sqlite3.Connection:
         # timeout: фоновые джобы и хендлеры пишут из разных потоков — ждём блокировку, а не падаем.

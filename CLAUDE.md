@@ -20,7 +20,8 @@ Telegram-бот (aiogram 3, Python 3.12, SQLite, APScheduler) для пати Do
 
 - `ids.py`, `ranks.py`, `stats.py`, `party.py`, `commands.py` — чистые, без сети, тестируются напрямую.
 - `opendota.py` — синхронный `requests`-клиент (троттлинг, ретраи, lock), вызывается через `asyncio.to_thread`.
-- `storage.py` — SQLite; схема в `_SCHEMA`, миграции делаются добавлением колонок.
+- `storage.py` — SQLite. Схема — нумерованные миграции в `migrations.py` (`PRAGMA user_version`): выпущенную
+  миграцию не правим, изменение схемы — новая функция под следующим номером + тест в `tests/test_migrations.py`.
 - `tracker.py` — оркестровка: обновление игрока, сводки, награды. `formatting.py` — рендер (HTML).
   Команды обновляют игроков быстро (`refresh_player(fast=True)`: матчи + ранг), остальное догоняет фон
   (`finish_refresh`); полное обновление — в планировщике (новые игры, ежедневная сводка).

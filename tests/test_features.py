@@ -1,6 +1,5 @@
 """Новые игры, соревнование, недельная сводка, график, бэкап, ссылки и склонения."""
 import asyncio
-import sqlite3
 import time
 from datetime import date, datetime, timezone
 
@@ -55,16 +54,16 @@ def test_remove_player_still_clears_matches(store):
 # --- миграция «оповещённых» матчей --------------------------------------
 
 def test_migration_marks_existing_matches_as_notified(tmp_path):
+    from tests.legacy_db import add_match, add_player, make_v0
     path = str(tmp_path / "old.db")
-    st = Storage(path)
-    p = st.add_player(100, 1, "Вася", None, 0, 0)
-    st.add_matches(p.id, [m(1, 100)])
-    with sqlite3.connect(path) as conn:  # имитируем БД старой схемы: без колонки notified
-        conn.execute("DROP TRIGGER matches_bump_upd")  # у реальной старой базы триггеров и индекса ещё нет
-        conn.execute("DROP INDEX idx_matches_unnotified")
-        conn.execute("ALTER TABLE matches DROP COLUMN notified")
+    conn = make_v0(path)  # БД старой схемы: колонки notified, триггеров и индекса ещё нет
+    player_id = add_player(conn, 100, 1, "Вася")
+    add_match(conn, player_id, 1, 100)
+    conn.commit()
+    conn.close()
     st2 = Storage(path)  # миграция
-    assert st2.get_unnotified_matches(p.id, 0) == []
+    assert len(st2.get_matches(player_id)) == 1
+    assert st2.get_unnotified_matches(player_id, 0) == []
 
 
 # --- новые игры ---------------------------------------------------------

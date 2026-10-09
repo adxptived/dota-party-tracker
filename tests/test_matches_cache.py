@@ -1,5 +1,4 @@
 """B3: история матчей игрока кэшируется по «версии данных» players.data_ver — повторное чтение не ходит в БД за строками."""
-import sqlite3
 import time
 
 import pytest
@@ -124,13 +123,9 @@ def test_remove_player_drops_history(env):
 
 
 def test_old_database_gets_data_ver_column(tmp_path):
+    from tests.legacy_db import make_v0
     path = str(tmp_path / "old.db")
-    Storage(path)
-    with sqlite3.connect(path) as conn:
-        conn.execute("DROP TRIGGER IF EXISTS matches_bump_ins")
-        conn.execute("DROP TRIGGER IF EXISTS matches_bump_upd")
-        conn.execute("DROP TRIGGER IF EXISTS matches_bump_del")
-        conn.execute("ALTER TABLE players DROP COLUMN data_ver")
+    make_v0(path).close()  # база до «версии данных»: ни колонки, ни триггеров
     storage = Storage(path)
     storage.get_or_create_chat(1)
     player = storage.add_player(1, 1, "A", None, NOW, NOW)
