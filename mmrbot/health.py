@@ -215,6 +215,9 @@ def log_network_error(logger: logging.Logger, msg: str, exc: BaseException, *, h
         logger.debug("%s: %s", msg, exc)
     elif is_network_error(exc):
         quiet = health is not None and not health.claim_log()
-        (logger.debug if quiet else logger.warning)("%s: %s", msg, type(exc).__name__)
+        # Код ответа — в лог: по нему видно, чей это отказ (404 — нет данных, 403 — защита от ботов, 400 — запрос).
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        reason = f"{type(exc).__name__} {status}" if status else type(exc).__name__
+        (logger.debug if quiet else logger.warning)("%s: %s", msg, reason)
     else:
         logger.error(msg, exc_info=(type(exc), exc, exc.__traceback__))

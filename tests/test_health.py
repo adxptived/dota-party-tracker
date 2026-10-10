@@ -193,6 +193,15 @@ def test_log_network_error_one_line_for_network_failures(caplog):
     assert "ConnectTimeout" in record.getMessage() and "Traceback" not in caplog.text
 
 
+def test_log_network_error_names_http_status(caplog):
+    response = requests.Response()
+    response.status_code = 404
+    log = logging.getLogger("test.netlog")
+    with caplog.at_level(logging.DEBUG, logger="test.netlog"):
+        log_network_error(log, "Не обновился игрок 1", requests.HTTPError("404 Client Error", response=response))
+    assert caplog.records[0].getMessage() == "Не обновился игрок 1: HTTPError 404"  # по коду видно, чей это отказ
+
+
 def test_log_network_error_keeps_traceback_for_unexpected(caplog):
     log = logging.getLogger("test.netlog")
     with caplog.at_level(logging.DEBUG, logger="test.netlog"):
