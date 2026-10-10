@@ -188,3 +188,50 @@ def test_start_alert_hidden_from_settings_but_stored(store):
     assert "Dota 2: " not in render_settings(chat)
     datas = [b.callback_data for row in settings_menu(chat).inline_keyboard for b in row]
     assert "s:start" not in datas
+
+
+def _alert_event(**extra):
+    event = {"match_id": 777, "start_time": 1_700_000_000, "duration": 2280, "shared": None, "rows": [
+        {"name": "Вася", "hero_id": 1, "kills": 12, "deaths": 3, "assists": 8, "won": True, "step": 25, "position": 1,
+         "current_mmr": 5075, "streak_type": "W", "streak_len": 1, "is_radiant": False, "lane_result": 1,
+         "gpm": 612.4, "net_worth": 21400, "last_hits": 312, "denies": 14, "hero_damage": 31250, "tower_damage": 4200},
+        {"name": "Петя", "hero_id": 2, "kills": 3, "deaths": 9, "assists": 14, "won": True, "step": 25, "position": 5,
+         "current_mmr": None, "streak_type": "W", "streak_len": 1, "is_radiant": False, "lane_result": -2,
+         "wards": 18, "stacks": 4, "hero_healing": 5200, "last_hits": 40, "tower_damage": 300},
+    ]}
+    event.update(extra)
+    return event
+
+
+def test_game_alert_text_has_time_score_and_gold_from_party_side():
+    text = render_game_alert(_alert_event(score={"radiant": 27, "dire": 41, "gold": (86000, 98400)}), "Europe/Moscow")
+    assert "15.11 01:13" in text                       # время начала матча в поясе чата
+    assert "Счёт: 41–27 · золото +12.4k" in text       # пати за Dire: её счёт слева, перевес — её
+    behind = render_game_alert(_alert_event(score={"radiant": 41, "dire": 27, "gold": (98400, 86000)}))
+    assert "Счёт: 27–41 · золото −12.4k" in behind
+    assert "Счёт" not in render_game_alert(_alert_event())                               # счёта нет — строки нет
+    assert "золото" not in render_game_alert(_alert_event(score={"radiant": 1, "dire": 2, "gold": None}))
+
+
+def test_game_alert_text_names_sides_when_party_is_split():
+    event = _alert_event(score={"radiant": 41, "dire": 27, "gold": (98400, 86000)})
+    event["rows"][0]["is_radiant"] = True
+    assert "Счёт: Radiant 41–27 Dire · золото Radiant +12.4k" in render_game_alert(event)
+
+
+def test_game_alert_text_core_gets_farm_and_support_gets_vision():
+    core, support = render_game_alert(_alert_event()).split("Петя")
+    assert "линия выиграна" in core and "21.4k нетворт" in core and "добито 312/14" in core and "4.2k по зданиям" in core
+    assert "линия слита" in support and "варды 18" in support and "стаки 4" in support and "5.2k лечения" in support
+    assert "добито" not in support and "по зданиям" not in support  # саппорту важнее вижн, чем добивания
+    assert "варды" not in core
+
+
+def test_game_alert_text_lists_build_without_purchase_times(monkeypatch):
+    from mmrbot import items
+    monkeypatch.setattr(items, "ITEM_SLUGS", {1: "blink", 2: "black_king_bar", 4: "trusty_shovel"})
+    event = _alert_event()
+    event["rows"][0].update(items=[1, 2], item_times=[600, 1200], neutral_item=4, shard=True, shard_time=1450)
+    core, support = render_game_alert(event).split("Петя")
+    assert "🛒 Blink, Black King Bar · нейтралка: Trusty Shovel · Шард" in core and "10:00" not in core
+    assert "🛒" not in support  # билд неизвестен — строки нет

@@ -153,7 +153,8 @@ def test_weekly_report_and_render(store):
     assert report["streak"] == ("Вася", 2)
     assert report["shared"]["games"] == 1
     text = render_weekly(report)
-    assert "Итоги недели" in text and "Больше всех поднялся" in text and "Герой недели" in text
+    assert "Итоги недели" in text and "Герой недели" in text
+    assert "Больше всех поднялся" not in text  # это первая строка таблицы ниже
     assert "Anti-Mage" in text and "Лучшая серия" in text and "Вместе" in text
 
 
@@ -516,7 +517,7 @@ def test_party_pulse_for_single_player():
     records = compute_records([("Вася", [rec(7, NOW, gpm=800, hero_id=5, kills=20)])])
     text = render_party_pulse([s], rows, records)
     assert "Стата пати" in text and "Сегодня: 3 игры · 2–1" in text and "За неделю: 10 игр · 6–4" in text
-    assert "🟢🟢🔴🟢🟢" in text  # хронология слева направо, новые справа
+    assert "Форма" not in text and "🟢" not in text  # форма игроков — в строке рейтинга и на карточке
     assert "800 GPM" in text and "dotabuff.com/matches/7" in text and "/records" in text
     assert "Лидер недели" not in text  # один игрок — лидера нет
 

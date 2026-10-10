@@ -461,6 +461,29 @@ class OpenDota:
         players = self.get_match(match_id).get("players") or []
         return {p["hero_id"]: _player_build(p) for p in players if p.get("hero_id")}
 
+    def get_match_score(self, match_id: int) -> Optional[dict]:
+        """Счёт матча из того же (кэшируемого) /matches/{id}: {"radiant", "dire", "gold"}.
+
+        radiant/dire — убийства сторон; gold — (нетворт Radiant, нетворт Dire) или None, если он известен не у всех
+        десяти: неполная сумма обманывает. None целиком — матч ещё не доехал.
+        """
+        match = self.get_match(match_id)
+        players = match.get("players") or []
+        if not players:
+            return None
+        sides = {True: [], False: []}
+        for p in players:
+            if isinstance(p.get("player_slot"), int):
+                sides[p["player_slot"] < 128].append(p)
+        kills = {side: sum(p.get("kills") or 0 for p in team) for side, team in sides.items()}
+        radiant, dire = match.get("radiant_score"), match.get("dire_score")
+        if not isinstance(radiant, int) or not isinstance(dire, int):
+            radiant, dire = kills[True], kills[False]
+        worth = [p.get("net_worth") for p in players]
+        known = len(players) == 10 and all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in worth)
+        gold = tuple(sum(p["net_worth"] for p in sides[side]) for side in (True, False)) if known else None
+        return {"radiant": radiant, "dire": dire, "gold": gold}
+
     def get_match_player_stats(
         self, match_id: int, account_id: int, player_slot: Optional[int] = None
     ) -> Optional[dict]:

@@ -327,3 +327,27 @@ def test_загрузка_справочника_без_файла_или_с_м�
     bad = tmp_path / "bad.json"
     bad.write_text("{не json", encoding="utf-8")
     assert items.load_items(str(bad)) == 0
+
+
+def test_enrich_alert_items_adds_match_score_and_stacks():
+    client = FakeClient({1: {"stacks": 4}})
+    client.get_match_score = lambda match_id: {"radiant": 41, "dire": 27, "gold": (98400, 86000)}
+    event = _event()
+    enrich_alert_items(client, event)
+    assert event["score"] == {"radiant": 41, "dire": 27, "gold": (98400, 86000)} and event["rows"][0]["stacks"] == 4
+    plain = _event()
+    enrich_alert_items(FakeClient(), plain)  # клиент без счёта — событие остаётся без него
+    assert "score" not in plain
+
+
+def test_get_match_score_kills_and_gold_by_side():
+    players = [{"player_slot": slot, "kills": 4, "net_worth": 10000 + slot} for slot in (0, 1, 2, 3, 4, 128, 129, 130, 131, 132)]
+    od = OpenDota(session=FakeApiSession({"players": players, "radiant_score": 41, "dire_score": 27}), min_interval=0)
+    assert od.get_match_score(9) == {"radiant": 41, "dire": 27, "gold": (50010, 50650)}
+
+
+def test_get_match_score_falls_back_to_player_kills_and_hides_partial_gold():
+    players = [{"player_slot": slot, "kills": 3 if slot < 128 else 5, "net_worth": 9000} for slot in (0, 1, 128, 129)]
+    od = OpenDota(session=FakeApiSession({"players": players}), min_interval=0)
+    assert od.get_match_score(9) == {"radiant": 6, "dire": 10, "gold": None}  # золото известно не у всех десяти
+    assert OpenDota(session=FakeApiSession({}), min_interval=0).get_match_score(1) is None

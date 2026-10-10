@@ -323,7 +323,7 @@ async def stats_board(
         tiles = party_tiles(summaries, parts["week_rows"]) if full else []
         records = record_items(parts["week_records"]) if full else []
         awards = award_items(parts["awards"]) if full else []
-        caption = leader_caption(summaries, parts["week_rows"], mode)
+        caption = leader_caption(summaries, mode)
     else:
         await refresh_for("period", storage, od, chat_id, stratz)
         since = period_since(mode, int(time.time()))
@@ -813,12 +813,12 @@ def _alert_png(event: dict, tz: str) -> bytes:
 async def alert_board(event: dict, tz: str, image: bool = True, od=None) -> ImageBoard:
     """Оповещение о конце матча: текст всегда, картинка с короткой подписью — если нарисовалась.
 
-    od — клиент OpenDota: для картинки подтягивает билд и фарм из матча (best-effort, без сети — картинка без билда).
+    od — клиент OpenDota: подтягивает счёт, билд и фарм из матча (best-effort, без сети — оповещение без них).
     """
-    board = ImageBoard(render_game_alert(event))
+    if od is not None:
+        await asyncio.to_thread(enrich_alert_items, od, event)
+    board = ImageBoard(render_game_alert(event, tz))
     if image:
-        if od is not None:
-            await asyncio.to_thread(enrich_alert_items, od, event)
         board.png = await asyncio.to_thread(build_png, "оповещение о матче", lambda: _alert_png(event, tz))
         if board.png is not None:
             board.caption = alert_caption(event)

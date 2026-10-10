@@ -302,7 +302,7 @@ def test_no_best_game_without_a_meaningful_one(store):
     assert cd.daily_card(build_daily_report(store, 100, NOW), {})["best_game"] is None
 
 
-def test_daily_text_has_best_game_with_stats_build_and_no_awards(store, monkeypatch):
+def test_daily_text_has_best_game_with_stats_and_no_build_or_awards(store, monkeypatch):
     from mmrbot import items
     monkeypatch.setattr(items, "ITEM_SLUGS", {1: "blink", 2: "black_king_bar", 3: "aghanims_scepter_x", 4: "trusty_shovel"})
     _seed(store)
@@ -311,9 +311,9 @@ def test_daily_text_has_best_game_with_stats_build_and_no_awards(store, monkeypa
     text = render_daily(report)
     assert "Лучшая игра суток" in text and "12/1/10" in text and "KDA 22.00" in text
     assert "Нетворс 21.0k" in text and "GPM / XPM 650 / 700" in text and "IMP +12" in text
-    assert "Blink 10:00 → Black King Bar 20:00" in text and "Шард 24:10" in text and "Скипетр 35:00" in text
+    assert "🛒" not in text and "Black King Bar" not in text  # билд — только на картинке: текстом это длинная строка
     assert "Награды" not in text and "Лучшие показатели" not in text
-    assert "🛒" not in render_daily(build_daily_report(store, 100, NOW))  # билд неизвестен — строки нет
+    assert "В игре" not in text and "Играли с" not in text      # человеко-часы и окно игр убраны
 
 
 def test_daily_image_with_best_game_is_taller_and_draws_the_build(store):

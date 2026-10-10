@@ -103,6 +103,7 @@ class PlayerSummary:
     avatar: Optional[str] = None  # адрес аватара Steam (players.steam_avatar)
     form_long: list = field(default_factory=list)  # последние 10 исходов (True = победа), новые справа
     role_style: str = ""
+    main_position: Optional[tuple] = None  # (позиция 1–5, игр на ней, игр с известной позицией) — по данным Stratz
     lobby_rank: Optional[int] = None
     hero_pool: int = 0
     wins_losses: dict = field(default_factory=dict)
@@ -318,7 +319,7 @@ def refresh_items(client: OpenDotaClient) -> int:
 
 _ALERT_FIELDS = (
     "items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time",
-    "net_worth", "last_hits", "denies", "hero_healing", "tower_damage",
+    "net_worth", "last_hits", "denies", "hero_healing", "tower_damage", "stacks",
 )
 
 
@@ -326,8 +327,10 @@ def enrich_alert_items(client: OpenDotaClient, event: dict) -> None:
     """Дополнить строки оповещения билдом и фармом из /matches/{id} (матч общий на пати — один запрос).
 
     Best-effort: предохранитель закрыт или сеть отказала — строки остаются как были, оповещение не задерживается.
-    Уже заполненные поля строки не затираются.
+    Уже заполненные поля строки не затираются. Заодно кладёт в событие счёт матча (`score`): убийства сторон и их
+    золото — из того же кэшируемого матча, без нового запроса.
     """
+    _add_match_score(client, event)
     for row in event.get("rows") or []:
         if _provider_down(client) or not row.get("account_id"):
             return
@@ -342,6 +345,21 @@ def enrich_alert_items(client: OpenDotaClient, event: dict) -> None:
                 row[key] = found[key]
         if found and found.get("items") and not any(t is not None for t in found.get("item_times") or []):
             _request_parse(client, event.get("match_id"))  # матч не разобран — времён покупок пока нет
+
+
+def _add_match_score(client: OpenDotaClient, event: dict) -> None:
+    """Счёт матча в событие оповещения; best-effort, как и билд."""
+    getter = getattr(client, "get_match_score", None)
+    if getter is None or _provider_down(client) or event.get("score"):
+        return
+    try:
+        score = getter(event["match_id"])
+    except Exception as exc:
+        log_network_error(log, f"Счёт матча {event.get('match_id')} не получен", exc,
+                          health=getattr(client, "health", None))
+        return
+    if score:
+        event["score"] = score
 
 
 from mmrbot.items import item_slug  # noqa: E402
@@ -490,7 +508,9 @@ def detect_new_games(
                 "streak_type": summary.streak_type, "streak_len": summary.streak_len,
                 "gpm": match.get("gpm"), "hero_damage": match.get("hero_damage"), "position": match.get("position"),
                 "imp": match.get("imp"), "leaver_status": match.get("leaver_status"),
-                "rank_tier": player.last_rank_tier,
+                "rank_tier": player.last_rank_tier, "is_radiant": match["player_slot"] < 128,
+                "lane_result": match.get("lane_result"), "wards": match.get("wards"), "stacks": match.get("stacks"),
+                "hero_healing": match.get("hero_healing"),
             })
     matches_events = sorted(by_match.values(), key=lambda e: e["start_time"])
     for entry in matches_events:
@@ -979,6 +999,12 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
     avg_hero_healing_window = _mean_field("hero_healing")
     role_style = stats.infer_role_style(avg_last_hits_window, avg_hero_healing_window)
 
+    by_position = stats.role_stats(all_matches)
+    main_position = None
+    if by_position:
+        main = max(by_position, key=lambda r: (r["games"], -r["position"]))
+        main_position = (main["position"], main["games"], sum(r["games"] for r in by_position))
+
     lobby_ranks = [m["average_rank"] for m in all_matches if m.get("average_rank")]
     lobby_rank = median_rank_tier(lobby_ranks)
     wins_losses = stats.wins_losses_split(all_matches)
@@ -1034,6 +1060,7 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         avg_hero_healing_window=avg_hero_healing_window,
         skill=skill,
         role_style=role_style,
+        main_position=main_position,
         lobby_rank=lobby_rank,
         hero_pool=pool,
         wins_losses=wins_losses,

@@ -1,6 +1,7 @@
-"""Оповещение о конце матча картинкой: шапка с исходом и лобби, по строке на каждого игрока пати
-(аватар, иконка героя, ник, K/D/A, ±MMR → ≈MMR, серия; под строкой — билд и подписанные ячейки: нетворт,
-добито/не отдано, урон, здания), внизу «Сегодня вместе».
+"""Оповещение о конце матча картинкой: шапка с исходом, счётом матча и лобби, по строке на каждого игрока пати
+(аватар, иконка героя, ник, позиция и исход линии, K/D/A, ±MMR → ≈MMR, серия; под строкой — билд и подписанные
+ячейки: у коров нетворт, добито/не отдано, урон, здания; у саппортов — варды, стаки, лечение, урон),
+внизу «Сегодня вместе».
 
 Чистая функция: иконки героев и аватары приходят готовыми байтами, сети и БД здесь нет.
 """
@@ -16,7 +17,9 @@ from mmrbot.boards import CAPTION_LIMIT
 from mmrbot.cards import (
     ACCENT, BG, FG, GOLD, ICON_H, ICON_W, LOSS, MUTED, PAD, PANEL, WIDTH, WIN, clean, draw_text, signed,
 )
-from mmrbot.formatting import _k, _mvp_name, _thousands, fmt_local, plural_games
+from mmrbot.formatting import (
+    _k, _mvp_name, _thousands, fmt_local, gold_lead, is_support, lane_text, match_score, plural_games,
+)
 from mmrbot.heroes import hero_name
 from mmrbot.ranks import rank_label
 from mmrbot.upgrade_icons import paste_upgrade
@@ -64,7 +67,8 @@ def clock(seconds) -> str:
 
 def _has_strip(row: dict) -> bool:
     return bool(row.get("items") or row.get("neutral_item") or row.get("rank_tier") or row.get("shard")
-                or row.get("scepter") or row.get("tower_damage") or row.get("net_worth"))
+                or row.get("scepter") or row.get("tower_damage") or row.get("net_worth")
+                or (is_support(row) and (_number(row.get("wards")) or _number(row.get("stacks")))))
 
 
 def _times(row: dict) -> list:
@@ -134,11 +138,16 @@ def _draw_banner(img, draw, y: int, event: dict, tz: str, label: str, color: str
     cards.stripe(img, PAD, y + 20, y + BANNER_H - 20, color)
     when = fmt_local(event.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
     sub = "Матч завершён  ·  " + when + (f"  ·  {event['duration'] // 60} мин" if event.get("duration") else "")
+    score = match_score(event)
+    if score and score["mixed"]:  # игроки на разных сторонах: «наш» счёт не определён — подписываем стороны
+        sub += f"  ·  Radiant {score['left']} : {score['right']} Dire"
     right = WIDTH - PAD - 28
     rank = event.get("average_rank")
     side_w = 300 if rank else 240
     draw_text(draw, (PAD + 32, y + 52), label, 56, cards.mix(color, "#ffffff", 0.12), bold=True, anchor="lm",
               max_w=WIDTH - 2 * PAD - 60 - side_w)
+    _draw_score(draw, PAD + 32 + cards.text_width(label, 56, True) + 36, y + 52, event,
+                WIDTH - PAD - 60 - side_w)
     draw_text(draw, (PAD + 34, y + 104), sub, 22, cards.mix(MUTED, "#ffffff", 0.25), anchor="lm",
               max_w=WIDTH - 2 * PAD - 60 - side_w)
     match_id = f"ID {event.get('match_id')}"
@@ -150,6 +159,31 @@ def _draw_banner(img, draw, y: int, event: dict, tz: str, label: str, color: str
     else:
         draw_text(draw, (right, y + BANNER_H / 2), match_id, 20, cards.mix(MUTED, "#ffffff", 0.1), anchor="rm")
     return y + BANNER_H
+
+
+def _draw_score(draw, x: float, cy: float, event: dict, limit: float) -> None:
+    """Счёт матча по убийствам рядом с исходом (слева — пати) и её перевес по золоту.
+
+    Игроки на разных сторонах — счёт со сторонами стоит в строке под исходом, здесь его нет.
+    Не помещается до правого блока — не рисуется: наезжать нельзя.
+    """
+    score = match_score(event)
+    if not score or score["mixed"]:
+        return
+    text = f"{score['left']} : {score['right']}"
+    if x + cards.text_width(text, 44, True) > limit:
+        return
+    tone = cards.mix(FG, MUTED, 0.25)
+    draw_text(draw, (x, cy), text, 44, tone, bold=True, anchor="lm")
+    x += cards.text_width(text, 44, True) + 20
+    caption = "СЧЁТ ПО УБИЙСТВАМ"
+    lead = score["lead"]
+    gold = (f"золото {gold_lead(lead)}", cards.delta_color(lead)) if lead is not None else None
+    if x + cards.text_width(caption, 16, True) > limit:
+        return
+    draw_text(draw, (x, cy - 12 if gold else cy), caption, 16, cards.mix(MUTED, "#ffffff", 0.1), bold=True, anchor="lm")
+    if gold and x + cards.text_width(gold[0], 20, True) <= limit:
+        draw_text(draw, (x, cy + 13), gold[0], 20, gold[1], bold=True, anchor="lm", track=False)
 
 
 def _draw_row(
@@ -179,6 +213,8 @@ def _draw_row(
     for text, tag_color in tags:
         tag_x += cards.pill(img, draw, tag_x, mid - 26, text, BG, tag_color, size=18, pad=10) + 8
     hero = hero_name(row.get("hero_id")) + (f"  ·  P{row['position']}" if row.get("position") else "")
+    if lane_text(row):
+        hero += f"  ·  {lane_text(row)}"
     draw_text(draw, (NAME_X, mid + 2), hero, 20, MUTED, anchor="lm", max_w=NAME_MAX_W + 60)
     x = NAME_X
     imp = row.get("imp")
@@ -220,14 +256,25 @@ def _number(value) -> bool:
 
 
 def _strip_cells(row: dict) -> list:
-    """Экономика и урон игрока ячейками с подписями; чего нет в данных — той ячейки нет."""
+    """Показатели игрока ячейками с подписями; чего нет в данных — той ячейки нет.
+
+    Кор — экономика и урон; саппорт (P4/P5) — то, чем он полезен: варды, стаки, лечение, и лишь затем урон и нетворт.
+    Не больше четырёх ячеек: столько помещается между билдом и рангом.
+    """
+    def k(key: str, fmt=_k) -> Optional[str]:
+        return fmt(row[key]) if _number(row.get(key)) and row[key] else None
+
     hits = row.get("last_hits")
-    return [
-        ("Нетворт", _k(row["net_worth"]) if _number(row.get("net_worth")) and row["net_worth"] else None),
-        ("Добито", f"{hits}/{row.get('denies') or 0}" if _number(hits) else None),
-        ("Урон", _thousands(row["hero_damage"]) if _number(row.get("hero_damage")) and row["hero_damage"] else None),
-        ("Здания", _k(row["tower_damage"]) if _number(row.get("tower_damage")) and row["tower_damage"] else None),
-    ]
+    net_worth, damage = ("Нетворт", k("net_worth")), ("Урон", k("hero_damage", _thousands))
+    if is_support(row):
+        cells = [
+            ("Варды", str(row["wards"]) if _number(row.get("wards")) else None),
+            ("Стаки", str(row["stacks"]) if _number(row.get("stacks")) else None),
+            ("Лечение", k("hero_healing")), damage, net_worth,
+        ]
+        return [cell for cell in cells if cell[1]][:4]
+    return [net_worth, ("Добито", f"{hits}/{row.get('denies') or 0}" if _number(hits) else None), damage,
+            ("Здания", k("tower_damage"))]
 
 
 def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
@@ -283,17 +330,14 @@ def _draw_shared(img, draw, y: int, shared: dict) -> None:
 
 
 def alert_caption(event: dict) -> str:
-    """Подпись к картинке: исход и длительность, затем ±MMR игроков одной строкой (подробности — на картинке)."""
+    """Подпись к картинке (она же текст пуша): исход и длительность, затем ±MMR игроков — остальное на картинке."""
     rows = event.get("rows") or []
     wins = sum(1 for r in rows if r.get("won"))
     result = "Победа" if rows and wins == len(rows) else "Поражение" if rows and wins == 0 else "Разные стороны"
     icon = "🏆" if rows and wins == len(rows) else "💀" if rows and wins == 0 else "⚔️"
     duration = f" · {event['duration'] // 60} мин" if event.get("duration") else ""
-    head = f"🏁 <b>Матч завершён</b> · {icon} {result}{duration}"
-    parts = []
-    for r in rows:
-        mmr = f" ➜ ≈{r['current_mmr']}" if r.get("current_mmr") is not None else ""
-        parts.append(f"{html.escape(clean(r.get('name')) or 'Игрок')} {signed(_delta(r))}{mmr}")
+    head = f"{icon} <b>{result}</b>{duration}"
+    parts = [f"{html.escape(clean(r.get('name')) or 'Игрок')} {signed(_delta(r))}" for r in rows]
     room = CAPTION_LIMIT - len(head) - 2
     line = " · ".join(parts)
     while parts and len(line) > room:  # много игроков с длинными никами — лишних не показываем

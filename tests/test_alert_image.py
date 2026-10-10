@@ -61,8 +61,8 @@ def test_shared_footer_adds_height():
 def test_caption_is_short_with_result_and_player_deltas():
     text = alert_caption(_event([_row("Вася"), _row("Петя", False, current_mmr=4975)]))
     assert text.count("\n") <= 2 and len(text) <= 1024
-    assert "Матч завершён" in text and "Разные стороны" in text
-    assert "Вася" in text and "+25" in text and "−25" in text and "5420" in text
+    assert "Разные стороны" in text and "Вася" in text and "+25" in text and "−25" in text
+    assert "Матч завершён" not in text and "5420" not in text and "4975" not in text  # это уже на картинке
 
 
 def test_caption_escapes_names_and_fits_many_players():
@@ -146,3 +146,23 @@ def test_imp_is_colored_by_sign_and_damage_stays_in_line_without_strip(drawn):
     render_alert_image(_event([_row("A"), _row("B", imp=-14)]), "UTC")
     assert ("IMP +21", WIN, True) in drawn and ("IMP −14", LOSS, True) in drawn
     assert any("31.2k урона" in t[0] for t in drawn)
+
+
+def test_score_and_support_cells_are_drawn_without_changing_layout():
+    plain = _open(render_alert_image(_event(), "UTC"))
+    scored = _open(render_alert_image(_event([_row("Вася", is_radiant=True)],
+                                             score={"radiant": 41, "dire": 27, "gold": (98400, 86000)}), "UTC"))
+    assert scored.size == plain.size and scored.tobytes() != plain.tobytes()  # счёт — в шапке, высота та же
+    support = _open(render_alert_image(_event([_row("Петя", position=5, wards=18, stacks=4)]), "UTC"))
+    assert support.height > plain.height                                       # у саппорта появилась полоса ячеек
+    core = _open(render_alert_image(_event([_row("Вася", wards=18, stacks=4)]), "UTC"))
+    assert core.height == plain.height                                         # кору варды не показываем
+
+
+def test_support_strip_puts_vision_first_and_keeps_four_cells():
+    from mmrbot.alert_image import _strip_cells
+    row = _row("Петя", position=5, wards=18, stacks=0, hero_healing=5200, net_worth=9800, last_hits=40, tower_damage=300)
+    assert [label for label, _ in _strip_cells(row)] == ["Варды", "Стаки", "Лечение", "Урон"]
+    assert dict(_strip_cells(row))["Стаки"] == "0"                             # ноль стаков — тоже значение
+    core = _row("Вася", net_worth=21400, last_hits=312, denies=14, tower_damage=4200, wards=3)
+    assert [label for label, _ in _strip_cells(core)] == ["Нетворт", "Добито", "Урон", "Здания"]

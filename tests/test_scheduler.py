@@ -257,7 +257,7 @@ def test_match_alert_goes_as_photo_with_caption_and_buttons(tmp_path, monkeypatc
     bot = _AlertBot()
     marked = _run_game_watch(tmp_path, monkeypatch, bot)
     (chat_id, caption, kw), = bot.photos
-    assert chat_id == 5 and "Матч завершён" in caption and "Вася" in caption and kw["parse_mode"] == "HTML"
+    assert chat_id == 5 and "Победа" in caption and "Вася" in caption and kw["parse_mode"] == "HTML"
     data = [b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row]
     assert "mx:777" in data
     assert not bot.texts and marked == [[(1, 777)]]  # помечено оповещённым после успешной отправки

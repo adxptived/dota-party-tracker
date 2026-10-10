@@ -227,14 +227,27 @@ def test_render_player_card_shows_new_metrics():
     s = summary(
         lobby_rank=74,  # Divine 4
         hero_pool=8,
-        wins_losses={"win": {"games": 6, "avg_deaths": 5.0, "avg_kda": 4.2},
-                     "loss": {"games": 4, "avg_deaths": 11.0, "avg_kda": 1.3}},
+        main_position=(3, 7, 9),
     )
     text = render_player_card(s)
     assert "лобби" in text.lower()
     assert "Divine" in text            # сложность лобби 74 → Divine 4
-    assert "победах" in text and "поражениях" in text
+    assert "Основная позиция: Pos 3 · Оффлейн (7 из 9 игр)" in text
     assert "8" in text                 # пул героев
+
+
+def test_render_player_card_has_no_repeats_or_low_value_lines():
+    s = summary(
+        avg_perf=0.73, best_hour=(21, 0.7), worst_hour=(3, 0.3), avg_duration_min=36.0, max_duration_min=71.0,
+        wins_losses={"win": {"games": 6, "avg_deaths": 5.0, "avg_kda": 4.2},
+                     "loss": {"games": 4, "avg_deaths": 11.0, "avg_kda": 1.3}},
+    )
+    text = render_player_card(s)
+    assert text.count("перф") == 1 and "лучше, чем у" not in text   # перф — один раз, без сноски (она в /terms)
+    assert "Вся ранкед-история" not in text
+    assert "Лучший час" not in text and "максимум" not in text and "в победах" not in text
+    assert "Средняя длительность: 36 мин" in text
+    assert "Основная позиция" not in text                            # позиций от Stratz нет — строки нет
 
 
 def test_render_player_card_shows_skill_breakdown_and_role():
@@ -469,7 +482,7 @@ def test_card_labels_do_not_overclaim():
     text = render_player_card(summary(
         games_total=40, enriched_games=6, detail_games=9, avg_perf=0.6, avg_gpm_window=500.0,
     ))
-    assert "Вся ранкед-история" in text and "Период анализа" not in text
+    assert "Период анализа" not in text
     assert "по 9 из 40" in text                  # экономика усреднена не по всем играм
     assert "по 6 из 40" in text                  # и перф тоже
 
@@ -498,10 +511,10 @@ def test_skill_block_damage_group_uses_tower_damage_benchmark():
     assert "Урон" in text and "70%" in text      # среднее героев и строений, а не только героев
 
 
-def test_leaderboard_explains_mmr_period_when_it_differs():
+def test_leaderboard_explains_mmr_period_once_in_header():
     from mmrbot.formatting import render_leaderboard
-    assert "за 3 игры с момента задания MMR" in render_leaderboard([summary(games_total=10, anchor_games=3)])
-    assert "с момента задания MMR" not in render_leaderboard([summary(games_total=4, anchor_games=4)])
+    text = render_leaderboard([summary(games_total=10, anchor_games=3), summary(games_total=4, anchor_games=4)])
+    assert text.count("с момента задания MMR") == 1 and text.splitlines()[1].startswith("<i>")
 
 
 # --- A3: пометка «OpenDota недоступен с … — данные на …» --------------------------------

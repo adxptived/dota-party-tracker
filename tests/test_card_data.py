@@ -84,10 +84,9 @@ def test_records_and_awards_items_keep_only_pulse_records():
 def test_leader_caption_full_and_period():
     s = [_summary("Вася"), _summary("Петя", current_mmr=4000)]
     week = [{"name": "Вася", "games": 9, "wins": 6, "losses": 3, "delta": 75, "winrate": .66, "kda": 3}]
-    assert cd.leader_caption(s, week, "stats") == "🏆 <b>Рейтинг</b> · Лидер: <b>Вася</b> ≈5420 (+75 за неделю)"
-    assert cd.leader_caption(s, [], "stats") == "🏆 <b>Рейтинг</b> · Лидер: <b>Вася</b> ≈5420 (+420 за 56 игр)"
-    assert "сегодня" in cd.leader_caption(s, week, "today")
-    assert cd.leader_caption([], [], "stats") == "🏆 <b>Рейтинг</b>"
+    assert cd.leader_caption(s, "stats") == "🏆 <b>Рейтинг</b> · Лидер: <b>Вася</b> ≈5420"  # дельта недели — в плитке
+    assert "сегодня" in cd.leader_caption(s, "today")
+    assert cd.leader_caption([], "stats") == "🏆 <b>Рейтинг</b>"
     rows = [{"name": "Вася", "games": 12, "wins": 8, "losses": 4, "delta": 100, "winrate": .66, "kda": 3.25}]
     assert cd.period_caption(rows, "week") == "🗓️ <b>За неделю</b> · Лидер: <b>Вася</b> +100 (8–4)"
     assert cd.period_caption([{"name": "Вася", "games": 0, "wins": 0, "losses": 0, "delta": 0, "winrate": 0, "kda": 0}],
@@ -96,7 +95,7 @@ def test_leader_caption_full_and_period():
 
 def test_names_are_escaped_in_captions():
     s = [_summary("<b>&")]
-    assert "&lt;b&gt;&amp;" in cd.leader_caption(s, [], "stats")
+    assert "&lt;b&gt;&amp;" in cd.leader_caption(s, "stats")
 
 
 # --- карточка игрока ---------------------------------------------------------------------------
@@ -118,7 +117,7 @@ def test_player_card_has_header_tiles_charts_and_blocks():
     card = cd.player_card(_full_summary(), {"size": 5, "power_rank": 2}, [25, 0, 25, 50], "заметка")
     assert card["name"] == "Вася" and card["mmr_text"] == "≈5420" and card["mmr_delta"] == 420
     assert card["delta_note"] == "за 56 игр" and card["perf"] == 73 and card["streak"] == ("W", 4)
-    assert [t["label"] for t in card["tiles"]] == ["Результат", "KDA", "GPM", "Нетворт", "Урон по героям", "Игр сыграно"]
+    assert [t["label"] for t in card["tiles"]] == ["Результат", "KDA", "GPM", "Нетворт", "Урон по героям", "Средняя игра"]
     assert card["tiles"][0]["value"] == "35–21" and card["tiles"][2]["value"] == "540" and card["tiles"][3]["value"] == "18.2k"
     assert card["tiles"][2]["sub"] == "по 40 из 56"
     assert card["series"] == [5025, 5000, 5025, 5050] and "последние 4 игры" in card["series_label"]
@@ -149,9 +148,8 @@ def test_player_card_without_games_is_just_header_and_notice():
 
 def test_player_caption():
     text = cd.player_caption(_full_summary())
-    assert text.splitlines()[0] == "🪪 <b>Вася</b> · Legend 5 · ≈5420 (+420)"
-    assert "56 игр" in text and "35–21 (62%)" in text and "KDA 3.10" in text
-    assert "ранкед-игр пока нет" in cd.player_caption(_summary(games_total=0, current_mmr=None))
+    assert text == "🪪 <b>Вася</b> · Legend 5 · ≈5420 (+420)"  # одна строка: игры, W–L и KDA — на самой карточке
+    assert "\n" not in cd.player_caption(_summary(games_total=0, current_mmr=None))
     assert "&lt;b&gt;" in cd.player_caption(_summary(display_name="<b>"))
 
 
@@ -171,3 +169,11 @@ def test_player_card_last_game_details_and_hero_kda():
     assert card["heroes"][0]["kda"] == 4.13
     bare = cd.player_card(_full_summary())  # старая запись без подробностей — блок как раньше
     assert bare["last_game"]["stats"] == [] and bare["last_game"]["when"] is None and bare["heroes"][0]["kda"] is None
+
+
+def test_player_card_last_tile_is_position_then_role_then_duration():
+    tile = cd.player_card(_full_summary(main_position=(5, 34, 49), role_style="саппорт / роумер"))["tiles"][-1]
+    assert tile == {"label": "Позиция", "value": "Pos 5", "sub": "Саппорт · 69% игр"}
+    tile = cd.player_card(_full_summary(role_style="саппорт / роумер"))["tiles"][-1]
+    assert (tile["label"], tile["value"]) == ("Роль", "Саппорт")
+    assert cd.player_card(_full_summary())["tiles"][-1]["label"] == "Средняя игра"

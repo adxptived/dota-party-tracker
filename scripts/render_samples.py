@@ -62,14 +62,16 @@ def sample_alert(kind: str = "win") -> dict:
         data = {"name": name, "hero_id": hero, "kills": k, "deaths": d, "assists": a, "won": won, "step": 25,
                 "current_mmr": 5420, "streak_type": "W" if won else "L", "streak_len": 4, "gpm": 640,
                 "hero_damage": 31250, "position": 1, "imp": 21 if won else -14, "leaver_status": 0,
-                "account_id": 1, "avatar": None}
+                "account_id": 1, "avatar": None, "is_radiant": won, "lane_result": 1 if won else -1}
         data.update(extra)
         return data
     won = kind != "loss"
     rows = [row("Вася", 12, won, 13, 3, 10, avatar="https://avatars.steamstatic.com/a.jpg"),
             row("Петя", 1, won if kind != "mixed" else False, 7, 6, 14, current_mmr=4975, streak_len=1, imp=3),
-            row("Оооочень длинный ник игрока", 26, won, 2, 9, 21, current_mmr=6120, position=5, leaver_status=3)]
+            row("Оооочень длинный ник игрока", 26, won, 2, 9, 21, current_mmr=6120, position=5, leaver_status=3,
+                wards=18, stacks=4, hero_healing=5200, net_worth=9800)]
     return {"kind": "match", "chat_id": 1, "match_id": 7812345678, "start_time": NOW, "duration": 2280, "rows": rows,
+            "score": {"radiant": 41, "dire": 27, "gold": (98400, 86000)},
             "shared": {"games": 5, "wins": 3, "losses": 2}, "average_rank": 55}
 
 
@@ -128,7 +130,6 @@ def build() -> dict[str, bytes]:
         {"label": "Лучший IMP", "value": "IMP +64", "player": "Ира", "hero_id": 35},
     ]
     awards = [
-        {"title": "Лидер недели", "player": "Вася", "detail": "+75 за неделю"},
         {"title": "Больше всех играл", "player": "Оооочень длинный ник игрока", "detail": "31 игра"},
         {"title": "Камбэк недели", "player": "Ира", "detail": "5 побед подряд"},
     ]
@@ -172,12 +173,12 @@ def sample_daily() -> dict:
         return {"start": until - hours_ago * 3600, "end": until - hours_ago * 3600 + minutes * 60, "won": won}
     return {
         "title": "Ежедневная сводка", "window": "Последние 24 часа · 08.10 12:00 — 09.10 12:00",
-        "span": "Играли с 14:10 до 02:35", "badge": ("24 ЧАСА", ACCENT),
+        "span": None, "badge": ("24 ЧАСА", ACCENT),
         "big": {"value": "+75", "color": WIN, "label": "оценка ±MMR пати за 24 часа", "sub": "11 игр · 64% побед"},
         "tiles": [{"label": "Игр за сутки", "value": "11", "sub": "7–4 (64%)", "color": FG},
                   {"label": "Лидер суток", "value": "Вася", "sub": "+75 (4–1)", "color": GOLD},
                   {"label": "Лучшая серия", "value": "4 победы", "sub": "Вася", "color": WIN},
-                  {"label": "В игре", "value": "7 ч 10 мин", "sub": "ср. 39 мин", "color": FG}],
+                  {"label": "Вместе", "value": "4 игры", "sub": "3–1", "color": FG}],
         "rows": [row(rows[0], 5, 4, "+75", WIN, [0, 25, 50, 25, 50, 75]),
                  row(rows[2], 4, 2, "0", MUTED, [0, 25, 0, 25, 0]),
                  row(rows[1], 2, 1, "−25", LOSS, [0, -25, -50, -25]),
@@ -325,7 +326,7 @@ def sample_player() -> dict:
             {"label": "GPM", "value": "540", "sub": "по 40 из 56"},
             {"label": "Нетворт", "value": "18.2k", "sub": "по 40 из 56"},
             {"label": "Урон по героям", "value": "21.0k", "sub": "по 40 из 56"},
-            {"label": "Игр сыграно", "value": "56", "sub": "ср. 36 мин"},
+            {"label": "Позиция", "value": "Pos 3", "sub": "Оффлейн · 69% игр"},
         ],
         "series": series, "series_label": "Динамика ≈MMR · последние 20 игр",
         "form": [True, True, False, True, True, True, False, True, True, True],

@@ -1447,3 +1447,14 @@ def test_enrich_window_comes_from_client_setting(store):
     assert backfill_opendota(store, client, now=T0) == 1
     client.enrich_days = 0  # 0 — без границы: догружается и старый матч
     assert backfill_opendota(store, client, now=T0) == 1
+
+
+def test_summary_main_position_is_the_most_played_one(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [_m(i, 2000 + i) for i in range(1, 6)])
+    chat = store.get_or_create_chat(100)
+    assert build_player_summary(store, chat, store.get_player(100, "Вася"), now=100_000).main_position is None
+    for match_id, position in ((1, 3), (2, 3), (3, 1)):  # у матчей 4 и 5 позиции от Stratz нет
+        store.update_match_stratz(p.id, match_id, {"position": position})
+    s = build_player_summary(store, chat, store.get_player(100, "Вася"), now=100_001)
+    assert s.main_position == (3, 2, 3)  # позиция, игр на ней, игр с известной позицией

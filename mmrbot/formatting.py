@@ -126,8 +126,6 @@ def _fmt_wr(games: int, wins: int) -> str:
 def _card_full(index: int, s: PlayerSummary) -> str:
     lines = [f"{_pos(index)} {_b(s.display_name)}"]
     lines.append(f"    {_rank_with_emoji(s)} · {_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}")
-    if s.games_total and s.anchor_games != s.games_total:  # стрелка и записи считаются за разные периоды — скажем
-        lines.append(f"    <i>±MMR — за {plural_games(s.anchor_games)} с момента задания MMR</i>")
     if s.games_total == 0:
         lines.append(f"    {NO_GAMES}")
     else:
@@ -210,7 +208,7 @@ def render_leaderboard(summaries: list[PlayerSummary], today_only: bool = False)
         blocks = [_card_today(i, s) for i, s in enumerate(summaries, start=1)]
         return header + "\n\n" + "\n\n".join(blocks)
 
-    header = "🏆 <b>Рейтинг</b>\n<i>игры — с начала отслеживания, ±MMR — оценка от стартового MMR</i>"
+    header = "🏆 <b>Рейтинг</b>\n<i>игры — с начала отслеживания, ±MMR — оценка с момента задания MMR</i>"
     blocks = [_card_full(i, s) for i, s in enumerate(summaries, start=1)]
     return header + "\n\n" + "\n\n".join(blocks)
 
@@ -257,7 +255,7 @@ def render_party_pulse(
     summaries: list[PlayerSummary], week_rows: list[dict], week_records: dict,
     day_rows: Optional[list[dict]] = None,
 ) -> str:
-    """«Стата пати» под рейтингом: сегодня, неделя, форма игроков, рекорды недели (работает и для одного игрока)."""
+    """«Стата пати» под рейтингом: сегодня, неделя, рекорды недели (работает и для одного игрока)."""
     lines = ["📊 <b>Стата пати</b>"]
 
     if day_rows is not None:  # ежедневная сводка уходит утром: «сегодня» почти пусто — показываем последние сутки
@@ -291,13 +289,6 @@ def render_party_pulse(
                 lines.append(f"🚀 Лидер недели: {_b(best['name'])} {_today_delta(best['delta'])} ({best['wins']}–{best['losses']})")
     else:
         lines.append("🗓️ За неделю: игр не было")
-
-    form = [s for s in summaries if s.recent_form]
-    if form:
-        lines.append("")
-        lines.append("<b>Форма</b> <i>(последние игры, новые справа)</i>")
-        for s in form:
-            lines.append(f"{_b(s.display_name)}  {_form_dots(s.recent_form)}")
 
     picked = [r for r in week_records.get("records", []) if r["key"] in PULSE_RECORDS]
     if picked:
@@ -478,10 +469,12 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str
     if s.games_total == 0:
         return header + f"\n{NO_GAMES}"
 
-    lines = [header, f"<i>🔎 Вся ранкед-история с момента добавления: {plural_games(s.games_total)}</i>", ""]
+    lines = [header, ""]
 
-    # Заголовочная строка: MMR + честный перф рядом.
+    # Заголовочная строка: MMR + честный перф рядом (с пометкой, если он посчитан не по всем играм).
     perf = f"    перф {_b(f'{s.avg_perf * 100:.0f}/100')}" if s.avg_perf is not None else ""
+    if perf and s.enriched_games < s.games_total:
+        perf += f" <i>(по {s.enriched_games} из {s.games_total} игр)</i>"
     lines.append(f"{_b(_mmr_str(s.current_mmr))}{_trend(s.mmr_delta)}{perf}")
     if mmr_log_line(s, tz):
         lines.append(mmr_log_line(s, tz))
@@ -503,6 +496,9 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str
         lines.append("💰 Экономика: " + " · ".join(econ) + part)
 
     # Объективный скилл (перцентиль в мире) + стиль/роль.
+    if s.main_position:
+        pos, pos_games, known = s.main_position
+        lines.append(f"🧭 Основная позиция: {POSITION_NAMES.get(pos, f'Pos {pos}')} ({pos_games} из {plural_games(known)})")
     if s.role_style:
         lines.append(f"🎭 Игровая роль: {s.role_style}")
     skill_block = _skill_block(s.skill)
@@ -521,20 +517,10 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str
     if s.party_unknown[0]:
         lines.append(f"      <i>размер пати неизвестен: {plural_games(s.party_unknown[0])} — в разбивку не вошли</i>")
 
-    if s.best_hour and s.worst_hour:
-        bh, bwr = s.best_hour
-        wh, wwr = s.worst_hour
-        lines.append(f"⏰ Лучший час: {bh:02d}:00 ({bwr * 100:.0f}%) · худший: {wh:02d}:00 ({wwr * 100:.0f}%)")
     if s.avg_duration_min:
-        lines.append(f"⏱️ Средняя длительность: {s.avg_duration_min:.0f} мин (максимум {s.max_duration_min:.0f})")
+        lines.append(f"⏱️ Средняя длительность: {s.avg_duration_min:.0f} мин")
     if s.lobby_rank:
         lines.append(f"🎚️ Средний уровень лобби: {rank_label(s.lobby_rank)}")
-    win, loss = s.wins_losses.get("win"), s.wins_losses.get("loss")
-    if win and loss:
-        lines.append(
-            f"⚔️ KDA в победах: {win['avg_kda']:.1f} (смертей {win['avg_deaths']:.0f}) · "
-            f"в поражениях: {loss['avg_kda']:.1f} (смертей {loss['avg_deaths']:.0f})"
-        )
     if s.last_game:
         lg = s.last_game
         lines.append(
@@ -557,12 +543,6 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str
         f'🔗 <a href="{dotabuff_player_url(s.account_id)}">Dotabuff</a> · '
         f'<a href="https://www.opendota.com/players/{s.account_id}">OpenDota</a>'
     )
-    if s.avg_perf is not None:
-        pct = f"{s.avg_perf * 100:.0f}"
-        part = f" Посчитан по {s.enriched_games} из {s.games_total} игр." if s.enriched_games < s.games_total else ""
-        lines.append(f"<i>ℹ️ Перф {pct} — лучше, чем у {pct}% игроков на том же герое.{part}</i>")
-    else:
-        lines.append("<i>ℹ️ Перф — сравнение с игроками на том же герое.</i>")
     return "\n".join(lines)
 
 
@@ -664,20 +644,102 @@ def _mvp_name(rows: list) -> Optional[str]:
     return max(rows, key=key)["name"]
 
 
-def render_game_alert(event: dict) -> str:
-    """Оповещение о конце матча: результат пати, длительность и по строке на каждого отслеживаемого игрока."""
+LANE_RESULTS = {2: "линия разгромлена", 1: "линия выиграна", 0: "линия вничью", -1: "линия проиграна",
+                -2: "линия слита"}
+SUPPORT_POSITIONS = (4, 5)
+
+
+def lane_text(row: dict) -> str:
+    """Исход линии игрока словами («линия выиграна»); неизвестен — пустая строка."""
+    result = row.get("lane_result")
+    return LANE_RESULTS.get(result, "") if isinstance(result, int) and not isinstance(result, bool) else ""
+
+
+def is_support(row: dict) -> bool:
+    return row.get("position") in SUPPORT_POSITIONS
+
+
+def match_score(event: dict) -> Optional[dict]:
+    """Счёт матча по убийствам и перевес по золоту глазами пати: {left, right, lead, mixed}.
+
+    Пати на одной стороне — слева её счёт, lead — её перевес по золоту (минус — отставание). Игроки на разных
+    сторонах или сторона неизвестна (mixed) — слева Radiant. lead=None — золото известно не у всех;
+    None целиком — счёта нет.
+    """
+    score = event.get("score") or {}
+    radiant, dire = score.get("radiant"), score.get("dire")
+    if radiant is None or dire is None:
+        return None
+    gold = score.get("gold")
+    sides = {bool(r["is_radiant"]) for r in event.get("rows") or [] if r.get("is_radiant") is not None}
+    ours_dire = sides == {False}
+    left, right = (dire, radiant) if ours_dire else (radiant, dire)
+    lead = None if not gold else (gold[1] - gold[0] if ours_dire else gold[0] - gold[1])
+    return {"left": left, "right": right, "lead": lead, "mixed": len(sides) != 1}
+
+
+def gold_lead(lead) -> str:
+    """Перевес по золоту со знаком: 12400 → «+12.4k», −800 → «−800»."""
+    return ("+" if lead >= 0 else "−") + _k(abs(lead))
+
+
+def _score_line(event: dict) -> str:
+    score = match_score(event)
+    if not score:
+        return ""
+    lead = score["lead"]
+    if score["mixed"]:
+        line = f"⚔️ Счёт: Radiant {score['left']}–{score['right']} Dire"
+        return line + (f" · золото {'Radiant' if lead > 0 else 'Dire'} +{_k(abs(lead))}" if lead else "")
+    return f"⚔️ Счёт: {score['left']}–{score['right']}" + (f" · золото {gold_lead(lead)}" if lead is not None else "")
+
+
+def _alert_extra(r: dict) -> list[str]:
+    """Вторая строка игрока в оповещении: позиция, линия, IMP, экономика; у саппортов — варды, стаки и лечение."""
+    extra = []
+    if r.get("position"):
+        extra.append(f"Pos {r['position']}")
+    if lane_text(r):
+        extra.append(lane_text(r))
+    if r.get("imp") is not None:
+        extra.append(f"IMP {r['imp']:+d}")
+    if r.get("gpm"):
+        extra.append(f"{round(r['gpm'])} GPM")
+    if r.get("net_worth"):
+        extra.append(f"{_k(r['net_worth'])} нетворт")
+    if is_support(r):
+        if r.get("wards") is not None:
+            extra.append(f"варды {r['wards']}")
+        if r.get("stacks") is not None:
+            extra.append(f"стаки {r['stacks']}")
+        if r.get("hero_healing"):
+            extra.append(f"{_k(r['hero_healing'])} лечения")
+    elif r.get("last_hits") is not None:
+        extra.append(f"добито {r['last_hits']}/{r.get('denies') or 0}")
+    if r.get("hero_damage"):
+        extra.append(f"{_thousands(r['hero_damage'])} урона")
+    if r.get("tower_damage") and not is_support(r):
+        extra.append(f"{_k(r['tower_damage'])} по зданиям")
+    return extra
+
+
+def render_game_alert(event: dict, tz: str = "UTC") -> str:
+    """Оповещение о конце матча: результат пати, длительность и время, счёт и по блоку на каждого игрока пати."""
     rows = event["rows"]
     wins = sum(1 for r in rows if r["won"])
     result = "Победа" if wins == len(rows) else "Поражение" if wins == 0 else "Разные стороны"
     icon = "🏆" if wins == len(rows) else "💀" if wins == 0 else "⚔️"
     duration = f" · {event['duration'] // 60} мин" if event.get("duration") else ""
+    when = f" · {fmt_local(event['start_time'], tz, '%d.%m %H:%M')}" if event.get("start_time") else ""
     match_id = event["match_id"]
     mvp = _mvp_name(rows)
     lines = [
-        f"🏁 <b>Матч завершён</b> · {icon} {result}{duration} · "
+        f"🏁 <b>Матч завершён</b> · {icon} {result}{duration}{when} · "
         f'<a href="{dotabuff_match_url(match_id)}">Dotabuff</a> · '
         f'<a href="https://www.opendota.com/matches/{match_id}">OpenDota</a>'
     ]
+    if _score_line(event):
+        lines.append(_score_line(event))
     if event.get("average_rank"):
         lines.append(f"🎚 Лобби: {rank_emoji(event['average_rank'])} {_esc(rank_label(event['average_rank']))}".replace("  ", " "))
     for r in rows:
@@ -690,17 +752,12 @@ def render_game_alert(event: dict) -> str:
             line += f" ➜ ≈{r['current_mmr']} MMR"
         if r.get("streak_len", 0) >= 3:
             line += f"  {'🔥' if r['streak_type'] == 'W' else '💧'}{r['streak_len']} подряд"
-        extra = []
-        if r.get("position"):
-            extra.append(f"Pos {r['position']}")
-        if r.get("imp") is not None:
-            extra.append(f"IMP {r['imp']:+d}")
-        if r.get("gpm"):
-            extra.append(f"{round(r['gpm'])} GPM")
-        if r.get("hero_damage"):
-            extra.append(f"{_thousands(r['hero_damage'])} урона")
+        extra = _alert_extra(r)
         if extra:
             line += f"\n      <i>{' · '.join(extra)}</i>"
+        build = build_line(r)
+        if build:
+            line += f"\n      🛒 {_esc(build)}"
         if (r.get("leaver_status") or 0) >= 2:
             line += "\n      ⚠️ <i>покинул игру — такая игра считается иначе</i>"
         lines.append(line)
@@ -754,10 +811,8 @@ def render_weekly(report: dict) -> str:
     champion = report.get("champion")
     if champion:
         lines.append(f"🏆 Чемпион недели: {_b(champion['player'])} — {champion['points']} очк. (/achievements)")
-    best = max(rows, key=lambda r: r["delta"])
+    best = max(rows, key=lambda r: r["delta"])  # кто поднялся больше всех — первая строка таблицы ниже
     worst = min(rows, key=lambda r: r["delta"])
-    if best["delta"] > 0:
-        lines.append(f"🚀 Больше всех поднялся: {_b(best['name'])} {_today_delta(best['delta'])} ({best['wins']}–{best['losses']})")
     if worst["delta"] < 0 and worst is not best:
         lines.append(f"📉 Больше всех просел: {_b(worst['name'])} {_today_delta(worst['delta'])} ({worst['wins']}–{worst['losses']})")
     busiest = max(rows, key=lambda r: r["games"])
@@ -807,26 +862,10 @@ def fmt_stamp(ts: int, tz_name: str = "UTC") -> str:
     return f"{local.day} {_MONTHS[local.month - 1]} {local:%H:%M}"
 
 
-def fmt_clock(ts: int, tz_name: str, ref: int) -> str:
-    """«14:05» в часовом поясе чата; если это не тот день, что у `ref`, — с датой («8 окт 23:10»)."""
-    local = local_time(ts, tz_name)
-    if local.date() != local_time(ref, tz_name).date():
-        return fmt_stamp(ts, tz_name)
-    return f"{local:%H:%M}"
-
-
 def fmt_window(report: dict) -> str:
     """Окно сводки суток: «8 окт 12:00 → 9 окт 12:00»."""
     tz = report.get("tz", "UTC")
     return f"{fmt_stamp(report['since'], tz)} → {fmt_stamp(report['until'], tz)}"
-
-
-def fmt_minutes(minutes: float) -> str:
-    """«3 ч 20 мин», «2 ч», «45 мин»."""
-    hours, rest = divmod(round(minutes), 60)
-    if not hours:
-        return f"{rest} мин"
-    return f"{hours} ч {rest} мин" if rest else f"{hours} ч"
 
 
 def plural_wins(n: int) -> str:
@@ -874,29 +913,19 @@ def item_title(item_id) -> str:
     return slug.replace("_", " ").title() if slug else ""
 
 
-def best_game_build_line(build: Optional[dict]) -> str:
-    """Билд одной строкой: предметы со временем покупки, нейтралка, шард и скипетр. Пусто — билд неизвестен."""
+def build_line(build: Optional[dict]) -> str:
+    """Билд одной строкой: предметы по слотам, нейтралка, шард и скипетр (времена покупки — только на картинке)."""
     if not build:
         return ""
-    times = build.get("item_times") if isinstance(build.get("item_times"), list) else []
-    parts = []
-    for i, item_id in enumerate(build.get("items") or []):
-        name = item_title(item_id)
-        if name:
-            when = times[i] if i < len(times) and isinstance(times[i], (int, float)) and not isinstance(times[i], bool) else None
-            parts.append(f"{name} {int(when) // 60}:{int(when) % 60:02d}" if when is not None else name)
-    line = " → ".join(parts)
+    names = [name for name in (item_title(item_id) for item_id in build.get("items") or []) if name]
     neutral = item_title(build.get("neutral_item"))
     extra = [f"нейтралка: {neutral}"] if neutral else []
-    for key, label in (("shard", "Шард"), ("scepter", "Скипетр")):
-        if build.get(key):
-            when = build.get(f"{key}_time")
-            extra.append(f"{label} {int(when) // 60}:{int(when) % 60:02d}" if isinstance(when, (int, float)) and not isinstance(when, bool) else label)
-    return " · ".join(x for x in [line] + extra if x)
+    extra += [label for key, label in (("shard", "Шард"), ("scepter", "Скипетр")) if build.get(key)]
+    return " · ".join(x for x in [", ".join(names)] + extra if x)
 
 
 def render_daily_best_game(best: Optional[dict]) -> str:
-    """Блок «Лучшая игра суток»: игрок, герой, исход, K/D/A, KDA, показатели и билд (если известен)."""
+    """Блок «Лучшая игра суток»: игрок, герой, исход, K/D/A, KDA и показатели (билд — только на картинке)."""
     if not best:
         return ""
     match = best["match"]
@@ -910,9 +939,6 @@ def render_daily_best_game(best: Optional[dict]) -> str:
     stats_line = " · ".join(f"{label} {value}" for label, value in best_game_stats(match))
     if stats_line:
         lines.append("📊 " + _esc(stats_line))
-    build = best_game_build_line(best.get("build"))
-    if build:
-        lines.append("🛒 " + _esc(build))
     return "\n".join(lines)
 
 
@@ -922,7 +948,6 @@ def render_daily(report: dict, info: Optional[dict] = None) -> str:
     info — {ник: {"mmr", "rank_text"}}: текущая оценка MMR и ранг игроков (необязательно).
     """
     info = info or {}
-    tz = report.get("tz", "UTC")
     head = ["📰 <b>Ежедневная сводка</b>", f"<i>за последние 24 часа · {fmt_window(report)}</i>"]
     rows = [r for r in report["rows"] if r["games"] > 0]
     if not rows:
@@ -939,12 +964,6 @@ def render_daily(report: dict, info: Optional[dict] = None) -> str:
             lines.append(f"📉 Больше всех просел: {_b(worst['name'])} {_today_delta(worst['delta'])} ({worst['wins']}–{worst['losses']})")
         busiest = max(rows, key=lambda r: r["games"])
         lines.append(f"🕹️ Больше всех играл: {_b(busiest['name'])} — {plural_games(busiest['games'])}")
-    if totals.get("minutes"):
-        avg = f" · в среднем {fmt_minutes(totals['avg_minutes'])} за игру" if totals.get("avg_minutes") else ""
-        lines.append(f"⏱️ В игре: {fmt_minutes(totals['minutes'])} суммарно{avg}")
-    if report.get("first_start") is not None:
-        lines.append(f"🕐 Играли с {fmt_clock(report['first_start'], tz, report['until'])} "
-                     f"до {fmt_clock(report['last_end'], tz, report['until'])}")
     hero = report.get("hero")
     if hero:
         lines.append(f"🦸 Герой суток: {_b(hero_name(hero['hero_id']))} — {plural_games(hero['games'])} · "
@@ -966,7 +985,7 @@ def render_daily(report: dict, info: Optional[dict] = None) -> str:
         lines.append(f"{_pos(i)} {_b(r['name'])}{rank}{mmr}")
         lines.append(
             f"    {_today_delta(r['delta'])} · {r['wins']}–{r['losses']} ({r['winrate'] * 100:.0f}%) · "
-            f"KDA {r['kda']:.2f} · {r['kills']}/{r['deaths']}/{r['assists']}{favorite}"
+            f"KDA {r['kda']:.2f}{favorite}"
         )
     idle = [r["name"] for r in report["rows"] if not r["games"]]
     if idle:

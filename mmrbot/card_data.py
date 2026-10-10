@@ -9,8 +9,8 @@ from typing import Optional
 
 from mmrbot.cards import ACCENT, GOLD, MUTED, clean, delta_color, signed
 from mmrbot.formatting import (
-    PERIOD_LABELS, POSITION_NAMES, PULSE_RECORDS, best_game_stats, daily_record_picks, fmt_clock, fmt_local,
-    fmt_minutes, fmt_window, local_time, plural_games, plural_heroes,
+    PERIOD_LABELS, POSITION_NAMES, PULSE_RECORDS, best_game_stats, daily_record_picks, fmt_local,
+    fmt_window, local_time, plural_games, plural_heroes,
 )
 from mmrbot.heroes import hero_name
 
@@ -116,8 +116,8 @@ def award_items(awards: list[dict]) -> list[dict]:
     return [{"title": a["title"], "player": a["player"], "detail": a["detail"]} for a in awards]
 
 
-def leader_caption(summaries: list, week_rows: list[dict], mode: str) -> str:
-    """Подпись под рейтингом: «🏆 Рейтинг · Лидер: Вася ≈5420 (+75 за неделю)»; для «Сегодня» — лидер дня."""
+def leader_caption(summaries: list, mode: str) -> str:
+    """Подпись под рейтингом: «🏆 Рейтинг · Лидер: Вася ≈5420»; для «Сегодня» — лидер дня."""
     if mode == "today":
         played = [s for s in summaries if s.games_today]
         head = "📅 <b>Статистика за сегодня</b>"
@@ -129,15 +129,8 @@ def leader_caption(summaries: list, week_rows: list[dict], mode: str) -> str:
     if not summaries:
         return head
     leader = summaries[0]
-    week = next((r for r in week_rows if r["name"] == leader.display_name and r["games"]), None)
-    if week is not None:
-        note = f"{signed(week['delta'])} за неделю"
-    elif leader.games_total and leader.anchor_games:
-        note = f"{signed(leader.mmr_delta)} за {plural_games(leader.anchor_games)}"
-    else:
-        note = ""
     mmr = f" ≈{leader.current_mmr}" if leader.current_mmr is not None else ""
-    return f"{head} · Лидер: <b>{_esc(leader.display_name)}</b>{mmr}" + (f" ({note})" if note else "")
+    return f"{head} · Лидер: <b>{_esc(leader.display_name)}</b>{mmr}"
 
 
 def period_caption(rows: list[dict], period: str) -> str:
@@ -168,6 +161,18 @@ def _last_game_stats(game: dict) -> list[tuple[str, str]]:
     if game.get("hero_damage"):
         cells.append(("Урон", _k(game["hero_damage"])))
     return cells
+
+
+def _position_tile(s) -> dict:
+    """Шестая плитка карточки: основная позиция (Stratz); её нет — игровая роль; нет и её — средняя длительность игры."""
+    if s.main_position:
+        pos, pos_games, known = s.main_position
+        label = "Саппорт" if pos == 5 else POSITION_NAMES.get(pos, "").split("·")[-1].strip()  # плитка узкая
+        share = f"{round(pos_games * 100 / known)}% игр" if known else ""
+        return {"label": "Позиция", "value": f"Pos {pos}", "sub": " · ".join(x for x in (label, share) if x)}
+    if s.role_style:
+        return {"label": "Роль", "value": s.role_style.replace("/", "(").split("(")[0].strip().capitalize(), "sub": "по фарму и лечению"}
+    return {"label": "Средняя игра", "value": f"{s.avg_duration_min:.0f} мин" if s.avg_duration_min else "—", "sub": None}
 
 
 def player_card(s, standing: Optional[dict] = None, series: Optional[list] = None, note: Optional[str] = None,
@@ -208,7 +213,7 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
         {"label": "GPM", "value": f"{s.avg_gpm_window:.0f}" if s.avg_gpm_window is not None else "—", "sub": partial},
         {"label": "Нетворт", "value": _k(s.avg_net_worth_window), "sub": partial},
         {"label": "Урон по героям", "value": _k(s.avg_hero_damage_window), "sub": partial},
-        {"label": "Игр сыграно", "value": str(games), "sub": f"ср. {s.avg_duration_min:.0f} мин" if s.avg_duration_min else None},
+        _position_tile(s),
     ]
     values = list(series or [])
     if values:
@@ -245,16 +250,12 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
 
 
 def player_caption(s) -> str:
-    """Подпись под карточкой игрока: ник, ранг, ≈MMR с дельтой и результат."""
+    """Подпись под карточкой игрока одной строкой: ник, ранг и ≈MMR с дельтой — остальное на карточке."""
     head = f"🪪 <b>{_esc(s.display_name)}</b> · {html.escape(s.rank)}"
     if s.current_mmr is not None:
         head += f" · ≈{s.current_mmr}"
         if s.games_total and s.anchor_games and s.mmr_delta:
             head += f" ({signed(s.mmr_delta)})"
-    if s.games_total:
-        head += f"\n🎮 {plural_games(s.games_total)} · {s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%) · KDA {s.kda_ratio:.2f}"
-    else:
-        head += "\n💤 ранкед-игр пока нет"
     return head
 
 
@@ -344,7 +345,7 @@ WEEKLY_DUPLICATES = {"climb", "drop", "games", "win_streak"}  # эти итог�
 
 
 def weekly_tiles(report: dict) -> list[dict]:
-    """Плитки сводки недели: всего игр, кто поднялся, кто играл больше всех, серия (или игры вместе)."""
+    """Плитки сводки недели: всего игр, чемпион (или кто играл больше всех), лучшая серия и игры вместе."""
     rows = [r for r in report["rows"] if r["games"] > 0]
     if not rows:
         return []
@@ -353,10 +354,6 @@ def weekly_tiles(report: dict) -> list[dict]:
     delta = sum(r["delta"] for r in rows)
     tiles = [{"label": "Всего за неделю", "value": plural_games(games), "sub": f"{_wr(games, wins)} · {signed(delta)}",
               "color": delta_color(delta)}]
-    best = max(rows, key=lambda r: r["delta"])
-    if best["delta"] > 0:
-        tiles.append({"label": "Больше всех поднялся", "value": clean(best["name"]),
-                      "sub": f"{signed(best['delta'])} ({best['wins']}–{best['losses']})", "color": GOLD})
     champion = report.get("champion")
     if champion:  # чемпион недели по общему зачёту соревнования занимает место «больше всех играл»
         tiles.append({"label": "Чемпион недели", "value": clean(champion["player"]),
@@ -368,7 +365,7 @@ def weekly_tiles(report: dict) -> list[dict]:
     if report.get("streak"):
         name, length = report["streak"]
         tiles.append({"label": "Лучшая серия побед", "value": f"{length} подряд", "sub": clean(name), "color": GOLD})
-    elif (report.get("shared") or {}).get("games"):
+    if (report.get("shared") or {}).get("games"):
         shared = report["shared"]
         tiles.append({"label": "Вместе", "value": plural_games(shared["games"]),
                       "sub": f"{shared['wins']}–{shared['losses']}", "color": None})
@@ -448,7 +445,7 @@ def _daily_ticks(since: int, until: int, tz_name: str) -> list[tuple[int, str]]:
 
 
 def _daily_tiles(report: dict) -> list[dict]:
-    """Плитки сводки суток: игры, лидер, время в игре, серия (или игры вместе)."""
+    """Плитки сводки суток: игры, лидер, лучшая серия и игры вместе."""
     totals = report["totals"]
     games = totals["games"]
     if not games:
@@ -460,13 +457,10 @@ def _daily_tiles(report: dict) -> list[dict]:
     if len(played) >= 2 and best["delta"] > 0:
         tiles.append({"label": "Лидер суток", "value": clean(best["name"]),
                       "sub": f"{signed(best['delta'])} ({best['wins']}–{best['losses']})", "color": GOLD})
-    if totals.get("minutes"):
-        avg = f"ср. {fmt_minutes(totals['avg_minutes'])} за игру" if totals.get("avg_minutes") else "суммарно у всех игроков"
-        tiles.append({"label": "В игре", "value": fmt_minutes(totals["minutes"]), "sub": avg, "color": None})
     if report.get("streak"):
         name, length = report["streak"]
         tiles.append({"label": "Лучшая серия побед", "value": f"{length} подряд", "sub": clean(name), "color": GOLD})
-    elif (report.get("shared") or {}).get("games"):
+    if (report.get("shared") or {}).get("games"):
         shared = report["shared"]
         tiles.append({"label": "Вместе", "value": plural_games(shared["games"]),
                       "sub": f"{shared['wins']}–{shared['losses']}", "color": None})
@@ -514,9 +508,8 @@ def daily_card(report: dict, info: Optional[dict] = None) -> dict:
     rows = daily_rows(report, info)
     lanes = [{"name": r["name"], "avatar": (info.get(r["name"]) or {}).get("avatar"), "games": list(r["timeline"])}
              for r in report["rows"] if r["games"]]
-    if games:
-        span = f"Играли с {fmt_clock(report['first_start'], tz, report['until'])} до {fmt_clock(report['last_end'], tz, report['until'])}"
-        sub = f"{plural_games(games)} · {_wr(games, totals['wins'])}"
+    if games:  # когда играли — видно по таймлайну ниже, строкой не дублируем
+        span, sub = None, f"{plural_games(games)} · {_wr(games, totals['wins'])}"
     else:
         span, sub = "За эти сутки ранкед-игр не было", "игр не было"
     return {
