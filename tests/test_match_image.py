@@ -135,7 +135,7 @@ def test_header_shows_team_gold_and_lead(drawn):
     render_match_image(match, {}, focus=1)
     texts = [t[0] for t in drawn]
     assert "100.0k золота  ·  +25.0k" in texts and "75.0k золота" in texts
-    match["players"][0]["net_worth"] = None  # нетворт известен не у всех — сумма была бы враньём
+    match["players"][0]["net_worth"] = None  # нетворс известен не у всех — сумма была бы враньём
     drawn.clear()
     render_match_image(match, {}, focus=1)
     assert not any("золота" in t[0] for t in drawn)

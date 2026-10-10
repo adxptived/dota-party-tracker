@@ -1242,6 +1242,8 @@ async def _on_settings(message: Message, storage: Storage, args: list[str], bot=
             storage.set_chat_notify_games(chat_id, not chat.notify_games)
         elif what == "weekly":
             storage.set_chat_notify_weekly(chat_id, not chat.notify_weekly)
+        elif what == "leaders":
+            storage.set_chat_notify_leaders(chat_id, not chat.notify_leaders)
         elif what == "digest":
             storage.set_chat_notify_digest(chat_id, not chat.notify_digest)
         elif what == "images":

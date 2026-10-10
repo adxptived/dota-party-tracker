@@ -48,7 +48,7 @@ RECORDS = [
     RecordDef("tower_damage", "🏰", "Макс. урон по строениям", lambda m: m.get("tower_damage"), lambda v: _k(v) + " урона"),
     RecordDef("hero_healing", "💚", "Макс. лечение", lambda m: m.get("hero_healing") or None, lambda v: _k(v) + " лечения"),
     RecordDef("last_hits", "🌾", "Больше всего добиваний", lambda m: m.get("last_hits"), lambda v: _n(v, "добивание", "добивания", "добиваний")),
-    RecordDef("net_worth", "💎", "Макс. нетворт", lambda m: m.get("net_worth"), lambda v: _k(v) + " золота"),
+    RecordDef("net_worth", "💎", "Макс. нетворс", lambda m: m.get("net_worth"), lambda v: _k(v) + " золота"),
     RecordDef("imp", "📊", "Лучший IMP", lambda m: m.get("imp"), lambda v: f"IMP {v:+.0f}"),
     RecordDef("duration", "⏳", "Самая долгая игра", lambda m: m.get("duration"), lambda v: f"{v / 60:.0f} мин"),
     RecordDef("deaths", "💀", "Больше всего смертей", lambda m: m.get("deaths"), lambda v: _n(v, "смерть", "смерти", "смертей"), anti=True),

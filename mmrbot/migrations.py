@@ -466,6 +466,14 @@ def _m011_gather(conn: sqlite3.Connection) -> None:
     )
 
 
+# --- 12: объявления о смене лидера — настройка чата ---------------------------------------------------------------
+
+def _m012_notify_leaders(conn: sqlite3.Connection) -> None:
+    """«Смена лидера» в номинациях соревнования — отдельная настройка чата, по умолчанию выключена:
+    после каждой серии игр она добавляла в чат ещё одно сообщение, и его попросили убрать."""
+    conn.execute("ALTER TABLE chats ADD COLUMN notify_leaders INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -478,6 +486,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (9, _m009_lanes_and_wards),
     (10, _m010_seasons),
     (11, _m011_gather),
+    (12, _m012_notify_leaders),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

@@ -464,7 +464,7 @@ class OpenDota:
     def get_match_score(self, match_id: int) -> Optional[dict]:
         """Счёт матча из того же (кэшируемого) /matches/{id}: {"radiant", "dire", "gold"}.
 
-        radiant/dire — убийства сторон; gold — (нетворт Radiant, нетворт Dire) или None, если он известен не у всех
+        radiant/dire — убийства сторон; gold — (нетворс Radiant, нетворс Dire) или None, если он известен не у всех
         десяти: неполная сумма обманывает. None целиком — матч ещё не доехал.
         """
         match = self.get_match(match_id)
@@ -489,7 +489,7 @@ class OpenDota:
     ) -> Optional[dict]:
         """Пер-матч статистика игрока из /matches/{id} + benchmarks (перцентиль vs тот же герой).
 
-        GPM/урон/хил/нетворт и benchmarks приходят БЕЗ парса (из сводки Valve).
+        GPM/урон/хил/нетворс и benchmarks приходят БЕЗ парса (из сводки Valve).
         Матч берётся из кэша: совместная игра пати — один запрос на всех её участников.
         """
         match = self.get_match(match_id)

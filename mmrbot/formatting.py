@@ -488,7 +488,7 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str
     if s.avg_gpm_window is not None:
         econ.append(f"{s.avg_gpm_window:.0f} gpm")
     if s.avg_net_worth_window is not None:
-        econ.append(f"{_k(s.avg_net_worth_window)} нетворт")
+        econ.append(f"{_k(s.avg_net_worth_window)} нетворс")
     if s.avg_hero_damage_window is not None:
         econ.append(f"{_k(s.avg_hero_damage_window)} урон")
     if econ:
@@ -706,7 +706,7 @@ def _alert_extra(r: dict) -> list[str]:
     if r.get("gpm"):
         extra.append(f"{round(r['gpm'])} GPM")
     if r.get("net_worth"):
-        extra.append(f"{_k(r['net_worth'])} нетворт")
+        extra.append(f"{_k(r['net_worth'])} нетворс")
     if is_support(r):
         if r.get("wards") is not None:
             extra.append(f"варды {r['wards']}")
@@ -1012,7 +1012,7 @@ def render_records(data: dict, period: str, tz: str = "UTC") -> str:
     title = f"🌟 <b>Рекорды пати {PERIOD_LABELS.get(period, '')}</b>"
     records = data.get("records") or []
     if not records:
-        return title + "\n\n💤 За выбранный период нет данных (нужны сыгранные игры; GPM, урон и нетворт подгружаются фоном)."
+        return title + "\n\n💤 За выбранный период нет данных (нужны сыгранные игры; GPM, урон и нетворс подгружаются фоном)."
     lines = [title, ""]
     for r in records:
         match = r["match"]
@@ -1051,6 +1051,7 @@ def render_settings(chat) -> str:
         f"🔔 Оповещения о смене ника/аватарки Steam: <b>{state(chat.notify_steam)}</b>\n"
         f"🎮 Оповещения о конце матча: <b>{state(chat.notify_games)}</b>\n"
         f"📅 Недельная сводка (понедельник): <b>{state(chat.notify_weekly, 'включена', 'выключена')}</b>\n"
+        f"🔄 Объявления о смене лидера соревнования: <b>{state(chat.notify_leaders)}</b>\n"
         f"🖼 Отчёты: <b>{'текстом' if chat.prefer_text else 'картинками'}</b> <i>(рейтинг, матч, карточка игрока и др.; "
         f"«📝 Текстом» под картинкой работает всегда)</i>\n"
         f"🏷️ Теги участников с MMR: <b>{state(chat.tag_mmr)}</b> <i>(привязка: Пати → «Это я»)</i>\n"
@@ -1157,7 +1158,7 @@ def render_match_card(view: dict, tz: str = "UTC") -> str:
     if row.get("last_hits") is not None:
         farm.append(f"добивания {row['last_hits']}/{row.get('denies') or 0}")
     if row.get("net_worth") is not None:
-        farm.append(f"нетворт {_k(row['net_worth'])}")
+        farm.append(f"нетворс {_k(row['net_worth'])}")
     if farm:
         lines.append("💰 Экономика: " + " · ".join(farm))
     dmg = []

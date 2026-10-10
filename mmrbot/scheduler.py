@@ -293,9 +293,15 @@ def setup_scheduler(
     )
 
     async def announce_contest_changes(chat: Chat, now: int) -> None:
-        """После новых игр: кто перехватил лидерство в номинациях соревнования за неделю/месяц (текстом)."""
+        """После новых игр: кто перехватил лидерство в номинациях соревнования за неделю/месяц (текстом).
+
+        Объявление — настройка чата (по умолчанию выключена). Лидеры запоминаются и при выключенной: иначе после
+        включения чат получил бы пачку давно случившихся смен.
+        """
         try:
             events = await asyncio.to_thread(check_contest_leaders, storage, chat.chat_id, now)
+            if not storage.get_or_create_chat(chat.chat_id).notify_leaders:
+                return
             for event in events:
                 text = render_leader_change(PERIOD_LABELS.get(event["period"], ""), event["changes"])
                 await send_board(bot, chat.chat_id, ImageBoard(text), None)

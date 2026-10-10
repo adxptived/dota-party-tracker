@@ -211,7 +211,7 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
          "color": delta_color((s.winrate - 0.5) * 100)},
         {"label": "KDA", "value": f"{s.kda_ratio:.2f}", "sub": f"{s.avg_kills:.0f}/{s.avg_deaths:.0f}/{s.avg_assists:.0f}"},
         {"label": "GPM", "value": f"{s.avg_gpm_window:.0f}" if s.avg_gpm_window is not None else "—", "sub": partial},
-        {"label": "Нетворт", "value": _k(s.avg_net_worth_window), "sub": partial},
+        {"label": "Нетворс", "value": _k(s.avg_net_worth_window), "sub": partial},
         {"label": "Урон по героям", "value": _k(s.avg_hero_damage_window), "sub": partial},
         _position_tile(s),
     ]

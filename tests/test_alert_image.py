@@ -135,7 +135,7 @@ def test_strip_stats_are_labelled_cells(drawn):
     row = _row("Вася", items=[1, 2], net_worth=18200, last_hits=312, denies=14, tower_damage=4200, rank_tier=55)
     render_alert_image(_event([row]), "UTC")
     texts = [t[0] for t in drawn]
-    for label, value in (("НЕТВОРТ", "18.2k"), ("ДОБИТО", "312/14"), ("УРОН", "31.2k"), ("ЗДАНИЯ", "4.2k")):
+    for label, value in (("НЕТВОРС", "18.2k"), ("ДОБИТО", "312/14"), ("УРОН", "31.2k"), ("ЗДАНИЯ", "4.2k")):
         assert texts[texts.index(label) + 1] == value
     assert not any(t.startswith("NW ") or "по зданиям" in t for t in texts)
     assert not any("урона" in t for t in texts)  # урон переехал в ячейку, в строке под ником не дублируется
@@ -165,4 +165,4 @@ def test_support_strip_puts_vision_first_and_keeps_four_cells():
     assert [label for label, _ in _strip_cells(row)] == ["Варды", "Стаки", "Лечение", "Урон"]
     assert dict(_strip_cells(row))["Стаки"] == "0"                             # ноль стаков — тоже значение
     core = _row("Вася", net_worth=21400, last_hits=312, denies=14, tower_damage=4200, wards=3)
-    assert [label for label, _ in _strip_cells(core)] == ["Нетворт", "Добито", "Урон", "Здания"]
+    assert [label for label, _ in _strip_cells(core)] == ["Нетворс", "Добито", "Урон", "Здания"]

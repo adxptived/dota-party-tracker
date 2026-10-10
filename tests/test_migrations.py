@@ -171,3 +171,14 @@ def test_newer_database_is_refused_with_clear_message(tmp_path):
     conn.close()
     with pytest.raises(RuntimeError, match="более новой версией"):
         Storage(path)
+
+
+def test_leader_announcements_column_is_added_and_off_for_existing_chats(tmp_path):
+    path = str(tmp_path / "bot.db")
+    conn = make_v2(path)
+    conn.execute("INSERT INTO chats (chat_id) VALUES (7)")
+    conn.commit()
+    conn.close()
+    storage = Storage(path)
+    assert "notify_leaders" in _columns(path, "chats")
+    assert storage.get_or_create_chat(7).notify_leaders is False

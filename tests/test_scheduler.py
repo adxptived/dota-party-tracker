@@ -416,4 +416,9 @@ def test_contest_leader_change_is_announced_after_new_games(tmp_path, monkeypatc
     assert not any("Смена лидера" in t for _, t, *_ in bot.texts)
     games(b, 300, 1500, now - 10)                           # Петя перехватил GPM
     asyncio.run(jobs["game_watch"]())
-    assert any("Смена лидера" in t and "Петя" in t and "Вася" in t for _, t, *_ in bot.texts)
+    assert not any("Смена лидера" in t for _, t, *_ in bot.texts)  # по умолчанию объявления выключены
+    storage.set_chat_notify_leaders(5, True)
+    games(a, 400, 2500, now - 5)                            # Вася вернул GPM — и это уже объявляется
+    asyncio.run(jobs["game_watch"]())
+    changes = [t for _, t, *_ in bot.texts if "Смена лидера" in t]
+    assert changes and all("Вася</b> обошёл" in t for t in changes)  # выключенная смена (Петя) задним числом не всплыла

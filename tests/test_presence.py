@@ -221,7 +221,7 @@ def test_game_alert_text_names_sides_when_party_is_split():
 
 def test_game_alert_text_core_gets_farm_and_support_gets_vision():
     core, support = render_game_alert(_alert_event()).split("Петя")
-    assert "линия выиграна" in core and "21.4k нетворт" in core and "добито 312/14" in core and "4.2k по зданиям" in core
+    assert "линия выиграна" in core and "21.4k нетворс" in core and "добито 312/14" in core and "4.2k по зданиям" in core
     assert "линия слита" in support and "варды 18" in support and "стаки 4" in support and "5.2k лечения" in support
     assert "добито" not in support and "по зданиям" not in support  # саппорту важнее вижн, чем добивания
     assert "варды" not in core

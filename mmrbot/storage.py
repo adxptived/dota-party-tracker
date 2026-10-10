@@ -39,6 +39,7 @@ class Chat:
     notify_steam: bool = True  # оповещать о смене ника/аватарки Steam
     notify_games: bool = True  # оповещать о новых играх и достижениях
     notify_weekly: bool = True  # недельная сводка
+    notify_leaders: bool = False  # объявлять смену лидера в номинациях соревнования (по умолчанию выключено)
     last_weekly: Optional[str] = None  # ключ ISO-недели последней отправленной сводки
     notify_start: bool = True  # оповещать, когда игрок зашёл в Dota 2 (Steam Web API)
     tag_mmr: bool = False  # ставить участникам тег с MMR (нужно право админа «управлять тегами»)
@@ -161,6 +162,7 @@ class Storage:
             notify_steam=bool(row["notify_steam"]),
             notify_games=bool(row["notify_games"]),
             notify_weekly=bool(row["notify_weekly"]),
+            notify_leaders=bool(row["notify_leaders"]),
             last_weekly=row["last_weekly"],
             notify_start=bool(row["notify_start"]),
             tag_mmr=bool(row["tag_mmr"]),
@@ -272,6 +274,11 @@ class Storage:
         self.get_or_create_chat(chat_id)
         with self._conn() as conn:
             conn.execute("UPDATE chats SET notify_weekly = ? WHERE chat_id = ?", (1 if enabled else 0, chat_id))
+
+    def set_chat_notify_leaders(self, chat_id: int, enabled: bool) -> None:
+        self.get_or_create_chat(chat_id)
+        with self._conn() as conn:
+            conn.execute("UPDATE chats SET notify_leaders = ? WHERE chat_id = ?", (1 if enabled else 0, chat_id))
 
     def set_last_weekly(self, chat_id: int, key: str) -> None:
         self.get_or_create_chat(chat_id)

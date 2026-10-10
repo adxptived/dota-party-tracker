@@ -278,6 +278,15 @@ class CB:
         pass
 
 
+def test_settings_toggle_leader_announcements_off_by_default(store):
+    from mmrbot.formatting import render_settings
+    assert store.get_or_create_chat(100).notify_leaders is False
+    assert "смене лидера соревнования: <b>выключены</b>" in render_settings(store.get_or_create_chat(100))
+    cb = CB("s:leaders")
+    asyncio.run(botmod.on_callback(cb, store, object()))
+    assert store.get_or_create_chat(100).notify_leaders is True and cb.message.edited
+
+
 def test_settings_toggle_games_and_weekly(store):
     for data, field in (("s:games", "notify_games"), ("s:weekly", "notify_weekly")):
         cb = CB(data)

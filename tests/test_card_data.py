@@ -117,7 +117,7 @@ def test_player_card_has_header_tiles_charts_and_blocks():
     card = cd.player_card(_full_summary(), {"size": 5, "power_rank": 2}, [25, 0, 25, 50], "заметка")
     assert card["name"] == "Вася" and card["mmr_text"] == "≈5420" and card["mmr_delta"] == 420
     assert card["delta_note"] == "за 56 игр" and card["perf"] == 73 and card["streak"] == ("W", 4)
-    assert [t["label"] for t in card["tiles"]] == ["Результат", "KDA", "GPM", "Нетворт", "Урон по героям", "Средняя игра"]
+    assert [t["label"] for t in card["tiles"]] == ["Результат", "KDA", "GPM", "Нетворс", "Урон по героям", "Средняя игра"]
     assert card["tiles"][0]["value"] == "35–21" and card["tiles"][2]["value"] == "540" and card["tiles"][3]["value"] == "18.2k"
     assert card["tiles"][2]["sub"] == "по 40 из 56"
     assert card["series"] == [5025, 5000, 5025, 5050] and "последние 4 игры" in card["series_label"]

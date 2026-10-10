@@ -92,7 +92,7 @@ class PlayerSummary:
     longest_win_streak: int = 0
     avg_perf: Optional[float] = None
     enriched_games: int = 0
-    detail_games: int = 0  # игр, по которым известны GPM/нетворт/урон (средние считаются только по ним)
+    detail_games: int = 0  # игр, по которым известны GPM/нетворс/урон (средние считаются только по ним)
     avg_gpm_window: Optional[float] = None
     avg_hero_damage_window: Optional[float] = None
     avg_net_worth_window: Optional[float] = None
