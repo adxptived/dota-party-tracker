@@ -865,9 +865,14 @@ def _refresh_player_impl(
         return 0
 
     if not fast:
-        # Пнуть OpenDota перечитать историю — свежие игры доедут быстрее (best-effort).
+        # Пнуть OpenDota перечитать историю — свежие игры доедут быстрее (best-effort). Игрок в сессии
+        # (играл в последние ACTIVE_WINDOW) получает пинок на каждом опросе: следующая игра вот-вот закончится.
+        last = storage.latest_match_time(player.id)
         try:
-            client.refresh(player.account_id)
+            if last is not None and 0 <= now - last < ACTIVE_WINDOW:
+                client.refresh(player.account_id, hot=True)
+            else:
+                client.refresh(player.account_id)
         except Exception:
             pass
 

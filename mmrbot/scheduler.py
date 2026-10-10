@@ -326,6 +326,10 @@ def setup_scheduler(
                 delivered = True
                 try:
                     await send_board(bot, chat.chat_id, board, markup)
+                    # Задержка от конца игры — по ней видно, сколько матч шёл до нас от OpenDota.
+                    ended = event["start_time"] + (event.get("duration") or 0)
+                    log.info("Оповещение о матче %s отправлено в чат %s через %d мин после конца игры",
+                             event["match_id"], chat.chat_id, max(0, int(time.time()) - ended) // 60)
                 except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat) as exc:
                     # Чат недоступен или сообщение не принято — повтор не поможет, не зацикливаемся.
                     if chat_gone(storage, chat.chat_id, exc):

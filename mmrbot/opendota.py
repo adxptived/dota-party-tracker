@@ -113,6 +113,9 @@ class OpenDota:
     MATCH_CACHE_TTL = 600  # сек: свежий матч может дополниться — долго не держим
     REFRESH_GAP = 600  # сек: POST /refresh одного игрока не чаще (обновление у OpenDota всё равно асинхронное)
     REFRESH_GAP_NO_KEY = 1800  # без ключа каждый запрос на счету — пинаем реже
+    # Игрок в сессии (см. tracker.ACTIVE_WINDOW): свежий матч попадает в выдачу OpenDota после пинка, а общая очередь
+    # вставки у них отстаёт на десятки минут — пинаем на каждом опросе игр (раз в 4 мин), иначе оповещение ждёт пинка.
+    HOT_REFRESH_GAP = 180
     BACKGROUND_RESERVE = 800  # столько запросов из суточного лимита оставляем опросу игр и командам
 
     def __init__(
@@ -139,6 +142,7 @@ class OpenDota:
         # Предохранитель: недоступность по сети и 429 — одна логика «не ходить в сеть» (команды берут кэш БД).
         self.health = health or ProviderHealth("OpenDota")
         self.refresh_gap = self.REFRESH_GAP if api_key else self.REFRESH_GAP_NO_KEY
+        self.hot_refresh_gap = self.HOT_REFRESH_GAP if api_key else self.REFRESH_GAP_NO_KEY
         self.background_reserve = self.BACKGROUND_RESERVE if background_reserve is None else background_reserve
         # Остаток бесплатного суточного лимита — из заголовка ответа OpenDota (без ключа); None — ещё неизвестен.
         self.remaining_day: Optional[int] = None
@@ -268,18 +272,20 @@ class OpenDota:
             self.health.failure(last_exc)
         raise last_exc or RuntimeError("OpenDota: не удалось получить ответ")
 
-    def refresh(self, account_id: int) -> bool:
+    def refresh(self, account_id: int, hot: bool = False) -> bool:
         """Попросить OpenDota перечитать историю матчей игрока (POST /refresh).
 
         Обновление у OpenDota асинхронное: свежие матчи появятся не мгновенно, а
         через некоторое время — зато следующий опрос будет актуальнее. Best-effort.
         Повторный вызов раньше refresh_gap ничего не шлёт (False): пинок уже в очереди,
-        а слот троттлинга и лимит запросов нужнее самим данным.
+        а слот троттлинга и лимит запросов нужнее самим данным. hot=True — игрок сейчас играет:
+        пауза короче (hot_refresh_gap), чтобы только что сыгранный матч не ждал следующего пинка.
         """
         now = time.monotonic()
+        gap = self.hot_refresh_gap if hot else self.refresh_gap
         with self._lock:
             last = self._refresh_at.get(account_id)
-            if last is not None and now - last < self.refresh_gap:
+            if last is not None and now - last < gap:
                 return False
             self._refresh_at[account_id] = now
         if not self.health.allow():  # пауза: пинок не ушёл — слот «не чаще раза в refresh_gap» не расходуем

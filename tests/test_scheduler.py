@@ -287,6 +287,21 @@ def test_alert_stays_pending_when_telegram_is_down(tmp_path, monkeypatch):
     assert marked == []  # не отправлено — уйдёт в следующем опросе
 
 
+def test_delivered_alert_logs_how_long_after_the_game_it_went_out(tmp_path, monkeypatch, caplog):
+    now = int(datetime.now(timezone.utc).timestamp())
+    event = dict(_alert_event(), start_time=now - 2280 - 7 * 60, duration=2280)  # игра кончилась 7 минут назад
+    with caplog.at_level("INFO", logger="mmrbot.scheduler"):
+        _run_game_watch(tmp_path, monkeypatch, _AlertBot(), event)
+    line, = [r.getMessage() for r in caplog.records if "Оповещение о матче" in r.getMessage()]
+    assert "матче 777" in line and "чат 5" in line and "через 7 мин после конца игры" in line
+
+
+def test_undelivered_alert_is_not_logged_as_sent(tmp_path, monkeypatch, caplog):
+    with caplog.at_level("INFO", logger="mmrbot.scheduler"):
+        _run_game_watch(tmp_path, monkeypatch, _AlertBot(photo_exc=RuntimeError("сеть")))
+    assert not [r for r in caplog.records if "Оповещение о матче" in r.getMessage()]
+
+
 # --- недельная сводка и дайджест уходят картинкой ----------------------------------------------
 
 class _PhotoBot:

@@ -531,6 +531,28 @@ def test_refresh_post_is_rate_limited_per_account():
     assert len(session.post_calls) == 2
 
 
+def test_hot_refresh_is_allowed_sooner_with_api_key(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("mmrbot.opendota.time.monotonic", lambda: clock[0])
+    session = FakeSession({})
+    od = OpenDota(session=session, min_interval=0, api_key="K")
+    assert od.refresh(42) is True
+    clock[0] += OpenDota.HOT_REFRESH_GAP + 1
+    assert od.refresh(42) is False            # обычный пинок — не чаще REFRESH_GAP
+    assert od.refresh(42, hot=True) is True   # игрок в сессии — пинаем на каждом опросе игр
+    assert od.refresh(42, hot=True) is False  # но не чаще HOT_REFRESH_GAP
+    assert len(session.post_calls) == 2
+
+
+def test_hot_refresh_without_api_key_keeps_the_slow_gap(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("mmrbot.opendota.time.monotonic", lambda: clock[0])
+    od = OpenDota(session=FakeSession({}), min_interval=0)
+    assert od.refresh(42) is True
+    clock[0] += OpenDota.HOT_REFRESH_GAP + 1
+    assert od.refresh(42, hot=True) is False  # без ключа каждый запрос на счету
+
+
 def test_failed_refresh_post_can_be_retried():
     class Flaky(FakeSession):
         def post(self, url, timeout=None):

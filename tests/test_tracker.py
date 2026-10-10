@@ -109,6 +109,37 @@ def test_refresh_updates_rank(store):
     assert refreshed.updated_ts == 3000
 
 
+class KickSpy(FakeOpenDota):
+    """Запоминает, каким был пинок OpenDota: обычным или «горячим»."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.kicks = []
+
+    def refresh(self, account_id, hot=False):
+        self.kicks.append(hot)
+        return True
+
+
+def test_player_in_session_gets_hot_refresh_kick(store):
+    # OpenDota узнаёт о свежем матче после пинка /refresh: пока игрок в сессии, пинаем на каждом опросе игр.
+    player = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    now = 1_000_000
+    client = KickSpy(matches=[od_match(1, now - 3600)])  # последняя игра началась час назад
+    refresh_player(store, client, player, now=now)       # первая загрузка: матчей ещё нет — пинок обычный
+    refresh_player(store, client, player, now=now + 300)
+    assert client.kicks == [False, True]
+
+
+def test_idle_player_gets_ordinary_refresh_kick(store):
+    player = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    now = 1_000_000
+    client = KickSpy(matches=[od_match(1, now - 86_400)])  # играл сутки назад
+    refresh_player(store, client, player, now=now)
+    refresh_player(store, client, player, now=now + 300)
+    assert client.kicks == [False, False]
+
+
 def test_refresh_is_idempotent(store):
     player = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
     client = FakeOpenDota(matches=[od_match(3, 1500), od_match(4, 2500)])
