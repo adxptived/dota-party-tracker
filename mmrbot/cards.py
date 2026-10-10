@@ -675,6 +675,24 @@ def tile(img, draw, box, label: str, value: str, sub: Optional[str] = None, colo
         draw_text(draw, (x0 + 20, y1 - 16), clean(sub), 18, MUTED, anchor="ld", max_w=inner)
 
 
+def stat_cells(draw, x: float, cy: float, cells: Sequence, cell_w: float, value_size: int = 20) -> float:
+    """Ряд мини-ячеек «подпись над значением» вместо строки через «·»: что за число, видно без догадок.
+
+    cells: (подпись, значение[, цвет значения]); ячейка без значения пропускается и места не занимает.
+    cy — середина ряда. Возвращает x правее последней ячейки.
+    """
+    for label, value, *rest in cells:
+        value = clean(value) if value is not None else ""
+        if not value:
+            continue
+        draw_text(draw, (x, cy - value_size * 0.6), clean(label).upper(), 16, mix(MUTED, PANEL, 0.2), bold=True,
+                  anchor="lm", max_w=cell_w - 10)
+        draw_text(draw, (x, cy + value_size * 0.55), value, value_size, rest[0] if rest else FG, bold=True,
+                  anchor="lm", max_w=cell_w - 10, track=False)
+        x += cell_w
+    return x
+
+
 SOLID_BADGES = (WIN, LOSS, RADIANT, DIRE)  # исход матча — главное на карточке, такая таблетка залита целиком
 
 

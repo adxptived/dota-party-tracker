@@ -47,6 +47,7 @@ def summary_rows(summaries: list, today: bool) -> list[dict]:
             "big": f"≈{s.current_mmr}" if s.current_mmr is not None else "—", "big_color": None,
             "sub": sub, "sub_color": color, "wins": wins, "losses": losses, "form": list(s.form_long or []),
             "hero_id": top["hero_id"] if top else None, "hero_note": f"×{top['games']}" if top else "",
+            "streak": (s.streak_type, s.streak_len) if s.streak_len >= 3 else None,
         })
     return rows
 
@@ -157,13 +158,26 @@ def _k(value) -> str:
     return f"{value / 1000:.1f}k" if value >= 1000 else f"{value:.0f}"
 
 
+def _last_game_stats(game: dict) -> list[tuple[str, str]]:
+    """Подробности последней игры ячейками (подпись, значение) — только то, что уже загружено."""
+    cells = []
+    if game.get("duration"):
+        cells.append(("Время", f"{game['duration'] // 60} мин"))
+    if game.get("gpm"):
+        cells.append(("GPM", f"{game['gpm']:.0f}"))
+    if game.get("hero_damage"):
+        cells.append(("Урон", _k(game["hero_damage"])))
+    return cells
+
+
 def player_card(s, standing: Optional[dict] = None, series: Optional[list] = None, note: Optional[str] = None,
-                absolute: bool = False) -> dict:
+                absolute: bool = False, tz: str = "UTC") -> dict:
     """Сводка игрока → описание карточки для player_image.render_player_image.
 
     standing — запись игрока из tracker.build_chat_comparison()["players"][имя] (+ size); series — значения линии
     по играм (последние ~60): при absolute=True — готовая оценка MMR после каждой игры (stats.mmr_timeline),
-    иначе накопленные ±MMR, к которым прибавляется стартовый MMR; note — пометка об устаревании данных.
+    иначе накопленные ±MMR, к которым прибавляется стартовый MMR; note — пометка об устаревании данных;
+    tz — часовой пояс чата (время последней игры).
     """
     from mmrbot.formatting import SKILL_GROUPS
     from mmrbot.ranks import rank_label
@@ -210,11 +224,13 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
                          "worst": f"{s.worst_hour[0]:02d}:00 · {s.worst_hour[1] * 100:.0f}%"}
     from mmrbot.heroes import hero_name
     card["heroes"] = [{"hero_id": h["hero_id"], "name": hero_name(h["hero_id"]), "games": h["games"], "wins": h["wins"],
-                       "winrate": h["winrate"]} for h in s.top_heroes]
+                       "winrate": h["winrate"], "kda": h.get("kda")} for h in s.top_heroes]
     if s.last_game:
         lg = s.last_game
         card["last_game"] = {"hero_id": lg["hero_id"], "name": hero_name(lg["hero_id"]), "kills": lg["kills"],
-                             "deaths": lg["deaths"], "assists": lg["assists"], "kda": lg["kda"], "won": lg["won"]}
+                             "deaths": lg["deaths"], "assists": lg["assists"], "kda": lg["kda"], "won": lg["won"],
+                             "when": fmt_local(lg["start_time"], tz, "%d.%m %H:%M") if lg.get("start_time") else None,
+                             "stats": _last_game_stats(lg)}
     skills = []
     for label, metrics in SKILL_GROUPS:
         pcts = [s.skill[m] for m in metrics if m in (s.skill or {})]

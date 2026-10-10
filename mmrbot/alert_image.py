@@ -1,5 +1,6 @@
 """Оповещение о конце матча картинкой: шапка с исходом и лобби, по строке на каждого игрока пати
-(аватар, иконка героя, ник, K/D/A, ±MMR → ≈MMR, серия), внизу «Сегодня вместе».
+(аватар, иконка героя, ник, K/D/A, ±MMR → ≈MMR, серия; под строкой — билд и подписанные ячейки: нетворт,
+добито/не отдано, урон, здания), внизу «Сегодня вместе».
 
 Чистая функция: иконки героев и аватары приходят готовыми байтами, сети и БД здесь нет.
 """
@@ -32,7 +33,8 @@ TIME_H = 18  # + подписи времени покупки под иконк�
 ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
 BADGE = 40
 UPGRADE_SIZE = 32
-STRIP_TEXT_X = 840  # фарм и урон по зданиям — правее билда и значков апгрейдов
+STRIP_TEXT_X = 610  # ячейки экономики и урона — правее билда и значков апгрейдов
+STRIP_CELL_W = 112
 
 
 def _outcome(rows: list) -> tuple[str, str]:
@@ -62,7 +64,7 @@ def clock(seconds) -> str:
 
 def _has_strip(row: dict) -> bool:
     return bool(row.get("items") or row.get("neutral_item") or row.get("rank_tier") or row.get("shard")
-                or row.get("scepter") or row.get("tower_damage"))
+                or row.get("scepter") or row.get("tower_damage") or row.get("net_worth"))
 
 
 def _times(row: dict) -> list:
@@ -178,18 +180,22 @@ def _draw_row(
         tag_x += cards.pill(img, draw, tag_x, mid - 26, text, BG, tag_color, size=18, pad=10) + 8
     hero = hero_name(row.get("hero_id")) + (f"  ·  P{row['position']}" if row.get("position") else "")
     draw_text(draw, (NAME_X, mid + 2), hero, 20, MUTED, anchor="lm", max_w=NAME_MAX_W + 60)
+    x = NAME_X
+    imp = row.get("imp")
+    if imp is not None:  # IMP — оценка игры: знак и цвет читаются раньше остальных цифр строки
+        text = f"IMP {signed(imp)}"
+        draw_text(draw, (x, mid + 28), text, 18, cards.delta_color(imp), bold=True, anchor="lm", track=False)
+        x += cards.text_width(text, 18, True, False)
     extra = []
-    if row.get("imp") is not None:
-        extra.append(f"IMP {signed(row['imp'])}")
     if row.get("gpm"):
         extra.append(f"{round(row['gpm'])} GPM")
-    if row.get("hero_damage"):
+    if row.get("hero_damage") and not _has_strip(row):  # с полосой под строкой урон стоит там отдельной ячейкой
         extra.append(f"{_thousands(row['hero_damage'])} урона")
     if extra:
-        draw_text(draw, (NAME_X, mid + 28), "  ·  ".join(extra), 18, MUTED, anchor="lm", max_w=NAME_MAX_W + 60)
+        line = ("  ·  " if x > NAME_X else "") + "  ·  ".join(extra)
+        draw_text(draw, (x, mid + 28), line, 18, MUTED, anchor="lm", max_w=NAME_X + NAME_MAX_W + 60 - x)
 
-    cards.kda(draw, KDA_X, mid - 8, row.get("kills"), row.get("deaths"), row.get("assists"), 36)
-    draw_text(draw, (KDA_X, mid + 26), "K / D / A", 18, cards.mix(MUTED, PANEL, 0.25), anchor="mm")
+    cards.kda(draw, KDA_X, mid, row.get("kills"), row.get("deaths"), row.get("assists"), 38)
 
     delta = _delta(row)
     mmr = row.get("current_mmr")
@@ -207,6 +213,21 @@ def _draw_row(
         cards.chip(img, draw, RIGHT, mid + 28, text, WIN if is_win else LOSS, size=18, pad=12, align="right", base=fill)
     if _has_strip(row):
         _draw_strip(img, draw, y + ROW_H + STRIP_H / 2 - 2, row, item_icons or {})
+
+
+def _number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _strip_cells(row: dict) -> list:
+    """Экономика и урон игрока ячейками с подписями; чего нет в данных — той ячейки нет."""
+    hits = row.get("last_hits")
+    return [
+        ("Нетворт", _k(row["net_worth"]) if _number(row.get("net_worth")) and row["net_worth"] else None),
+        ("Добито", f"{hits}/{row.get('denies') or 0}" if _number(hits) else None),
+        ("Урон", _thousands(row["hero_damage"]) if _number(row.get("hero_damage")) and row["hero_damage"] else None),
+        ("Здания", _k(row["tower_damage"]) if _number(row.get("tower_damage")) and row["tower_damage"] else None),
+    ]
 
 
 def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
@@ -233,19 +254,16 @@ def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
             if when:  # время покупки — подписью под иконкой, как у предметов
                 draw_text(draw, (x + icon_w / 2, mid + ITEM_H / 2 + 11), when, 15, MUTED, anchor="mm")
             x += max(icon_w, cards.text_width(when, 15) if when else 0) + 10
-    farm = []
-    if row.get("net_worth"):
-        farm.append(f"NW {_k(row['net_worth'])}")
-    if row.get("last_hits") is not None:
-        farm.append(f"{row['last_hits']}/{row.get('denies') or 0}")
-    lines = ["  ·  ".join(farm)] if farm else []
-    if isinstance(row.get("tower_damage"), (int, float)) and row["tower_damage"]:
-        lines.append(f"{_k(row['tower_damage'])} по зданиям")
-    for i, line in enumerate(lines):
-        draw_text(draw, (STRIP_TEXT_X, mid + (i - (len(lines) - 1) / 2) * 24), line, 18, MUTED, anchor="lm")
+    limit = RIGHT
     if row.get("rank_tier"):
+        rank = rank_label(row["rank_tier"])
         cards.paste(img, cards.rank_badge(row["rank_tier"], BADGE), RIGHT - BADGE, mid - BADGE / 2)
-        draw_text(draw, (RIGHT - BADGE - 10, mid), rank_label(row["rank_tier"]), 20, FG, anchor="rm")
+        draw_text(draw, (RIGHT - BADGE - 10, mid), rank, 20, FG, anchor="rm")
+        limit = RIGHT - BADGE - 10 - cards.text_width(rank, 20) - 16
+    cells = [cell for cell in _strip_cells(row) if cell[1]]
+    start = max(x + 10, STRIP_TEXT_X)
+    if cells:  # ячейки делят место между билдом и рангом: длинный билд их сжимает, а не толкает на ранг
+        cards.stat_cells(draw, start, mid, cells, min(STRIP_CELL_W, (limit - start) / len(cells)))
 
 
 def _draw_shared(img, draw, y: int, shared: dict) -> None:

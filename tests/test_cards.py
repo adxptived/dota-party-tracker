@@ -280,3 +280,12 @@ def test_gradient_panel_blends_two_colors_and_keeps_rounded_corners():
     assert sum(left) < sum(img.getpixel((100, 50))) < sum(right)
     assert img.getpixel((10, 10)) == background  # угол скруглён — фон не закрашен
     cards.gradient_panel(img, (5, 5, 5, 50), "#000000", "#ffffff")  # пустая панель — без ошибки
+
+
+def test_stat_cells_draw_label_over_value_and_skip_empty(drawn):
+    canvas = Flat(200)
+    end = cards.stat_cells(canvas.draw, 40, 100, [("GPM", "640"), ("Здания", None), ("IMP", "+21", cards.WIN)], 110)
+    assert end == 40 + 2 * 110  # пустая ячейка места не занимает
+    assert [t[0] for t in drawn] == ["GPM", "640", "IMP", "+21"]
+    assert drawn[1][2] is True and drawn[3][1] == cards.WIN
+    assert cards.stat_cells(canvas.draw, 40, 100, [], 110) == 40

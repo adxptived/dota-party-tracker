@@ -108,9 +108,8 @@ def _draw_matrix(img, draw, y: int, shown: list, players: list, pairs: list, ava
             box = (x0 + 3, y + 3, x0 + cell_w - 3, y + CELL_H - 3)
             cx = x0 + cell_w / 2
             pair = by_pair.get((ridx, cidx)) if ridx != cidx else None
-            if ridx == cidx:  # игрок с самим собой: тёмная ячейка с косой чертой — «здесь не бывает»
-                cards.panel(img, box, cards.BG, radius=12)
-                draw.line((box[0] + 18, box[3] - 18, box[2] - 18, box[1] + 18), fill=cards.mix(cards.BG, cards.MUTED, 0.38), width=3)
+            if ridx == cidx:  # игрок с самим собой: пустая тёмная ячейка — диагональ не спорит с цифрами
+                cards.panel(img, box, cards.mix(cards.BG, PANEL, 0.35), radius=12, outline=cards.mix(cards.BG, PANEL, 0.6))
             elif pair and pair["games"]:
                 cards.panel(img, box, _heat(pair["wins"] / pair["games"]), radius=12)
                 draw_text(draw, (cx, mid - 12), str(pair["games"]), 30, FG, bold=True, anchor="mm")

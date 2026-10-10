@@ -78,3 +78,10 @@ def test_big_label_is_drawn_and_single_record_tile_is_wide():
     # на всю ширину: правая часть плитки закрашена цветом панели, а не фоном
     y = wide.height - 80
     assert wide.getpixel((WIDTH - 60, y)) != wide.getpixel((WIDTH - 5, y))
+
+
+def test_streak_chip_next_to_name(drawn):
+    render_stats_image("Рейтинг", None, None, [_row(streak=("W", 4)), _row("Петя", streak=("L", 3)), _row("Ира")])
+    texts = [t[0] for t in drawn]
+    assert "▲ 4 подряд" in texts and "▼ 3 подряд" in texts
+    assert sum("подряд" in t for t in texts) == 2

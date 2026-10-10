@@ -37,7 +37,8 @@ def _player(acc, radiant, hero, pos, **extra):
 def sample_match() -> dict:
     heroes = [1, 11, 14, 35, 44, 74, 86, 93, 106, 114]
     players = [_player(i + 1, i < 5, heroes[i], i % 5 + 1, kills=3 + i * 2, deaths=1 + (i * 3) % 9, assists=4 + i,
-                       imp=(i - 4) * 7, gpm=380 + i * 40, net_worth=11000 + i * 2100) for i in range(10)]
+                       imp=(i - 4) * 7, gpm=380 + i * 40, net_worth=11000 + i * 2100,
+                       hero_damage=14000 + (i * 7 % 10) * 2300) for i in range(10)]
     return {"match_id": 7812345678, "start_time": NOW, "duration": 2280, "radiant_win": True, "players": players}
 
 
@@ -82,9 +83,11 @@ def sample_stats_rows() -> list[dict]:
         return data
     win, lose = True, False
     return [
-        row("Вася", 5420, 75, 35, 21, [win, win, lose, win, win, win, lose, win, win, win], 12, 55, "Legend 5"),
+        row("Вася", 5420, 75, 35, 21, [win, win, lose, win, win, win, lose, win, win, win], 12, 55, "Legend 5",
+            streak=("W", 3)),
         row("Петя", 4975, -25, 20, 21, [lose, win, lose, lose, win, lose, win, lose, lose, win], 1, 43, "Archon 3"),
-        row("Оооочень длинный ник игрока", 6120, 150, 60, 31, [win] * 4 + [lose], 26, 74, "Divine 4"),
+        row("Оооочень длинный ник игрока", 6120, 150, 60, 31, [win] * 4 + [lose] * 4, 26, 74, "Divine 4",
+            streak=("L", 4)),
         row("Макс", 3800, 0, 0, 0, [], None, None, "Без ранга", sub=None, big="≈3800"),
         row("Ира", 7210, 25, 12, 8, [win, lose, win], 35, 80, "Immortal #812", avatar="https://avatars.steamstatic.com/a.jpg"),
     ]
@@ -328,10 +331,11 @@ def sample_player() -> dict:
         "form": [True, True, False, True, True, True, False, True, True, True],
         "split": [{"label": "Соло", "wins": 12, "losses": 8}, {"label": "В группе", "wins": 23, "losses": 13}],
         "hours": {"best": "21:00 · 70%", "worst": "03:00 · 30%"},
-        "heroes": [{"hero_id": 12, "name": "Phantom Lancer", "games": 12, "wins": 8, "winrate": 8 / 12},
-                   {"hero_id": 1, "name": "Anti-Mage", "games": 9, "wins": 4, "winrate": 4 / 9},
-                   {"hero_id": 26, "name": "Lion", "games": 5, "wins": 1, "winrate": 0.2}],
-        "last_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": True},
+        "heroes": [{"hero_id": 12, "name": "Phantom Lancer", "games": 12, "wins": 8, "winrate": 8 / 12, "kda": 4.1},
+                   {"hero_id": 1, "name": "Anti-Mage", "games": 9, "wins": 4, "winrate": 4 / 9, "kda": 2.8},
+                   {"hero_id": 26, "name": "Lion", "games": 5, "wins": 1, "winrate": 0.2, "kda": 2.1}],
+        "last_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": True,
+                      "when": "09.10 11:53", "stats": [("Время", "38 мин"), ("GPM", "812"), ("Урон", "42.0k")]},
         "skills": [{"label": "Фарм", "pct": 0.78}, {"label": "Урон", "pct": 0.41}, {"label": "Участие в боях", "pct": 0.22},
                    {"label": "Поддержка", "pct": 0.55}],
         "lobby_rank": 55, "lobby_text": "Legend 5", "standing": "#2 из 5 в чате по силе", "note": "данные обновлены 12:30",

@@ -453,3 +453,14 @@ def test_last_game_empty_and_zero_deaths():
     assert last_game([]) is None
     game = last_game([dict(make(0, True, 2, 0, 3), start_time=5, match_id=9, hero_id=1)])
     assert game["kda"] == 5.0  # смертей 0 — делим на 1, как в best_game
+
+
+def test_top_heroes_have_kda_and_last_game_has_details():
+    from mmrbot.stats import last_game
+    a = dict(make(0, True, 10, 2, 6), hero_id=1, start_time=100)
+    b = dict(make(0, False, 4, 6, 8), hero_id=1, start_time=900, duration=2280, gpm=512.0, hero_damage=18000)
+    (hero,) = top_heroes([a, b])
+    assert hero["kda"] == pytest.approx(28 / 8)
+    game = last_game([a, b])
+    assert (game["duration"], game["gpm"], game["hero_damage"]) == (2280, 512.0, 18000)
+    assert last_game([a])["duration"] is None

@@ -647,7 +647,7 @@ async def player_board(
         player = storage.get_player_by_account_id(chat_id, summary.account_id)
         series = await _build(_mmr_values, storage, chat_id, player.id) if player is not None else []
         position = dict(comparison["players"].get(summary.display_name) or {}, size=comparison["size"])
-        card = player_card(summary, position, series, plain, absolute=True)
+        card = player_card(summary, position, series, plain, absolute=True, tz=tz)
         board.png = await asyncio.to_thread(build_png, "карточку игрока", lambda: _player_png(card))
         if board.png is not None:
             board.caption = fit_caption(player_caption(summary) + (f"\n{note}" if note else ""))

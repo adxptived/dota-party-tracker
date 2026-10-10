@@ -79,3 +79,14 @@ def test_card_data_builds_contest_view():
     assert noms[1]["anti"] is True and noms[0]["entries"][0]["avatar"] == "http://a"
     caption = cd.contest_caption("ЗА НЕДЕЛЮ", table, noms)
     assert "Вася" in caption and "ЗА НЕДЕЛЮ".lower() in caption.lower()
+
+
+def test_first_place_value_stands_out_and_minus_is_real(drawn):
+    from mmrbot.cards import FG, LOSS, MUTED
+    drop = {"title": "Больше всех просел", "anti": True, "entries": [
+        {"name": "П0", "avatar": None, "place": 1, "text": "-100 MMR"},
+        {"name": "П1", "avatar": None, "place": 2, "text": "-50 MMR"}]}
+    render_contest_image("ЗА НЕДЕЛЮ", _table(), [_nom(), drop])
+    assert ("600 GPM в среднем", FG, True) in drawn and ("550 GPM в среднем", MUTED, False) in drawn
+    assert ("−100 MMR", LOSS, True) in drawn
+    assert not any(t[0].startswith("-") for t in drawn)

@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from mmrbot import cards
@@ -34,6 +35,11 @@ def _label(draw, y: float, text: str, color: str = MUTED) -> float:
 def _place_dot(img, draw, cx: float, cy: float, place: int, r: int = 16) -> None:
     cards.dot(img, cx, cy, r, _place_color(place))
     draw_text(draw, (cx, cy - 1), str(place), 20 if r >= 15 else 16, BG, bold=True, anchor="mm")
+
+
+def _minus(text: str) -> str:
+    """«-100 MMR» → «−100 MMR»: дефис перед числом — настоящий минус, как на остальных карточках."""
+    return re.sub(r"(?<![\w.,])-(?=\d)", "−", text)
 
 
 def _plural_points(n: int) -> str:
@@ -116,7 +122,9 @@ def _card(img, draw, x0: int, y0: int, nom: dict, height: int, avatars: dict) ->
         _place_dot(img, draw, x0 + 42, cy, entry.get("place") or i + 1, r=15)
         cards.paste(img, cards.avatar(avatars.get(entry.get("avatar")), name, 40), x0 + 70, cy - 20)
         draw_text(draw, (x0 + 122, cy), name, 24, FG, bold=entry.get("place") == 1, anchor="lm", max_w=190)
-        draw_text(draw, (x0 + CARD_W - 24, cy), clean(entry.get("text")), 21, MUTED if not anti else LOSS,
+        first = entry.get("place") == 1  # значение победителя номинации — ярко и жирно, остальные приглушены
+        value_color = (LOSS if first else cards.mix(LOSS, PANEL_HI, 0.3)) if anti else (FG if first else MUTED)
+        draw_text(draw, (x0 + CARD_W - 24, cy), _minus(clean(entry.get("text"))), 21, value_color, bold=first,
                   anchor="rm", max_w=CARD_W - 122 - 190 - 24 - 12)
 
 

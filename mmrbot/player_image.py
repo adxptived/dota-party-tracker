@@ -164,8 +164,10 @@ def _draw_heroes_row(img, draw, y: int, heroes: list, last: Optional[dict], icon
         cards.paste(img, cards.hero_icon(icons.get(hero["hero_id"]), hero["hero_id"]), x0, top + (HERO_ROW_H - ICON_H) / 2 - 4)
         tx = x0 + ICON_W + 20
         draw_text(draw, (tx, top + 22), clean(hero["name"]), 26, FG, bold=True, anchor="lm", max_w=330)
-        draw_text(draw, (tx, top + 52), f"{hero['games']} игр · {hero['wins']}–{hero['games'] - hero['wins']}", 20, MUTED,
-                  anchor="lm")
+        line = f"{hero['games']} игр · {hero['wins']}–{hero['games'] - hero['wins']}"
+        if isinstance(hero.get("kda"), (int, float)):
+            line += f" · KDA {hero['kda']:.1f}"
+        draw_text(draw, (tx, top + 52), line, 20, MUTED, anchor="lm", max_w=360)
         right = PAD + LEFT_W - 24
         cards.winrate_bar(img, (right - 170, top + 14, right, top + 26), hero["wins"], hero["games"] - hero["wins"])
         draw_text(draw, (right, top + 52), f"{round(hero['winrate'] * 100)}%", 24, FG, bold=True, anchor="rm")
@@ -177,11 +179,18 @@ def _draw_heroes_row(img, draw, y: int, heroes: list, last: Optional[dict], icon
         draw_text(draw, (x1 + ICON_W + 20, y1 + 18), clean(last["name"]), 24, FG, bold=True, anchor="lm", max_w=RIGHT_W - ICON_W - 70)
         cards.chip(img, draw, x1 + ICON_W + 20, y1 + 52, "победа" if last.get("won") else "поражение",
                    WIN if last.get("won") else LOSS, size=18, pad=12, base=PANEL)
-        # K/D/A и подпись под ним — по центру оставшегося места, чтобы панель не пустовала снизу
-        centre = (y1 + 4 + ICON_H + y + h - 20) / 2
+        if last.get("when"):
+            draw_text(draw, (rx + RIGHT_W - 24, y + 28), clean(last["when"]), 18, MUTED, anchor="rm")
+        stats = [cell for cell in last.get("stats") or [] if cell[1]][:3]
+        # K/D/A и подпись под ним — по центру оставшегося места; под ними — ячейки подробностей, если они есть
+        bottom = y + h - (78 if stats else 20)
+        centre = (y1 + 4 + ICON_H + bottom) / 2
         cards.kda(draw, rx + RIGHT_W / 2, centre - 12, last["kills"], last["deaths"], last["assists"], 48)
         ratio = f"KDA {last['kda']:.1f}" if isinstance(last.get("kda"), (int, float)) else "K / D / A"
         draw_text(draw, (rx + RIGHT_W / 2, centre + 32), ratio, 20, MUTED, anchor="mm")
+        if stats:
+            img.paste(cards.mix(PANEL, "#ffffff", 0.07), (round(x1), round(y + h - 76), round(rx + RIGHT_W - 24), round(y + h - 75)))
+            cards.stat_cells(draw, x1, y + h - 40, stats, (RIGHT_W - 48) / len(stats))
     else:
         draw_text(draw, (x1, y1 + 30), "пока нет игр", 22, MUTED, anchor="lm")
     return y + h

@@ -94,3 +94,11 @@ def test_together_card_data_and_caption():
     caption = cd.together_caption(result)
     assert "33 игры" in caption and "19–14" in caption and "Вася + Петя" in caption
     assert "пока нет" in cd.together_caption({"summary": {"games": 0}})
+
+
+def test_together_diagonal_cells_are_blank(monkeypatch):
+    from PIL import ImageDraw
+    lines = []
+    monkeypatch.setattr(ImageDraw.ImageDraw, "line", lambda self, *a, **k: lines.append(a))
+    render_together_image({"games": 5, "wins": 3, "losses": 2}, None, _players(3), [{"a": 0, "b": 1, "games": 5, "wins": 3}])
+    assert lines == []

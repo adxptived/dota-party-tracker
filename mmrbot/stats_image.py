@@ -6,7 +6,7 @@
 (их собирает service.py), иконки и аватары — готовыми байтами; сети и БД здесь нет.
 
 Строка таблицы (`rows`): name, avatar (url), rank_tier, rank_text, big, big_color, sub, sub_color, wins, losses,
-form [bool], hero_id, hero_note. Плитка (`tiles`): label, value, sub, color. Рекорд (`records`): label, value,
+form [bool], hero_id, hero_note, streak ("W"|"L", длина) — метка серии у ника. Плитка (`tiles`): label, value, sub, color. Рекорд (`records`): label, value,
 player, hero_id. Награда (`awards`): title, player, detail.
 """
 from __future__ import annotations
@@ -30,6 +30,7 @@ FORM_X = 962
 HERO_W, HERO_H = 80, 45
 HERO_X = WIDTH - PAD - 24 - HERO_W
 FORM_MAX = 10
+STREAK_MIN = 3  # серия короче — не событие, метку у ника не ставим
 TILE_GAP = 16
 
 
@@ -98,7 +99,15 @@ def _draw_row(img, draw, y: int, place: int, row: dict, icons: dict, avatars: di
     name = clean(row.get("name")) or "Игрок"
     cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, AVATAR), PAD + 78, mid - AVATAR / 2)
 
-    draw_text(draw, (NAME_X, mid - 17), name, 28, FG, bold=True, anchor="lm", max_w=NAME_MAX_W)
+    streak = row.get("streak")
+    chip = None
+    if streak and streak[1] >= STREAK_MIN:
+        chip = f"{'▲' if streak[0] == 'W' else '▼'} {streak[1]} подряд"
+    name_max = NAME_MAX_W - (cards.text_width(chip, 16, True, False) + 24 + 12 if chip else 0)
+    draw_text(draw, (NAME_X, mid - 17), name, 28, FG, bold=True, anchor="lm", max_w=name_max)
+    if chip:  # текущая серия — рядом с ником: кто на ходу, а кто в яме, видно без строки «Форма»
+        cards.chip(img, draw, NAME_X + min(cards.text_width(name, 28, True), name_max) + 12, mid - 17, chip,
+                   WIN if streak[0] == "W" else LOSS, size=16, pad=12, base=PANEL)
     cards.paste(img, cards.rank_badge(row.get("rank_tier"), 30), NAME_X, mid + 3)
     draw_text(draw, (NAME_X + 40, mid + 18), clean(row.get("rank_text")), 20, MUTED, anchor="lm", max_w=NAME_MAX_W - 40)
 

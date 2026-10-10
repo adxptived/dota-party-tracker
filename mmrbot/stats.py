@@ -102,19 +102,21 @@ def current_streak(matches: list[dict]) -> tuple[str, int]:
 
 
 def top_heroes(matches: list[dict], k: int = 3) -> list[dict]:
-    """Топ-k героев по числу игр (тай-брейк: винрейт, затем hero_id)."""
-    by_hero: dict[int, list[int]] = {}  # hero_id -> [games, wins]
+    """Топ-k героев по числу игр (тай-брейк: винрейт, затем hero_id); kda — (K+A)/max(D,1) по сумме игр на герое."""
+    by_hero: dict[int, list[int]] = {}  # hero_id -> [games, wins, kills + assists, deaths]
     for match in matches:
         hero_id = match.get("hero_id")
         if not hero_id:
             continue
-        stat = by_hero.setdefault(hero_id, [0, 0])
+        stat = by_hero.setdefault(hero_id, [0, 0, 0, 0])
         stat[0] += 1
         if is_win(match["player_slot"], match["radiant_win"]):
             stat[1] += 1
+        stat[2] += (match.get("kills") or 0) + (match.get("assists") or 0)
+        stat[3] += match.get("deaths") or 0
     result = [
-        {"hero_id": hid, "games": games, "wins": wins, "winrate": wins / games}
-        for hid, (games, wins) in by_hero.items()
+        {"hero_id": hid, "games": games, "wins": wins, "winrate": wins / games, "kda": ka / max(deaths, 1)}
+        for hid, (games, wins, ka, deaths) in by_hero.items()
     ]
     result.sort(key=lambda h: (h["games"], h["winrate"], -h["hero_id"]), reverse=True)
     return result[:k]
@@ -235,7 +237,8 @@ BEST_GAME_MIN_KA = 10  # меньше убийств+помощи игра «л�
 
 
 def last_game(matches: list[dict]) -> Optional[dict]:
-    """Последний по времени матч: исход, герой, K/D/A и KDA (смертей 0 — делим на 1). None — матчей нет."""
+    """Последний по времени матч: исход, герой, K/D/A и KDA (смертей 0 — делим на 1), а также длительность,
+    GPM и урон по героям (None, пока подробности матча не загружены). None — матчей нет."""
     if not matches:
         return None
     match = max(matches, key=lambda m: m.get("start_time") or 0)
@@ -244,6 +247,7 @@ def last_game(matches: list[dict]) -> Optional[dict]:
         "match_id": match.get("match_id"), "start_time": match.get("start_time"), "hero_id": match.get("hero_id"),
         "kills": kills, "deaths": deaths, "assists": assists, "kda": (kills + assists) / max(deaths, 1),
         "won": is_win(match["player_slot"], match["radiant_win"]),
+        "duration": match.get("duration"), "gpm": match.get("gpm"), "hero_damage": match.get("hero_damage"),
     }
 
 

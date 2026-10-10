@@ -126,3 +126,26 @@ def test_match_image_can_be_encoded_as_small_jpeg():
     assert jpeg[:3] == b"\xff\xd8\xff" and len(jpeg) < len(png)  # Telegram всё равно пережимает фото — шлём лёгкий файл
     img = Image.open(io.BytesIO(jpeg))
     assert img.size == _open(png).size and img.format == "JPEG"
+
+
+def test_header_shows_team_gold_and_lead(drawn):
+    match = _full_match()
+    for p in match["players"]:
+        p["net_worth"] = 20000 if p["is_radiant"] else 15000
+    render_match_image(match, {}, focus=1)
+    texts = [t[0] for t in drawn]
+    assert "100.0k золота  ·  +25.0k" in texts and "75.0k золота" in texts
+    match["players"][0]["net_worth"] = None  # нетворт известен не у всех — сумма была бы враньём
+    drawn.clear()
+    render_match_image(match, {}, focus=1)
+    assert not any("золота" in t[0] for t in drawn)
+
+
+def test_best_damage_and_gpm_in_match_are_bold(drawn):
+    match = _full_match()
+    match["players"][3].update(hero_damage=45000, gpm=777)
+    render_match_image(match, {}, focus=1)
+    bold = {t[0] for t in drawn if t[2]}
+    plain = {t[0] for t in drawn if not t[2]}
+    assert "45.0k" in bold and "777 / 650" in bold
+    assert "21.0k" in plain and "600 / 650" in plain

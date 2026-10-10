@@ -129,3 +129,20 @@ def test_tower_damage_alone_or_upgrades_alone_make_a_strip():
     assert _open(render_alert_image(_event([_row("A", shard=True)]), "UTC")).height > plain.height
     junk = _row("A", items=[1], item_times=["x", None], shard=True, shard_time="bad", tower_damage="много")
     assert _open(render_alert_image(_event([junk]), "UTC")).width == WIDTH  # странные данные не роняют рендер
+
+
+def test_strip_stats_are_labelled_cells(drawn):
+    row = _row("Вася", items=[1, 2], net_worth=18200, last_hits=312, denies=14, tower_damage=4200, rank_tier=55)
+    render_alert_image(_event([row]), "UTC")
+    texts = [t[0] for t in drawn]
+    for label, value in (("НЕТВОРТ", "18.2k"), ("ДОБИТО", "312/14"), ("УРОН", "31.2k"), ("ЗДАНИЯ", "4.2k")):
+        assert texts[texts.index(label) + 1] == value
+    assert not any(t.startswith("NW ") or "по зданиям" in t for t in texts)
+    assert not any("урона" in t for t in texts)  # урон переехал в ячейку, в строке под ником не дублируется
+
+
+def test_imp_is_colored_by_sign_and_damage_stays_in_line_without_strip(drawn):
+    from mmrbot.cards import LOSS, WIN
+    render_alert_image(_event([_row("A"), _row("B", imp=-14)]), "UTC")
+    assert ("IMP +21", WIN, True) in drawn and ("IMP −14", LOSS, True) in drawn
+    assert any("31.2k урона" in t[0] for t in drawn)

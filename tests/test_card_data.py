@@ -153,3 +153,21 @@ def test_player_caption():
     assert "56 игр" in text and "35–21 (62%)" in text and "KDA 3.10" in text
     assert "ранкед-игр пока нет" in cd.player_caption(_summary(games_total=0, current_mmr=None))
     assert "&lt;b&gt;" in cd.player_caption(_summary(display_name="<b>"))
+
+
+def test_rating_rows_carry_streak_from_three_games():
+    (hot,) = cd.summary_rows([_summary(streak_type="W", streak_len=4)], today=False)
+    (calm,) = cd.summary_rows([_summary(streak_type="L", streak_len=2)], today=False)
+    assert hot["streak"] == ("W", 4) and calm["streak"] is None
+
+
+def test_player_card_last_game_details_and_hero_kda():
+    last = {"hero_id": 12, "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": True,
+            "start_time": 1_700_000_000, "duration": 2280, "gpm": 640.4, "hero_damage": 31250}
+    heroes = [{"hero_id": 12, "games": 12, "wins": 8, "winrate": 8 / 12, "kda": 4.13}]
+    card = cd.player_card(_full_summary(last_game=last, top_heroes=heroes), tz="Europe/Moscow")
+    assert card["last_game"]["when"] == "15.11 01:13"
+    assert card["last_game"]["stats"] == [("Время", "38 мин"), ("GPM", "640"), ("Урон", "31.2k")]
+    assert card["heroes"][0]["kda"] == 4.13
+    bare = cd.player_card(_full_summary())  # старая запись без подробностей — блок как раньше
+    assert bare["last_game"]["stats"] == [] and bare["last_game"]["when"] is None and bare["heroes"][0]["kda"] is None

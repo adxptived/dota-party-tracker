@@ -1,7 +1,8 @@
 """Картинка матча (PNG в памяти): шапка с исходом и таблица команд — иконка героя, ник, билд, K/D/A, экономика.
 
 Шапка — табло: слева номер и время матча, по центру счёт по убийствам цветом сторон, справа исход.
-В строке игрока под нетвортом — полоска доли от самого богатого в матче, IMP — цветной плашкой.
+под счётом — золото команд и перевес. В строке игрока под нетвортом — полоска доли от самого богатого в матче,
+лучшие в матче GPM и урон — жирным, IMP — цветной плашкой.
 Рисуем на Pillow (ставится вместе с matplotlib), шрифты — из cards.py.
 Чистая функция: иконки приходят готовыми байтами (см. hero_icons.py), сети здесь нет.
 Палитра — тёмная, как у графиков (charts.py). Ширина больше карточек (1560 против 1280): в строке рядом
@@ -107,8 +108,10 @@ def render_match_image(match: dict, tracked: dict, focus=None, tz: str = "UTC",
     if label:
         cards.pill(img, draw, MATCH_WIDTH - PAD, 62, label, BG, color, size=28, align="right", pad=24)
     if len(teams) == 2:
-        _draw_score(draw, MATCH_WIDTH / 2, 62, *(sum(p.get("kills") or 0 for p in team) for _, team in teams))
+        _draw_score(draw, MATCH_WIDTH / 2, 62, *(sum(p.get("kills") or 0 for p in team) for _, team in teams),
+                    gold=_team_gold([team for _, team in teams]))
     top_nw = max((p.get("net_worth") or 0 for p in players), default=0)
+    best = {key: _best(players, key) for key in ("hero_damage", "gpm")}
 
     # --- команды ---
     y = HEAD_H
@@ -126,16 +129,44 @@ def render_match_image(match: dict, tracked: dict, focus=None, tz: str = "UTC",
             draw_text(draw, (cx, y + 30), head, 18, MUTED, anchor="mm")
         y += TEAM_HEAD_H
         for p in team:
-            _draw_row(img, draw, y, p, tracked, icons, item_icons, build, top_nw)
+            _draw_row(img, draw, y, p, tracked, icons, item_icons, build, top_nw, best)
             y += _row_h(p) + ROW_GAP
         y += TEAM_GAP
 
     return canvas.png(fmt=fmt)
 
 
-def _draw_score(draw, cx: float, cy: float, radiant: int, dire: int) -> None:
-    """Счёт по убийствам, как на табло: числа цветом сторон, по бокам подписи команд."""
+def _num(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _team_gold(teams: list[list[dict]]) -> Optional[tuple[float, float]]:
+    """Суммарный нетворт сторон (radiant, dire); None — если он известен не у всех: неполная сумма обманывает."""
+    if any(not _num(p.get("net_worth")) or p["net_worth"] <= 0 for team in teams for p in team):
+        return None
+    radiant, dire = (sum(p["net_worth"] for p in team) for team in teams)
+    return radiant, dire
+
+
+def _best(players: list[dict], key: str) -> Optional[float]:
+    """Лучшее значение показателя в матче; None — сравнивать нечего (меньше двух игроков или у всех поровну)."""
+    values = [p[key] for p in players if _num(p.get(key))]
+    return max(values) if len(values) >= 2 and max(values) > min(values) else None
+
+
+def _draw_score(draw, cx: float, cy: float, radiant: int, dire: int,
+                gold: Optional[tuple[float, float]] = None) -> None:
+    """Счёт по убийствам, как на табло: числа цветом сторон, по бокам подписи команд; под подписями — золото
+    команд (у богатой — золотом и с перевесом): кто вёл по экономике, видно без сложения десяти чисел."""
     gap = 26
+    if gold:
+        cy -= 8  # табло чуть выше: строка под ним стала содержательной
+        lead = abs(gold[0] - gold[1])
+        for side, anchor, mine, other in ((-1, "rm", gold[0], gold[1]), (1, "lm", gold[1], gold[0])):
+            text = f"{_k(mine)} золота" + (f"  ·  +{_k(lead)}" if mine > other else "")
+            edge = cx + side * (gap + cards.text_width(str(radiant if side < 0 else dire), 60, True) + 22)
+            draw_text(draw, (edge, cy + 46), text, 18, GOLD if mine > other else cards.mix(MUTED, BG, 0.2),
+                      bold=mine > other, anchor=anchor, max_w=330, track=False)
     draw_text(draw, (cx, cy - 2), ":", 44, cards.mix(MUTED, BG, 0.3), bold=True, anchor="mm")
     draw_text(draw, (cx - gap, cy), str(radiant), 60, RADIANT, bold=True, anchor="rm")
     draw_text(draw, (cx + gap, cy), str(dire), 60, DIRE, bold=True, anchor="lm")
@@ -178,7 +209,8 @@ def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
 
 
 def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons: Optional[dict] = None,
-              build: bool = False, top_nw: float = 0) -> None:
+              build: bool = False, top_nw: float = 0, best: Optional[dict] = None) -> None:
+    best = best or {}
     mine = p.get("account_id") is not None and p.get("account_id") in tracked
     row_h = _row_h(p)
     box = (PAD, y, MATCH_WIDTH - PAD, y + row_h)
@@ -216,9 +248,15 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
         draw_text(draw, (cols["nw"], mid), _k(net_worth), 26, GOLD, bold=True, anchor="mm")
     gpm, xpm = p.get("gpm"), p.get("xpm")
     econ = f"{gpm:.0f} / {xpm:.0f}" if gpm is not None and xpm is not None else (f"{gpm:.0f}" if gpm is not None else "—")
-    draw_text(draw, (cols["gpm"], mid), econ, 24, FG, anchor="mm")
+    # лучший в матче GPM и урон — жирным и ярче, остальные чуть приглушены: лидер столбца находится взглядом
+    calm = cards.mix(FG, MUTED, 0.3) if best.get("gpm") is not None else FG
+    top = gpm is not None and gpm == best.get("gpm")
+    draw_text(draw, (cols["gpm"], mid), econ, 24, FG if top else calm, bold=top, anchor="mm")
     tower = p.get("tower_damage")
-    draw_text(draw, (cols["dmg"], mid - (11 if tower else 0)), _k(p.get("hero_damage")), 24, FG, anchor="mm")
+    calm = cards.mix(FG, MUTED, 0.3) if best.get("hero_damage") is not None else FG
+    top = p.get("hero_damage") is not None and p.get("hero_damage") == best.get("hero_damage")
+    draw_text(draw, (cols["dmg"], mid - (11 if tower else 0)), _k(p.get("hero_damage")), 24, FG if top else calm,
+              bold=top, anchor="mm")
     if tower:  # урон по зданиям — вторым рядом: в колонке нет места для двух чисел в строку
         draw_text(draw, (cols["dmg"], mid + 15), f"{_k(tower)} здания", 17, MUTED, anchor="mm")
     imp = p.get("imp")

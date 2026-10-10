@@ -54,3 +54,15 @@ def test_sections_add_height():
     with_warnings = _full()
     with_warnings["warnings"] = ["a", "b"]
     assert _open(render_player_image(with_warnings)).height > _open(render_player_image(base)).height
+
+
+def test_last_game_details_and_hero_kda_are_drawn(drawn):
+    card = _full()
+    card["last_game"].update(when="09.10 21:40", stats=[("Время", "38 мин"), ("GPM", "640"), ("Урон", "31.2k")])
+    card["heroes"] = [dict(card["heroes"][0], kda=4.13)]
+    render_player_image(card)
+    texts = [t[0] for t in drawn]
+    assert "09.10 21:40" in texts
+    for label, value in (("ВРЕМЯ", "38 мин"), ("GPM", "640"), ("УРОН", "31.2k")):
+        assert texts[texts.index(label) + 1] == value
+    assert "12 игр · 8–4 · KDA 4.1" in texts
