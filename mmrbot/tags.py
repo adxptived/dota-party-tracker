@@ -53,11 +53,17 @@ def link_adder(storage, chat_id: int, player, user) -> bool:
     return True
 
 
-async def sync_member_tags(bot, storage, chat_id: int, now: int) -> int:
+REFUSAL_RETRY_SEC = 86_400  # сек: участника, которому Telegram отказал в теге, снова пробуем не раньше
+_refused: dict[tuple[int, int], int] = {}  # (чат, пользователь) → когда Telegram отказал; живёт до перезапуска
+
+
+async def sync_member_tags(bot, storage, chat_id: int, now: int, retry_refused: bool = False) -> int:
     """Привести теги привязанных игроков чата к их текущему MMR; вернуть число обновлённых тегов.
 
     Неизменившийся тег повторно не отправляем. Отказ Telegram по одному участнику (админ, нет прав,
-    вышел из чата) не мешает остальным.
+    вышел из чата) не мешает остальным и запоминается на REFUSAL_RETRY_SEC: владельцу чата тег не поставить
+    никогда, и без этого попытка (и строка в логе) повторялась бы каждые полчаса. retry_refused=True —
+    команда пользователя (/tags on, /me): пробуем всех сразу — права могли только что выдать.
     """
     linked = {p.account_id: p for p in storage.list_players(chat_id) if p.tg_user_id}
     if not linked:
@@ -69,11 +75,17 @@ async def sync_member_tags(bot, storage, chat_id: int, now: int) -> int:
         tag = format_tag(summary.current_mmr)
         if player is None or tag is None or tag == player.last_tag:
             continue
+        key = (chat_id, player.tg_user_id)
+        refused_at = _refused.get(key)
+        if not retry_refused and refused_at is not None and 0 <= now - refused_at < REFUSAL_RETRY_SEC:
+            continue
         try:
             await bot.set_chat_member_tag(chat_id=chat_id, user_id=player.tg_user_id, tag=tag)
         except TelegramAPIError as exc:
-            log.warning("Тег для %s в чате %s не поставлен: %s", player.display_name, chat_id, exc)
+            _refused[key] = now
+            log.warning("Тег для %s в чате %s не поставлен (повторю через сутки): %s", player.display_name, chat_id, exc)
             continue
+        _refused.pop(key, None)
         storage.set_player_tag(player.id, tag)
         updated += 1
     return updated

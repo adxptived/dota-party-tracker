@@ -6,6 +6,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from mmrbot import commands as cmd
 from mmrbot.storage import Storage
+from mmrbot import tags
 from mmrbot.tags import format_tag, sync_member_tags
 
 NOW = 1_000_000
@@ -16,6 +17,14 @@ def store(tmp_path):
     st = Storage(str(tmp_path / "t.db"))
     st.get_or_create_chat(100)
     return st
+
+
+@pytest.fixture(autouse=True)
+def _no_remembered_refusals():
+    """Отказы Telegram помнятся в памяти процесса — между тестами их быть не должно."""
+    tags._refused.clear()
+    yield
+    tags._refused.clear()
 
 
 class FakeBot:
@@ -128,6 +137,44 @@ def test_sync_survives_rejected_member(store):
 
     assert asyncio.run(sync_member_tags(bot, store, 100, NOW)) == 1
     assert bot.calls == [(100, 222, "4000 MMR")]
+
+
+class RefusingBot(FakeBot):
+    """Считает и отклонённые попытки: владельцу чата Telegram тег не ставит."""
+
+    def __init__(self, fail_for):
+        super().__init__(fail_for)
+        self.attempts = []
+
+    async def set_chat_member_tag(self, chat_id, user_id, tag=None):
+        self.attempts.append(user_id)
+        return await super().set_chat_member_tag(chat_id, user_id, tag)
+
+
+def test_refused_member_is_not_retried_every_sync(store, caplog):
+    owner = store.add_player(100, 1, "Владелец", 6000, NOW, NOW)
+    store.link_user(100, owner.id, 111)
+    bot = RefusingBot(fail_for={111})
+
+    with caplog.at_level("WARNING", logger="mmrbot.tags"):
+        for step in range(3):  # три прогона планировщика подряд (раз в полчаса)
+            asyncio.run(sync_member_tags(bot, store, 100, NOW + step * 1800))
+    assert bot.attempts == [111]  # отказ запомнен: Telegram и лог не дёргаем каждые полчаса
+    assert len([r for r in caplog.records if "не поставлен" in r.getMessage()]) == 1
+
+    asyncio.run(sync_member_tags(bot, store, 100, NOW + tags.REFUSAL_RETRY_SEC))
+    assert bot.attempts == [111, 111]  # через сутки пробуем снова: владелец или права могли смениться
+
+
+def test_user_command_retries_refused_member_at_once(store):
+    owner = store.add_player(100, 1, "Владелец", 6000, NOW, NOW)
+    store.link_user(100, owner.id, 111)
+    bot = RefusingBot(fail_for={111})
+    asyncio.run(sync_member_tags(bot, store, 100, NOW))
+
+    bot.fail_for.clear()  # боту выдали право — /tags on или /me должны сработать сразу, а не через сутки
+    assert asyncio.run(sync_member_tags(bot, store, 100, NOW + 60, retry_refused=True)) == 1
+    assert bot.calls == [(100, 111, "6000 MMR")]
 
 
 # --- кнопки -------------------------------------------------------------

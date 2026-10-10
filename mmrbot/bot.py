@@ -601,7 +601,7 @@ async def _link_me(message, storage: Storage, bot: Bot, user, player) -> None:
     storage.link_user(message.chat.id, player.id, user.id)
     note = ""
     if storage.get_or_create_chat(message.chat.id).tag_mmr:
-        await sync_member_tags(bot, storage, message.chat.id, int(time.time()))
+        await sync_member_tags(bot, storage, message.chat.id, int(time.time()), retry_refused=True)
     else:
         note = " Теги с MMR включаются в ⚙️ Настройках (или /tags on)."
     await message.answer(f"✅ Вы — {player.display_name}.{note}", reply_markup=nav_menu())
@@ -637,7 +637,7 @@ async def cmd_tags(message: Message, command: CommandObject, storage: Storage, b
         return
     storage.set_chat_tag_mmr(message.chat.id, enabled)
     if enabled:
-        await sync_member_tags(bot, storage, message.chat.id, int(time.time()))
+        await sync_member_tags(bot, storage, message.chat.id, int(time.time()), retry_refused=True)
     await message.answer("✅ Теги с MMR включены." if enabled else "✅ Теги с MMR выключены (поставленные останутся).")
 
 
@@ -1251,7 +1251,7 @@ async def _on_settings(message: Message, storage: Storage, args: list[str], bot=
         elif what == "tags":
             storage.set_chat_tag_mmr(chat_id, not chat.tag_mmr)
             if not chat.tag_mmr and bot is not None:  # только что включили — ставим теги сразу
-                await sync_member_tags(bot, storage, chat_id, int(time.time()))
+                await sync_member_tags(bot, storage, chat_id, int(time.time()), retry_refused=True)
         elif what != "noop":
             return
     except ValueError:
