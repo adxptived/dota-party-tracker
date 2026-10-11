@@ -474,6 +474,17 @@ def _m012_notify_leaders(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE chats ADD COLUMN notify_leaders INTEGER NOT NULL DEFAULT 0")
 
 
+# --- 13: билды игроков по матчам ---------------------------------------------------------------------------------
+
+def _m013_match_builds(conn: sqlite3.Connection) -> None:
+    """Предметы, времена покупок, шард и скипетр игрока в матче (JSON). Нужны, чтобы тайминги не пропадали
+    вместе с кэшем в памяти и не зависели от того, ответят ли OpenDota и Stratz в момент показа."""
+    conn.execute(
+        "CREATE TABLE match_builds (account_id INTEGER NOT NULL, match_id INTEGER NOT NULL, build TEXT NOT NULL, "
+        "PRIMARY KEY (account_id, match_id)) WITHOUT ROWID"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -487,6 +498,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (10, _m010_seasons),
     (11, _m011_gather),
     (12, _m012_notify_leaders),
+    (13, _m013_match_builds),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

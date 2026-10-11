@@ -491,3 +491,22 @@ def role_stats(matches: list[dict], since_ts: Optional[int] = None) -> list[dict
             continue
         by_pos.setdefault(pos, []).append(m)
     return [{"position": pos, **_group_stats(by_pos[pos])} for pos in sorted(by_pos)]
+
+
+def item_timings(builds, limit: int = 6, min_n: int = 2) -> list[dict]:
+    """Средние тайминги предметов по сохранённым билдам: [{item_id, n, avg}] — чаще встречающиеся первыми.
+
+    Берутся только предметы с известным временем покупки; предмет, у которого их меньше min_n, не показывается:
+    «средний тайминг» по одной игре ничего не говорит. Мусор в билдах пропускается.
+    """
+    seen: dict[int, list[float]] = {}
+    for build in builds or []:
+        items, times = (build or {}).get("items"), (build or {}).get("item_times")
+        if not isinstance(items, list) or not isinstance(times, list):
+            continue
+        for item, when in zip(items, times):
+            if isinstance(item, int) and not isinstance(item, bool) and isinstance(when, (int, float))                     and not isinstance(when, bool):
+                seen.setdefault(item, []).append(when)
+    rows = [{"item_id": item, "n": len(ts), "avg": sum(ts) / len(ts)} for item, ts in seen.items() if len(ts) >= min_n]
+    rows.sort(key=lambda r: (-r["n"], r["avg"]))
+    return rows[:limit]

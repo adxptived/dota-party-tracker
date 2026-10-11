@@ -147,6 +147,10 @@ def compute_standings(
     add("lane", "🛣️", "Победитель линии", lane_share,
         lambda n: f"выиграл {lane_share[n] * 100:.0f}% линий")  # коротко: длинная подпись обрезается в карточке
 
+    shard = {n: sum(v) / len(v) for n, v in sampled("shard_time", lambda t: t > 0).items()}
+    add("fast_shard", "⚡", "Самый быстрый шард", shard, lambda n: f"шард в среднем на {shard[n] // 60:.0f}:{shard[n] % 60:02.0f}",
+        lowest=True)
+
     best_games: dict[str, tuple[float, dict]] = {}
     for n, ms in played.items():
         scored = [(k, m) for m in ms if (k := _kda(m)) is not None]

@@ -197,6 +197,11 @@ def backfill_stratz(storage: Storage, stratz: StratzClient, rounds: int = 6) -> 
     return done
 
 
+def background_allowed(client) -> bool:
+    """Можно ли сейчас делать необязательные запросы к OpenDota (остаток дневного лимита выше резерва)."""
+    return _background_allowed(client)
+
+
 def _background_allowed(client) -> bool:
     """Разрешает ли клиент необязательные запросы (у фейковых клиентов метода нет — можно)."""
     check = getattr(client, "background_allowed", None)
@@ -323,7 +328,7 @@ _ALERT_FIELDS = (
 )
 
 
-def enrich_alert_items(client: OpenDotaClient, event: dict) -> None:
+def enrich_alert_items(client: OpenDotaClient, event: dict, stratz=None) -> None:
     """Дополнить строки оповещения билдом и фармом из /matches/{id} (матч общий на пати — один запрос).
 
     Best-effort: предохранитель закрыт или сеть отказала — строки остаются как были, оповещение не задерживается.
@@ -331,6 +336,20 @@ def enrich_alert_items(client: OpenDotaClient, event: dict) -> None:
     золото — из того же кэшируемого матча, без нового запроса.
     """
     _add_match_score(client, event)
+    _enrich_rows_from_opendota(client, event)
+    fill_alert_times_from_stratz(event, stratz)
+    if any(r.get("items") and not any(t is not None for t in r.get("item_times") or []) for r in event.get("rows") or []):
+        _request_parse(client, event.get("match_id"))  # матч не разобран нигде — времён покупок пока нет
+
+
+def alert_untimed(event: dict) -> bool:
+    """В оповещении есть билд, но ни одного времени покупки — картинку стоит обновить позже, когда матч разберут."""
+    rows = [r for r in event.get("rows") or [] if r.get("items")]
+    return bool(rows) and not any(isinstance(t, (int, float)) and not isinstance(t, bool)
+                                  for r in rows for t in r.get("item_times") or [])
+
+
+def _enrich_rows_from_opendota(client, event: dict) -> None:
     for row in event.get("rows") or []:
         if _provider_down(client) or not row.get("account_id"):
             return
@@ -343,8 +362,29 @@ def enrich_alert_items(client: OpenDotaClient, event: dict) -> None:
         for key in _ALERT_FIELDS:
             if found and found.get(key) is not None and row.get(key) is None:
                 row[key] = found[key]
-        if found and found.get("items") and not any(t is not None for t in found.get("item_times") or []):
-            _request_parse(client, event.get("match_id"))  # матч не разобран — времён покупок пока нет
+
+
+def fill_alert_times_from_stratz(event: dict, stratz) -> None:
+    """Времена покупок строк оповещения, которых нет у OpenDota (матч не разобран), — из журнала Stratz. Best-effort."""
+    rows = [r for r in event.get("rows") or [] if r.get("items") and any(t is None for t in _times_of(r))]
+    if not rows or stratz is None or _provider_down(stratz):
+        return
+    try:
+        match = stratz.get_match(event["match_id"])
+    except Exception as exc:
+        log_network_error(log, f"Stratz: времена покупок матча {event.get('match_id')} не получены", exc,
+                          health=getattr(stratz, "health", None))
+        return
+    by_account = {p.get("account_id"): p for p in (match or {}).get("players") or []}
+    for row in rows:
+        source = by_account.get(row.get("account_id"))
+        if source and source.get("purchases"):
+            row["purchases"] = source["purchases"]
+            _fill_times_from_purchases(row)
+
+
+def _times_of(row: dict) -> list:
+    return list(row.get("item_times") or []) + [None] * (len(row.get("items") or []) - len(row.get("item_times") or []))
 
 
 def _add_match_score(client: OpenDotaClient, event: dict) -> None:
@@ -391,8 +431,27 @@ def enrich_match_builds(client: OpenDotaClient, match: dict) -> None:
             if player.get("bear_items"):  # лог покупок общий на героя и медведя: датируем предметы медведя по нему
                 bought = build.get("bought") or {}
                 player["bear_item_times"] = [bought.get(item_slug(i)) for i in player["bear_items"]]
-    if builds and not any(t is not None for b in builds.values() for t in b.get("item_times") or []):
+        _fill_times_from_purchases(player)
+    if builds and not any(t is not None for p in players for t in p.get("item_times") or []):
         _request_parse(client, match.get("match_id"))
+
+
+SHARD_ID, SCEPTER_ID = 609, 108  # id Aghanim's Shard и Aghanim's Scepter в Dota 2
+
+
+def _fill_times_from_purchases(player: dict) -> None:
+    """Пустые времена покупок добить из журнала Stratz (`purchases`): он есть и у неразобранного в OpenDota матча."""
+    bought = player.pop("purchases", None)
+    if not bought or not player.get("items"):
+        return
+    player["item_times"] = [t if t is not None else bought.get(i)
+                            for i, t in zip(player["items"], player.get("item_times") or [None] * len(player["items"]))]
+    if player.get("bear_items"):
+        have = player.get("bear_item_times") or [None] * len(player["bear_items"])
+        player["bear_item_times"] = [t if t is not None else bought.get(i) for i, t in zip(player["bear_items"], have)]
+    for key, item in (("shard_time", SHARD_ID), ("scepter_time", SCEPTER_ID)):
+        if player.get(key) is None and item in bought:
+            player[key] = bought[item]
 
 
 def _request_parse(client: OpenDotaClient, match_id) -> None:
@@ -557,13 +616,27 @@ def build_records(storage: Storage, chat_id: int, since_ts: Optional[int]) -> di
     return records.compute_records(named)
 
 
+def _with_shard_times(storage: Storage, player, matches: list[dict]) -> list[dict]:
+    """Матчи игрока + `shard_time` из сохранённых билдов (копии строк: словари кэша общие, их менять нельзя)."""
+    try:
+        builds = storage.get_builds(player.account_id, [m["match_id"] for m in matches])
+    except Exception:
+        log.debug("Билды игрока %s не прочитаны", player.display_name, exc_info=True)
+        return matches
+    if not builds:
+        return matches
+    return [dict(m, shard_time=builds[m["match_id"]]["shard_time"])
+            if (builds.get(m["match_id"]) or {}).get("shard_time") is not None else m for m in matches]
+
+
 def build_period_awards(storage: Storage, chat_id: int, since_ts: int, min_games: int = 3) -> list[dict]:
     """Отличия участников за период (матчи с since_ts, из кэша БД). Без ≥2 участников сравнивать не с кем."""
     players = storage.list_players(chat_id)
     if len(players) < 2:
         return []
     chat = storage.get_or_create_chat(chat_id)
-    named = [(p.display_name, storage.get_matches(p.id, since_ts=since_ts)) for p in players]
+    named = [(p.display_name, _with_shard_times(storage, p, storage.get_matches(p.id, since_ts=since_ts)))
+             for p in players]
     return compute_period_awards(named, chat.mmr_step, min_games)
 
 
@@ -573,7 +646,8 @@ def build_contest(storage: Storage, chat_id: int, since_ts: Optional[int], min_g
     if len(players) < 2:
         return {"standings": [], "points": []}
     chat = storage.get_or_create_chat(chat_id)
-    named = [(p.display_name, storage.get_matches(p.id, since_ts=since_ts)) for p in players]
+    named = [(p.display_name, _with_shard_times(storage, p, storage.get_matches(p.id, since_ts=since_ts)))
+             for p in players]
     standings = compute_standings(named, chat.mmr_step, min_games)
     return {"standings": standings, "points": contest_points(standings)}
 
@@ -1216,6 +1290,18 @@ def build_hero_view(
     return entries
 
 
+def build_hero_item_timings(storage: Storage, chat_id: int, hero_id: int, since_ts: Optional[int]) -> list[dict]:
+    """Средние тайминги предметов пати на герое по сохранённым билдам (stats.item_timings). Нет билдов — пусто."""
+    builds: list[dict] = []
+    for player in storage.list_players(chat_id):
+        matches = [m for m in storage.get_matches(player.id, since_ts=since_ts) if m.get("hero_id") == hero_id]
+        try:
+            builds.extend(storage.get_builds(player.account_id, [m["match_id"] for m in matches]).values())
+        except Exception:
+            log.debug("Билды героя %s не прочитаны", hero_id, exc_info=True)
+    return stats.item_timings(builds)
+
+
 def build_matchups(
     storage: Storage, chat_id: int, name: Optional[str], since_ts: Optional[int], min_games: Optional[int] = None,
 ) -> Optional[tuple[Optional[str], dict]]:
@@ -1315,3 +1401,49 @@ def build_together(storage: Storage, chat_id: int) -> dict:
         "players": [{"name": p.display_name, "avatar": p.steam_avatar} for p in players],
         "pairs": party.pair_stats(named_matches),
     }
+
+
+_STORED_KEYS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time")
+
+
+def persist_builds(storage, match_id, rows: list) -> None:
+    """Сохранить билды игроков (строки с account_id и items) в БД. Best-effort: сбой БД не ломает показ."""
+    if storage is None:
+        return
+    for row in rows or []:
+        if row.get("account_id") and row.get("items"):
+            try:
+                storage.save_build(row["account_id"], match_id, row)
+            except Exception:
+                log.debug("Билд матча %s не сохранён", match_id, exc_info=True)
+
+
+def restore_builds(storage, match_id, rows: list) -> None:
+    """Добить строки сохранённым билдом: пустые времена берём из БД, строку без предметов — целиком.
+
+    Билд с другими предметами не трогаем: чужие времена были бы ложью. Best-effort, как и сохранение.
+    """
+    if storage is None:
+        return
+    for row in rows or []:
+        account_id = row.get("account_id")
+        if not account_id:
+            continue
+        try:
+            saved = storage.get_builds(account_id, [match_id]).get(match_id)
+        except Exception:
+            log.debug("Билд матча %s не прочитан", match_id, exc_info=True)
+            return
+        if not saved:
+            continue
+        if not row.get("items"):
+            row.update({key: saved[key] for key in _STORED_KEYS if saved.get(key) is not None})
+            continue
+        if row["items"] != saved.get("items"):
+            continue
+        have = row.get("item_times") or [None] * len(row["items"])
+        old = saved.get("item_times") or []
+        row["item_times"] = [t if t is not None else (old[i] if i < len(old) else None) for i, t in enumerate(have)]
+        for key in ("shard_time", "scepter_time"):
+            if row.get(key) is None and saved.get(key) is not None:
+                row[key] = saved[key]

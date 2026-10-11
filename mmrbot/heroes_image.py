@@ -148,13 +148,32 @@ def render_party_heroes_image(rows: list, icons: Optional[dict] = None, avatars:
 
 # --- герой и игроки пати на нём -------------------------------------------------------------------
 
+TIMING_H = 150
+
+
+def _draw_timings(img, draw, y: int, timings: list, item_icons: dict) -> int:
+    """Панель «Ключевые предметы»: иконка, средний тайминг покупки и число игр, по которым он посчитан."""
+    from mmrbot.alert_image import _item_icon, clock
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + TIMING_H), PANEL, radius=18)
+    draw_text(draw, (PAD + 28, y + 30), "КЛЮЧЕВЫЕ ПРЕДМЕТЫ  ·  СРЕДНИЙ ТАЙМИНГ ПОКУПКИ", 20, MUTED, bold=True, anchor="lm")
+    cell = (WIDTH - 2 * PAD - 56) / 6
+    for i, row in enumerate(timings[:6]):
+        x = PAD + 28 + i * cell
+        cards.paste(img, _item_icon(item_icons.get(row["item_id"]), 64, 48, 7), x, y + 58)
+        draw_text(draw, (x, y + 124), clock(row["avg"]), 26, FG, bold=True, anchor="lm", track=False)
+        draw_text(draw, (x + cards.text_width(clock(row["avg"]), 26, True, False) + 10, y + 126), f"×{row['n']}", 18,
+                  MUTED, anchor="lm", track=False)
+    return y + TIMING_H + ROW_GAP
+
+
 def render_hero_image(
     hero_id, hero_title: str, period_label: str, rows: list, icons: Optional[dict] = None,
-    avatars: Optional[dict] = None, note: Optional[str] = None,
+    avatars: Optional[dict] = None, note: Optional[str] = None, timings: Optional[list] = None,
+    item_icons: Optional[dict] = None,
 ) -> bytes:
     """Герой: крупная иконка и таблица игроков пати на нём. rows: name, avatar, games, wins, losses, winrate, kda, imp, gpm."""
     icons, avatars = icons or {}, avatars or {}
-    canvas = cards.Canvas(420 + len(rows) * (ROW_H + ROW_GAP) + 100)
+    canvas = cards.Canvas(420 + len(rows) * (ROW_H + ROW_GAP) + 100 + (TIMING_H + ROW_GAP if timings else 0))
     img, draw = canvas.img, canvas.draw
     big_w, big_h = 224, 126
     cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id, big_w, big_h, 14), PAD, PAD)
@@ -180,6 +199,8 @@ def render_hero_image(
         draw_text(draw, (PAD + 60 + 60 + 18, mid + 18), f"{row['games']} игр", 20, MUTED, anchor="lm")
         _stat_columns(img, draw, mid, row)
         y += ROW_H + ROW_GAP
+    if timings:
+        y = _draw_timings(img, draw, y + 6, timings, item_icons or {})
     if note:
         y = cards.footer(draw, y, note)
     return canvas.png(y)

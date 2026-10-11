@@ -70,11 +70,15 @@ from mmrbot.storage import Storage
 from mmrbot.tracker import (
     FRESH_ENOUGH,
     enrich_alert_items,
+    fill_alert_times_from_stratz,
+    persist_builds,
+    restore_builds,
     BUILD_FIELDS, enrich_match_builds,
     finish_refresh,
     build_chat_comparison,
     build_daily_report,
     build_hero_view,
+    build_hero_item_timings,
     build_matchups,
     build_weekly_report,
     build_leaderboard,
@@ -345,19 +349,31 @@ async def stats_board(
     return board
 
 
-async def _attach_best_build(od, report: dict) -> None:
-    """Дописать лучшей игре суток билд из OpenDota (предметы, времена, шард, скипетр). Best-effort: сбой — без билда."""
+async def _attach_best_build(od, report: dict, stratz=None, storage=None) -> None:
+    """Дописать лучшей игре суток билд: OpenDota, времена покупок — из Stratz и из сохранённого в БД, если их нет.
+
+    Best-effort: любой сбой — без билда (или без времён). Найденный билд сохраняется в БД.
+    """
     best = report.get("best_game")
-    if not best or od is None or provider_down(od):
+    if not best:
         return
-    try:
-        builds = await asyncio.to_thread(od.get_match_builds, best["match"]["match_id"])
-    except Exception:
-        log.debug("Билд лучшей игры суток не получен", exc_info=True)
-        return
-    build = (builds or {}).get(best["match"].get("hero_id"))
-    if build:
-        best["build"] = {key: build[key] for key in BUILD_FIELDS if key in build}
+    match = best["match"]
+    row = {"account_id": match.get("account_id")}
+    if od is not None and not provider_down(od):
+        try:
+            builds = await asyncio.to_thread(od.get_match_builds, match["match_id"])
+        except Exception:
+            log.debug("Билд лучшей игры суток не получен", exc_info=True)
+            builds = None
+        build = (builds or {}).get(match.get("hero_id"))
+        if build:
+            row.update({key: build[key] for key in BUILD_FIELDS if key in build})
+    event = {"match_id": match["match_id"], "rows": [row]}
+    await asyncio.to_thread(fill_alert_times_from_stratz, event, stratz)
+    restore_builds(storage, match["match_id"], [row])
+    persist_builds(storage, match["match_id"], [row])
+    if row.get("items") or row.get("neutral_item"):
+        best["build"] = {key: row[key] for key in BUILD_FIELDS if key in row}
 
 
 def _daily_png(view: dict) -> bytes:
@@ -385,7 +401,7 @@ async def daily_board(
     """
     summaries = await gather_summaries(storage, od, chat_id, True, stratz, complete=True)
     report = await _build(build_daily_report, storage, chat_id, int(time.time()) if now is None else now)
-    await _attach_best_build(od, report)
+    await _attach_best_build(od, report, stratz, storage)
     info = {s.display_name: {"avatar": s.avatar, "rank_tier": s.rank_tier, "rank_text": s.rank, "mmr": s.current_mmr}
             for s in summaries}
     board = ImageBoard(_with_stale(storage, chat_id, render_daily(report, info), od))
@@ -810,13 +826,16 @@ def _alert_png(event: dict, tz: str) -> bytes:
     return render_alert_image(event, tz, found_icons, found_avatars, found_items)
 
 
-async def alert_board(event: dict, tz: str, image: bool = True, od=None) -> ImageBoard:
+async def alert_board(event: dict, tz: str, image: bool = True, od=None, stratz=None, storage=None) -> ImageBoard:
     """Оповещение о конце матча: текст всегда, картинка с короткой подписью — если нарисовалась.
 
     od — клиент OpenDota: подтягивает счёт, билд и фарм из матча (best-effort, без сети — оповещение без них).
     """
     if od is not None:
-        await asyncio.to_thread(enrich_alert_items, od, event)
+        await asyncio.to_thread(enrich_alert_items, od, event, stratz)
+    rows = event.get("rows") or []
+    restore_builds(storage, event.get("match_id"), rows)
+    persist_builds(storage, event.get("match_id"), rows)
     board = ImageBoard(render_game_alert(event, tz))
     if image:
         board.png = await asyncio.to_thread(build_png, "оповещение о матче", lambda: _alert_png(event, tz))
@@ -850,10 +869,13 @@ def _warm_match(od, match_id: int) -> None:
 MATCH_REFRESH_WAIT = 6.0  # сек: «последний матч» ждёт обновление дольше обычных команд — он про свежую игру
 
 
-def _render_match_png(match: dict, tracked: dict, focus, tz: str, icons, od=None) -> bytes:
+def _render_match_png(match: dict, tracked: dict, focus, tz: str, icons, od=None, stratz=None, storage=None) -> bytes:
     """В потоке: билды игроков (OpenDota, best-effort) + иконки героев и предметов (кэш/CDN) + рендер картинки."""
     if od is not None:
         enrich_match_builds(od, match)
+    mine = [p for p in match["players"] if p.get("account_id") in tracked]
+    restore_builds(storage, match.get("match_id"), mine)  # своим игрокам недостающие времена — из сохранённого
+    persist_builds(storage, match.get("match_id"), mine)
     source = icons if icons is not None else hero_icons.shared()
     found = source.get_many(p.get("hero_id") for p in match["players"]) if source is not None else {}
     gear = item_icons.shared()
@@ -921,7 +943,7 @@ async def match_board(
         return MatchBoard(f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт).")
     if want_image(storage, chat_id, image):
         try:
-            board.png = await _render(_render_match_png, match, tracked, focus, tz, icons, od)
+            board.png = await _render(_render_match_png, match, tracked, focus, tz, icons, od, stratz, storage)
             board.caption = render_match_caption(match, tracked, focus, tz)
         except Exception:
             log.exception("Не удалось нарисовать матч %s — отвечаем текстом", match_id)
@@ -944,12 +966,15 @@ async def render_match_board(
     return (await match_board(storage, od, chat_id, name, match_id, stratz, image=False)).text
 
 
-def _hero_png(hero_id: int, title: str, label: str, rows: list, note) -> bytes:
+def _hero_png(hero_id: int, title: str, label: str, rows: list, note, timings=None) -> bytes:
     """В потоке: иконка героя и аватары игроков (кэш/CDN) + рендер «Героя и пати на нём»."""
     icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
     icons = icon_loader.get_many([hero_id]) if icon_loader is not None else {}
     found = avatar_loader.get_many(r.get("avatar") for r in rows) if avatar_loader is not None else {}
-    return render_hero_image(hero_id, title, label, rows, icons, found, note)
+    gear = item_icons.shared()
+    ids = [t["item_id"] for t in timings or []]
+    found_items = gear.get_many(ids) if gear is not None and ids else {}
+    return render_hero_image(hero_id, title, label, rows, icons, found, note, timings, found_items)
 
 
 def hero_not_found(query: str) -> str:
@@ -971,7 +996,9 @@ async def hero_board(
         note = _stale_line(storage, chat_id, od)
         rows = hero_detail_rows(entries)
         label = {"day": "за сутки", "week": "за неделю", "month": "за месяц", "year": "за год", "all": "всё время"}.get(period, "")
-        board.png = await _render_png("героя", _hero_png, hero_id, hero_name(hero_id), label, rows, _plain(note))
+        timings = await _build(build_hero_item_timings, storage, chat_id, hero_id, since)
+        board.png = await _render_png("героя", _hero_png, hero_id, hero_name(hero_id), label, rows, _plain(note),
+                                      timings)
         if board.png is not None:
             board.caption = fit_caption(hero_caption(hero_name(hero_id), period, entries) + (f"\n{note}" if note else ""))
     return board

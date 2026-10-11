@@ -653,3 +653,20 @@ def test_proxy_credentials_never_reach_logs(caplog):
 def test_proxy_repr_of_client_does_not_expose_password():
     od = OpenDota(session=ProxySession(), min_interval=0, proxy="http://user:secret@10.0.0.1:3128")
     assert "secret" not in repr(od) and "secret" not in str(od)
+
+
+def test_unparsed_match_is_cached_for_a_short_time_so_parse_results_show_up(monkeypatch):
+    import mmrbot.opendota as mod
+    now = [1000.0]
+    monkeypatch.setattr(mod.time, "monotonic", lambda: now[0])
+    unparsed = {"players": [{"hero_id": 1}]}
+    parsed = {"players": [{"hero_id": 1, "purchase_log": [{"time": 5, "key": "tango"}]}]}
+    session = FakeSession(unparsed)
+    od = OpenDota(session=session, min_interval=0)
+    assert od.get_match(7) == unparsed
+    session.payload = parsed
+    now[0] += 120  # минуты хватает: неразобранный матч уже перезапрошен
+    assert od.get_match(7) == parsed
+    now[0] += 120  # разобранный матч держим долго
+    assert od.get_match(7) == parsed
+    assert len(session.calls) == 2

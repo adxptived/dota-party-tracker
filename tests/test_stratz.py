@@ -345,3 +345,17 @@ def test_cached_match_is_served_while_stratz_is_down(monkeypatch):
     st.get_match(77)
     health.failure(RuntimeError("down"))
     assert st.get_match(77)["match_id"] == 77
+
+
+def test_get_match_reads_item_purchase_times():
+    player = dict(_full_player(1, True, 2),
+                  stats={"itemPurchases": [{"time": -89, "itemId": 42}, {"time": 353, "itemId": 1123},
+                                           {"time": 370, "itemId": 42}, {"time": 700, "itemId": 42}, {"time": 5}]})
+    bare = dict(_full_player(2, False, 5), stats=None)
+    payload = {"data": {"match": {"id": 79, "durationSeconds": 2000, "didRadiantWin": True, "startDateTime": 1,
+                                  "players": [player, bare]}}}
+    session = FakeSession([payload])
+    first, second = Stratz("k", session=session, min_interval=0).get_match(79)["players"]
+    assert first["purchases"] == {42: 700, 1123: 353}  # время последней покупки; мусорная запись пропущена
+    assert "purchases" not in second
+    assert "itemPurchases" in session.calls[0]["json"]["query"]

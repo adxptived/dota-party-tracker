@@ -9,13 +9,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from functools import partial
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramMigrateToChat
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, InputMediaPhoto
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -39,6 +40,8 @@ from mmrbot.storage import Chat, Storage
 from mmrbot.tags import sync_member_tags
 from mmrbot.timezones import zone
 from mmrbot.tracker import (
+    alert_untimed,
+    background_allowed,
     backfill_opendota,
     check_contest_leaders,
     close_season,
@@ -53,7 +56,55 @@ from mmrbot.tracker import (
 log = logging.getLogger(__name__)
 
 
-async def send_board(bot: Bot, chat_id: int, board: ImageBoard, markup=None) -> None:
+RETIME_MAX_AGE = 45 * 60  # сек: столько ждём разбора матча, потом оставляем картинку как есть
+RETIME_MAX_TRIES = 8
+
+
+@dataclass
+class PendingRetime:
+    """Оповещение с картинкой без таймингов покупок: позже перерисуем её на месте, когда тайминги появятся."""
+    chat_id: int
+    message_id: int
+    event: dict
+    since: float
+    tz: str = "UTC"
+    markup: object = None
+    tries: int = 0
+
+
+async def retime_alerts(bot: Bot, pending: list, make_board, now: float) -> None:
+    """Обновить картинки оповещений, у которых появились тайминги. make_board(event, tz) → ImageBoard.
+
+    Список правится на месте: готовые, устаревшие и недоступные (сообщение удалено) убираются. Сбой сети — повтор позже.
+    """
+    for item in list(pending):
+        if now - item.since > RETIME_MAX_AGE or item.tries >= RETIME_MAX_TRIES:
+            pending.remove(item)
+            continue
+        item.tries += 1
+        for row in item.event.get("rows") or []:  # старые пустые значения не мешают дозаполнению
+            row["item_times"] = row["shard_time"] = row["scepter_time"] = None
+        try:
+            board = await make_board(item.event, item.tz)
+        except Exception:
+            log.debug("Перерисовка оповещения %s не удалась", item.message_id, exc_info=True)
+            continue
+        if board.png is None or alert_untimed(item.event):
+            continue
+        try:
+            media = InputMediaPhoto(media=BufferedInputFile(board.png, filename="card.png"), caption=board.caption,
+                                    parse_mode="HTML")
+            await send_with_retry(partial(bot.edit_message_media, chat_id=item.chat_id, message_id=item.message_id,
+                                          media=media, reply_markup=item.markup))
+        except (TelegramForbiddenError, TelegramBadRequest, TelegramMigrateToChat):
+            log.info("Оповещение %s в чате %s обновить нельзя — оставляем как есть", item.message_id, item.chat_id)
+        except Exception:
+            log.debug("Не удалось обновить оповещение %s", item.message_id, exc_info=True)
+            continue
+        pending.remove(item)
+
+
+async def send_board(bot: Bot, chat_id: int, board: ImageBoard, markup=None):
     """Отчёт в чат: фото с подписью; нет картинки или Telegram её не принял — тот же отчёт текстом.
 
     Ошибки доступа к чату и сети летят наверх — решает вызывающий код (повтор в следующем опросе и т. п.).
@@ -61,9 +112,8 @@ async def send_board(bot: Bot, chat_id: int, board: ImageBoard, markup=None) -> 
     if board.png is not None:
         try:
             photo = BufferedInputFile(board.png, filename="card.png")
-            await send_with_retry(partial(bot.send_photo, chat_id, photo, caption=board.caption, parse_mode="HTML",
-                                          reply_markup=markup))
-            return
+            return await send_with_retry(partial(bot.send_photo, chat_id, photo, caption=board.caption,
+                                                 parse_mode="HTML", reply_markup=markup))
         except TelegramBadRequest:  # фото не принято (формат, размер, подпись) — текстом; «чат не найден» повторится и уйдёт наверх
             log.warning("Telegram не принял картинку для чата %s — шлём текстом", chat_id, exc_info=True)
     chunks = split_message(board.text)
@@ -177,6 +227,7 @@ def setup_scheduler(
 ) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler()
     keyless = not getattr(od, "api_key", None)
+    retime_pending: list[PendingRetime] = []
 
     async def heartbeat() -> None:
         """Отметка «жив» для healthcheck контейнера (mtime файла) + JSON со снимком состояния — тот же, что в /status."""
@@ -326,12 +377,15 @@ def setup_scheduler(
                 continue
             warm = False
             for event in events:
-                board = await alert_board(event, chat.tz, image=not chat.prefer_text, od=od)
+                board = await alert_board(event, chat.tz, image=not chat.prefer_text, od=od, stratz=stratz, storage=storage)
                 markup = alert_buttons(
                     event["match_id"], [(r["account_id"], r["name"], bool(r.get("double"))) for r in event["rows"]])
                 delivered = True
                 try:
-                    await send_board(bot, chat.chat_id, board, markup)
+                    sent = await send_board(bot, chat.chat_id, board, markup)
+                    if sent is not None and board.png is not None and alert_untimed(event):
+                        retime_pending.append(
+                            PendingRetime(chat.chat_id, sent.message_id, event, time.time(), chat.tz, markup))
                     # Задержка от конца игры — по ней видно, сколько матч шёл до нас от OpenDota.
                     ended = event["start_time"] + (event.get("duration") or 0)
                     log.info("Оповещение о матче %s отправлено в чат %s через %d мин после конца игры",
@@ -350,6 +404,14 @@ def setup_scheduler(
             if warm:  # пользователь, открывший /stats после оповещения, получает готовое
                 await warm_chat(storage, od, chat.chat_id, stratz)
                 await announce_contest_changes(chat, now)
+
+    async def retime_watch() -> None:
+        """Оповещения без таймингов: когда матч разобрали, картинку обновляем на месте."""
+        if retime_pending and background_allowed(od) and not provider_down(od):  # необязательная работа: лимит OpenDota бережём
+            async def make_board(event: dict, tz: str) -> ImageBoard:
+                return await alert_board(event, tz, od=od, stratz=stratz, storage=storage)
+
+            await retime_alerts(bot, retime_pending, make_board, time.time())
 
     async def presence_watch() -> None:
         """Оповещения «зашёл в Dota 2» (Steam Web API); без ключа задача не регистрируется."""
@@ -400,6 +462,7 @@ def setup_scheduler(
     # без ключа и пока пати не играет — не чаще раза в 10 минут, см. tracker.GAME_IDLE_COOLDOWN).
     scheduler.add_job(game_watch, "interval", minutes=4, misfire_grace_time=120, max_instances=1,
                       next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90))
+    scheduler.add_job(retime_watch, "interval", minutes=3, misfire_grace_time=120, max_instances=1)
     if steam is not None:
         scheduler.add_job(presence_watch, "interval", minutes=2, misfire_grace_time=120, max_instances=1,
                           next_run_time=datetime.now(timezone.utc) + timedelta(seconds=75))

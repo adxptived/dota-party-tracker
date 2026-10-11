@@ -110,6 +110,7 @@ def _party_size(players: list, me: dict) -> Optional[int]:
 class OpenDota:
     HISTORY_PAGE = 1000  # размер страницы при полной загрузке истории
     MATCH_CACHE_SIZE = 64  # сколько последних матчей держим в памяти
+    UNPARSED_MATCH_TTL = 60  # сек: матч без разбора (нет purchase_log) перезапрашиваем чаще — ждём тайминги покупок
     MATCH_CACHE_TTL = 600  # сек: свежий матч может дополниться — долго не держим
     REFRESH_GAP = 600  # сек: POST /refresh одного игрока не чаще (обновление у OpenDota всё равно асинхронное)
     REFRESH_GAP_NO_KEY = 1800  # без ключа каждый запрос на счету — пинаем реже
@@ -424,6 +425,10 @@ class OpenDota:
         "net_worth": "net_worth", "level": "level", "leaver_status": "leaver_status",
     }
 
+    def _match_ttl(self, match: dict) -> float:
+        parsed = any(p.get("purchase_log") for p in match.get("players") or [])
+        return self.MATCH_CACHE_TTL if parsed else min(self.UNPARSED_MATCH_TTL, self.MATCH_CACHE_TTL)
+
     def get_match(self, match_id: int) -> dict:
         """Полный матч /matches/{id} с короткоживущим кэшем в памяти.
 
@@ -432,13 +437,13 @@ class OpenDota:
         """
         with self._lock:
             hit = self._match_cache.get(match_id)
-            if hit and time.monotonic() - hit[0] < self.MATCH_CACHE_TTL:
+            if hit and time.monotonic() - hit[0] < self._match_ttl(hit[1]):
                 return hit[1]
             gate = self._match_locks.setdefault(match_id, threading.Lock())
         with gate:
             with self._lock:
                 hit = self._match_cache.get(match_id)
-                if hit and time.monotonic() - hit[0] < self.MATCH_CACHE_TTL:
+                if hit and time.monotonic() - hit[0] < self._match_ttl(hit[1]):
                     return hit[1]
             try:
                 match = self._get(f"/matches/{match_id}") or {}

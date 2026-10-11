@@ -182,3 +182,19 @@ def test_leader_announcements_column_is_added_and_off_for_existing_chats(tmp_pat
     storage = Storage(path)
     assert "notify_leaders" in _columns(path, "chats")
     assert storage.get_or_create_chat(7).notify_leaders is False
+
+
+def _tables(path) -> set:
+    conn = sqlite3.connect(path)
+    try:
+        return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        conn.close()
+
+
+def test_match_builds_table_added_to_existing_database(tmp_path):
+    path = str(tmp_path / "old.db")
+    migrations.migrate(path, [m for m in migrations.MIGRATIONS if m[0] <= 12], backup=False)
+    assert "match_builds" not in _tables(path)
+    Storage(path)
+    assert {"account_id", "match_id", "build"} <= _columns(path, "match_builds")

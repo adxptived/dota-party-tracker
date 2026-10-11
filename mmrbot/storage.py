@@ -475,6 +475,7 @@ class Storage:
         conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
         if conn.execute("SELECT 1 FROM players WHERE account_id = ? LIMIT 1", (account_id,)).fetchone() is None:
             conn.execute("DELETE FROM matches WHERE account_id = ?", (account_id,))
+            conn.execute("DELETE FROM match_builds WHERE account_id = ?", (account_id,))
             conn.execute("DELETE FROM accounts WHERE account_id = ?", (account_id,))
             conn.execute("DELETE FROM match_lineups WHERE match_id NOT IN (SELECT match_id FROM matches)")
 
@@ -1183,6 +1184,53 @@ class Storage:
                 self._remember_matches(account_id, cached)
         _, rows, starts = cached
         return list(rows) if since_ts is None else rows[bisect_left(starts, since_ts):]
+
+    # --- билды игроков по матчам ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _known_times(build: dict) -> int:
+        times = list(build.get("item_times") or []) + [build.get("shard_time"), build.get("scepter_time")]
+        return sum(isinstance(t, (int, float)) and not isinstance(t, bool) for t in times)
+
+    def save_build(self, account_id: int, match_id: int, build: dict) -> None:
+        """Сохранить билд игрока в матче. Билд с большим числом известных времён заменяет прежний, беднее — нет."""
+        if not build or not build.get("items"):
+            return
+        keep = {k: build.get(k) for k in ("items", "item_times", "neutral_item", "shard", "shard_time",
+                                           "scepter", "scepter_time")}
+        with self._conn() as conn:
+            row = conn.execute("SELECT build FROM match_builds WHERE account_id = ? AND match_id = ?",
+                               (account_id, match_id)).fetchone()
+            if row is not None:
+                try:
+                    if self._known_times(json.loads(row["build"])) >= self._known_times(keep):
+                        return
+                except (ValueError, TypeError):
+                    pass
+            conn.execute("INSERT INTO match_builds (account_id, match_id, build) VALUES (?, ?, ?) "
+                         "ON CONFLICT(account_id, match_id) DO UPDATE SET build = excluded.build",
+                         (account_id, match_id, json.dumps(keep, ensure_ascii=False)))
+
+    def get_builds(self, account_id: int, match_ids: list) -> dict:
+        """{match_id: билд} из сохранённых; нет записи или она битая — матча в ответе нет."""
+        result: dict = {}
+        if not match_ids:
+            return result
+        with self._conn() as conn:
+            for chunk in range(0, len(match_ids), 500):
+                ids = list(match_ids[chunk:chunk + 500])
+                rows = conn.execute(
+                    f"SELECT match_id, build FROM match_builds WHERE account_id = ? "
+                    f"AND match_id IN ({','.join('?' * len(ids))})", (account_id, *ids)).fetchall()
+                for row in rows:
+                    try:
+                        result[row["match_id"]] = json.loads(row["build"])
+                    except (ValueError, TypeError):
+                        continue
+        return result
+
+    def get_build(self, account_id: int, match_id: int) -> Optional[dict]:
+        return self.get_builds(account_id, [match_id]).get(match_id)
 
     def _remember_matches(self, account_id: int, entry: tuple) -> None:
         with self._matches_cache_lock:

@@ -42,6 +42,7 @@ query {
       numLastHits numDenies level
       additionalUnit { item0Id item1Id item2Id item3Id item4Id item5Id neutral0Id }
       steamAccount { name }
+      stats { itemPurchases { time itemId } }
     }
   }
 }
@@ -59,6 +60,16 @@ def _lane_outcomes(match: Optional[dict]) -> dict:
     match = match or {}
     return {"top": match.get("topLaneOutcome"), "mid": match.get("midLaneOutcome"),
             "bottom": match.get("bottomLaneOutcome")}
+
+
+def _purchase_times(stats) -> dict:
+    """{id предмета: время (сек) последней покупки} из stats.itemPurchases; Stratz разбирает матч сам, без «разбора»."""
+    times: dict = {}
+    for entry in (stats or {}).get("itemPurchases") or []:
+        item, when = (entry or {}).get("itemId"), (entry or {}).get("time")
+        if isinstance(item, int) and isinstance(when, (int, float)) and not isinstance(when, bool):
+            times[item] = max(times.get(item, when), when)
+    return times
 
 
 def _position(value) -> Optional[int]:
@@ -253,6 +264,9 @@ class Stratz:
             }
             for src, out in _FIELD_MAP.items():
                 player[out] = row.get(src)
+            purchases = _purchase_times(row.get("stats"))
+            if purchases:
+                player["purchases"] = purchases
             unit = row.get("additionalUnit")  # второй инвентарь: медведь Лон Друида (у остальных героев null)
             if isinstance(unit, dict):
                 bear = [unit.get(f"item{i}Id") for i in range(6)]

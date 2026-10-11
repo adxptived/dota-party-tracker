@@ -32,12 +32,13 @@ KDA_X = 760
 RIGHT = WIDTH - PAD - 24
 FOOT_H = 76
 STRIP_H = 52  # полоса под строкой игрока: билд, апгрейды, фарм, ранг (только если есть что показать)
-TIME_H = 18  # + подписи времени покупки под иконками предметов
+TIME_H = 20  # + подписи времени покупки под иконками предметов
 ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
 BADGE = 40
 UPGRADE_SIZE = 32
 STRIP_TEXT_X = 610  # ячейки экономики и урона — правее билда и значков апгрейдов
 STRIP_CELL_W = 112
+TIME_COLOR = cards.TIME_COLOR
 
 
 def _outcome(rows: list) -> tuple[str, str]:
@@ -137,7 +138,7 @@ def _draw_banner(img, draw, y: int, event: dict, tz: str, label: str, color: str
                          outline=cards.mix(PANEL, color, 0.42))
     cards.stripe(img, PAD, y + 20, y + BANNER_H - 20, color)
     when = fmt_local(event.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
-    sub = "Матч завершён  ·  " + when + (f"  ·  {event['duration'] // 60} мин" if event.get("duration") else "")
+    sub = "Матч завершён  ·  " + when + (f"  ·  {clock(event['duration'])}" if event.get("duration") else "")
     score = match_score(event)
     if score and score["mixed"]:  # игроки на разных сторонах: «наш» счёт не определён — подписываем стороны
         sub += f"  ·  Radiant {score['left']} : {score['right']} Dire"
@@ -284,7 +285,7 @@ def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
     for i, item_id in enumerate(row.get("items") or []):
         cards.paste(img, _item_icon(item_icons.get(item_id)), x, mid - ITEM_H / 2)
         if i < len(times) and times[i]:
-            draw_text(draw, (x + ITEM_W / 2, mid + ITEM_H / 2 + 11), times[i], 15, MUTED, anchor="mm")
+            draw_text(draw, (x + ITEM_W / 2, mid + ITEM_H / 2 + 12), times[i], 17, TIME_COLOR, anchor="mm", track=False)
         x += ITEM_W + ITEM_GAP
     if row.get("neutral_item"):
         x += 10
@@ -299,8 +300,8 @@ def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
                 x += cards.pill(img, draw, x, mid, f"{label} {when}".strip(), BG, color, size=16, pad=10) + 8
                 continue
             if when:  # время покупки — подписью под иконкой, как у предметов
-                draw_text(draw, (x + icon_w / 2, mid + ITEM_H / 2 + 11), when, 15, MUTED, anchor="mm")
-            x += max(icon_w, cards.text_width(when, 15) if when else 0) + 10
+                draw_text(draw, (x + icon_w / 2, mid + ITEM_H / 2 + 12), when, 17, TIME_COLOR, anchor="mm", track=False)
+            x += max(icon_w, cards.text_width(when, 17) if when else 0) + 10
     limit = RIGHT
     if row.get("rank_tier"):
         rank = rank_label(row["rank_tier"])

@@ -149,3 +149,30 @@ def test_best_damage_and_gpm_in_match_are_bold(drawn):
     plain = {t[0] for t in drawn if not t[2]}
     assert "45.0k" in bold and "777 / 650" in bold
     assert "21.0k" in plain and "600 / 650" in plain
+
+
+def test_header_explains_missing_times_instead_of_leaving_blanks(monkeypatch):
+    from mmrbot import match_image
+    captured = []
+    real = match_image.draw_text
+    monkeypatch.setattr(match_image, "draw_text", lambda d, xy, text, *a, **k: (captured.append(text), real(d, xy, text, *a, **k))[1])
+    match = _full_match()
+    for p in match["players"]:
+        p.update(items=[1, 2], item_times=[None, None])
+    render_match_image(match, {}, focus=1)
+    assert match_image.UNTIMED_HEAD in captured and "БИЛД · ВРЕМЯ ПОКУПКИ" not in captured
+    captured.clear()
+    match["players"][0]["item_times"] = [300, None]
+    render_match_image(match, {}, focus=1)
+    assert "БИЛД · ВРЕМЯ ПОКУПКИ" in captured
+
+
+def test_build_block_does_not_run_into_the_kda_column():
+    """Билд (6 слотов, нейтралка, значки шарда/скипетра с временем) целиком левее K/D/A даже при трёхзначных числах."""
+    from mmrbot import cards, match_image as mi
+    neutral_end = mi.ITEMS_X + 6 * (mi.SLOT_W + mi.SLOT_GAP) + 8 + mi.SLOT_W
+    assert neutral_end <= mi.TAGS_X
+    upgrade_end = mi.TAGS_X + mi.UPGRADE_SIZE + 6 + cards.text_width("99:59", 15)
+    assert upgrade_end <= mi.ITEMS_END
+    kda_cx = next(cx for key, cx, _ in mi.COLUMNS if key == "kda")
+    assert mi.ITEMS_END <= kda_cx - cards.text_width("29 / 29 / 29", 28, True) / 2

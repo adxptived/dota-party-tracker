@@ -341,3 +341,25 @@ def test_daily_board_attaches_the_build_of_the_best_game():
     asyncio.run(service._attach_best_build(Broken(), report))
     assert "build" not in report["best_game"]
     asyncio.run(service._attach_best_build(None, report))
+
+
+def test_daily_best_build_gets_times_from_stratz_and_is_kept_in_db(tmp_path):
+    from mmrbot.storage import Storage
+    store = Storage(str(tmp_path / "d.db"))
+
+    class Od:
+        def get_match_builds(self, match_id):
+            return {1: {"items": [1, 2], "item_times": [None, None], "shard": True, "shard_time": None}}
+
+    class Stratz:
+        def get_match(self, match_id):
+            return {"players": [{"account_id": 42, "purchases": {1: 300, 2: 600, 609: 900}}]}
+
+    report = {"best_game": {"match": {"match_id": 5, "hero_id": 1, "account_id": 42}}}
+    asyncio.run(service._attach_best_build(Od(), report, Stratz(), store))
+    assert report["best_game"]["build"]["item_times"] == [300, 600] and report["best_game"]["build"]["shard_time"] == 900
+    assert store.get_build(42, 5)["item_times"] == [300, 600]
+
+    again = {"best_game": {"match": {"match_id": 5, "hero_id": 1, "account_id": 42}}}  # API недоступны — берём из БД
+    asyncio.run(service._attach_best_build(None, again, None, store))
+    assert again["best_game"]["build"]["item_times"] == [300, 600]

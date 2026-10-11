@@ -36,10 +36,13 @@ NAME_W_BEAR = 200  # в строке медведя левее предмето�
 NAME_W_FREE = 640  # без билда ник может занять всё место до K/D/A
 ITEMS_X = 452
 SLOT_W, SLOT_H, SLOT_GAP = 44, 33, 3
-TAGS_X = 800  # иконки шарда и скипетра — после предметов и нейтралки
-UPGRADE_SIZE = 24
+TIME_COLOR = cards.TIME_COLOR
+TAGS_X = 800
+ITEMS_END = 878  # правее — K/D/A
+UNTIMED_HEAD = "БИЛД · времена после разбора матча"  # иконки шарда и скипетра — после предметов и нейтралки
+UPGRADE_SIZE = 26
 # центры колонок (x) и их заголовки
-COLUMNS = [("kda", 940, "K / D / A"), ("nw", 1090, "НЕТВОРС"), ("gpm", 1225, "GPM / XPM"),
+COLUMNS = [("kda", 958, "K / D / A"), ("nw", 1090, "НЕТВОРС"), ("gpm", 1225, "GPM / XPM"),
            ("dmg", 1360, "УРОН"), ("imp", 1480, "IMP")]
 
 
@@ -54,6 +57,11 @@ def _ids(values) -> list:
 
 def _has_build(players: list[dict]) -> bool:
     return any(p.get("items") or p.get("neutral_item") or _ids(p.get("bear_items")) for p in players)
+
+
+def _has_times(players: list[dict]) -> bool:
+    """Известно ли время покупки хоть одного предмета в матче (иначе под иконками пусто — объясняем почему)."""
+    return any(_num(t) for p in players for t in (p.get("item_times") or []) + (p.get("bear_item_times") or []))
 
 
 def _has_bear(p: dict) -> bool:
@@ -86,6 +94,7 @@ def render_match_image(match: dict, tracked: dict, focus=None, tz: str = "UTC",
     teams = [(side, team) for side, team in teams if team]
     me = next((p for p in players if focus is not None and p.get("account_id") == focus), None)
     build = _has_build(players)
+    timed = _has_times(players)
     height = _height([team for _, team in teams]) if teams else HEAD_H + PAD
 
     radiant_win = match.get("radiant_win")
@@ -103,7 +112,7 @@ def render_match_image(match: dict, tracked: dict, focus=None, tz: str = "UTC",
     # --- шапка: слева матч и время, по центру счёт по убийствам, справа исход ---
     draw_text(draw, (PAD, 26), f"Матч {match.get('match_id')}", 40, FG, bold=True)
     when = fmt_local(match.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
-    sub = when + (f"  ·  {match['duration'] // 60} мин" if match.get("duration") else "")
+    sub = when + (f"  ·  {clock(match['duration'])}" if match.get("duration") else "")
     draw_text(draw, (PAD, 82), sub, 22, MUTED)
     if label:
         cards.pill(img, draw, MATCH_WIDTH - PAD, 62, label, BG, color, size=28, align="right", pad=24)
@@ -124,7 +133,8 @@ def render_match_image(match: dict, tracked: dict, focus=None, tz: str = "UTC",
         if radiant_win is not None and bool(radiant_win) == side:
             cards.chip(img, draw, tx, y + 28, "победа", team_color, size=18, pad=12)
         if build:
-            draw_text(draw, (ITEMS_X, y + 30), "БИЛД · ВРЕМЯ ПОКУПКИ", 18, MUTED, anchor="lm")
+            draw_text(draw, (ITEMS_X, y + 30), "БИЛД · ВРЕМЯ ПОКУПКИ" if timed else UNTIMED_HEAD, 18, MUTED,
+                      anchor="lm", max_w=ITEMS_END - ITEMS_X)
         for _key, cx, head in COLUMNS:
             draw_text(draw, (cx, y + 30), head, 18, MUTED, anchor="mm")
         y += TEAM_HEAD_H
@@ -185,10 +195,11 @@ def _draw_items(img, draw, top: float, items, times, neutral, item_icons: dict) 
         cards.paste(img, _item_icon(item_icons.get(item_id), SLOT_W, SLOT_H, 5), x, top)
         when = clock(times[i]) if i < len(times) else ""
         if when:
-            draw_text(draw, (x + SLOT_W / 2, top + SLOT_H + 10), when, 14, MUTED, anchor="mm")
+            draw_text(draw, (x + SLOT_W / 2, top + SLOT_H + 12), when, 15, TIME_COLOR, anchor="mm", track=False)
         x += SLOT_W + SLOT_GAP
     if isinstance(neutral, int) and not isinstance(neutral, bool) and neutral:
-        cards.paste(img, _item_icon(item_icons.get(neutral), SLOT_W, SLOT_H, 5), x + 5, top)
+        draw.line((x + 2, top + 3, x + 2, top + SLOT_H - 3), fill=cards.mix(PANEL, "#ffffff", 0.22), width=2)  # нейтралка — не слот билда
+        cards.paste(img, _item_icon(item_icons.get(neutral), SLOT_W, SLOT_H, 5), x + 8, top)
 
 
 def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
@@ -203,9 +214,15 @@ def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
                     item_icons)
         draw_text(draw, (ITEMS_X - 10, top + SLOT_H / 2), "Герой", 14, MUTED, anchor="rm")
         draw_text(draw, (ITEMS_X - 10, bear_top + SLOT_H / 2), "Медведь", 14, MUTED, anchor="rm")
-    for cy, key, tag, color in ((mid - 14, "shard", "Ш", ACCENT), (mid + 14, "scepter", "С", GOLD)):
-        if p.get(key) and paste_upgrade(img, key, TAGS_X, cy, UPGRADE_SIZE) is None:
-            cards.pill(img, draw, TAGS_X, cy, tag, BG, color, size=13, pad=5)
+    for cy, key, tag, color in ((mid - 15, "shard", "Ш", ACCENT), (mid + 15, "scepter", "С", GOLD)):
+        if not p.get(key):
+            continue
+        icon_w = paste_upgrade(img, key, TAGS_X, cy, UPGRADE_SIZE)
+        if icon_w is None:
+            icon_w = cards.pill(img, draw, TAGS_X, cy, tag, BG, color, size=13, pad=5)
+        when = clock(p.get(f"{key}_time"))
+        if when:  # время покупки шарда/скипетра — справа от значка, как у предметов
+            draw_text(draw, (TAGS_X + icon_w + 6, cy), when, 15, TIME_COLOR, anchor="lm", track=False)
 
 
 def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons: Optional[dict] = None,

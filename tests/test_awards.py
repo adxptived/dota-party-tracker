@@ -138,3 +138,13 @@ def test_player_with_too_few_benchmarked_games_is_left_out_of_relative_gpm():
     c = [gb(1, 900, 40000, 0.99, 0.99), gb(2, 900, 40000), gb(3, 900, 40000)]  # процент только в одной игре
     gpm = nomination(compute_standings([("A", a), ("B", b), ("C", c)]), "gpm")
     assert [e["player"] for e in gpm["entries"]] == ["A", "B"]
+
+
+def test_fast_shard_award_goes_to_the_earliest_average_and_needs_two_samples():
+    a = [dict(g(i), shard_time=900) for i in (1, 2, 3)]
+    b = [dict(g(i), shard_time=1500) for i in (1, 2, 3)]
+    r = by_key(compute_period_awards([("A", a), ("B", b)]))
+    assert r["fast_shard"]["player"] == "A" and "15:00" in r["fast_shard"]["detail"]
+    one = [dict(g(1), shard_time=300), g(2), g(3)]  # одно время — не показатель
+    r = by_key(compute_period_awards([("A", one), ("B", b)]))
+    assert "fast_shard" not in r

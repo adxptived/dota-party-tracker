@@ -121,7 +121,7 @@ def _draw_best_build(img, draw, x: float, top: float, build: dict, item_icons: d
         cards.paste(img, _item_icon(item_icons.get(item_id), BEST_ITEM_W, BEST_ITEM_H, 6), x, top)
         when = clock(times[i]) if i < len(times) else ""
         if when:
-            draw_text(draw, (x + BEST_ITEM_W / 2, top + BEST_ITEM_H + 14), when, 16, MUTED, anchor="mm")
+            draw_text(draw, (x + BEST_ITEM_W / 2, top + BEST_ITEM_H + 14), when, 16, cards.TIME_COLOR, anchor="mm", track=False)
         x += BEST_ITEM_W + BEST_ITEM_GAP
     neutral = build.get("neutral_item")
     if isinstance(neutral, int) and not isinstance(neutral, bool) and neutral:
@@ -138,7 +138,7 @@ def _draw_best_build(img, draw, x: float, top: float, build: dict, item_icons: d
             width = cards.pill(img, draw, x, top + BEST_ITEM_H / 2, label, BG, color, size=18, pad=10)
         when = clock(build.get(f"{key}_time"))
         if when:
-            draw_text(draw, (x + width / 2, top + BEST_ITEM_H + 14), when, 16, MUTED, anchor="mm")
+            draw_text(draw, (x + width / 2, top + BEST_ITEM_H + 14), when, 16, cards.TIME_COLOR, anchor="mm", track=False)
         x += width + 14
 
 

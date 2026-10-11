@@ -311,6 +311,44 @@ def test_enrich_match_builds_dates_bear_items_by_purchase_log():
         _reset_items(saved)
 
 
+def test_enrich_match_builds_fills_missing_times_from_stratz_purchases():
+    from mmrbot.tracker import enrich_match_builds
+
+    class Client:
+        health = None
+
+        def get_match_builds(self, match_id):  # матч в OpenDota не разобран: покупок нет
+            return {8: {"items": [1, 2, 3], "item_times": [None, 300, None], "shard": True, "shard_time": None,
+                        "scepter": True, "scepter_time": None}}
+
+    match = {"match_id": 5, "players": [{"hero_id": 8, "bear_items": [4, 5],
+                                         "purchases": {1: 641, 2: 999, 4: 700, 609: 1450, 108: 1800}}]}
+    enrich_match_builds(Client(), match)
+    p = match["players"][0]
+    assert p["item_times"] == [641, 300, None]  # OpenDota приоритетнее, Stratz — только вместо пустого
+    assert p["bear_item_times"] == [700, None]
+    assert p["shard_time"] == 1450 and p["scepter_time"] == 1800
+
+
+def test_enrich_match_builds_does_not_request_parse_when_stratz_has_times():
+    from mmrbot.tracker import enrich_match_builds
+
+    class Client:
+        health = None
+        requested = []
+
+        def get_match_builds(self, match_id):
+            return {8: {"items": [1], "item_times": [None]}}
+
+        def request_parse(self, match_id):
+            self.requested.append(match_id)
+
+    client = Client()
+    match = {"match_id": 5, "players": [{"hero_id": 8, "purchases": {1: 300}}]}
+    enrich_match_builds(client, match)
+    assert match["players"][0]["item_times"] == [300] and client.requested == []
+
+
 def test_справочник_предметов_переживает_перезапуск(tmp_path):
     items.ITEM_SLUGS.clear()
     path = tmp_path / "item_ids.json"
@@ -351,3 +389,26 @@ def test_get_match_score_falls_back_to_player_kills_and_hides_partial_gold():
     od = OpenDota(session=FakeApiSession({"players": players}), min_interval=0)
     assert od.get_match_score(9) == {"radiant": 6, "dire": 10, "gold": None}  # золото известно не у всех десяти
     assert OpenDota(session=FakeApiSession({}), min_interval=0).get_match_score(1) is None
+
+
+def test_enrich_alert_items_fills_missing_times_from_stratz():
+    client = FakeClient({1: {"items": [1, 2], "item_times": [None, 300], "shard": True, "shard_time": None}})
+
+    class Stratz:
+        calls = []
+
+        def get_match(self, match_id):
+            self.calls.append(match_id)
+            return {"players": [{"account_id": 1, "purchases": {1: 641, 2: 999, 609: 1450}}]}
+
+    event, stratz = _event(), Stratz()
+    enrich_alert_items(client, event, stratz)
+    first = event["rows"][0]
+    assert first["item_times"] == [641, 300] and first["shard_time"] == 1450
+    assert stratz.calls == [9]
+
+    class Broken:
+        def get_match(self, match_id):
+            raise RuntimeError("boom")
+
+    enrich_alert_items(client, _event(), Broken())  # сбой Stratz не ломает оповещение
