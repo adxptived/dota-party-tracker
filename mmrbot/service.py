@@ -59,7 +59,7 @@ from mmrbot.heroes_image import LIMIT as HEROES_LIMIT
 from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image
 from mmrbot.match_image import render_match_image
 from mmrbot.matchups_image import render_matchups_image
-from mmrbot.opendota import OpenDota
+from mmrbot.opendota import OpenDota, match_from_opendota
 from mmrbot.ranks import rank_label
 from mmrbot import matchups, seasons, stats
 from mmrbot.player_image import render_player_image
@@ -866,6 +866,17 @@ def _warm_match(od, match_id: int) -> None:
         log.debug("Прогрев матча %s в OpenDota не удался", match_id, exc_info=True)
 
 
+async def _opendota_match(od, match_id: int) -> Optional[dict]:
+    """Полный матч из OpenDota в формате Stratz; None — не нашёлся, сервис лежит или сеть отказала."""
+    if od is None or provider_down(od):
+        return None
+    try:
+        return match_from_opendota(await asyncio.to_thread(od.get_match, match_id))
+    except Exception as exc:
+        log_network_error(log, f"OpenDota: не удалось получить матч {match_id}", exc, health=getattr(od, "health", None))
+        return None
+
+
 MATCH_REFRESH_WAIT = 6.0  # сек: «последний матч» ждёт обновление дольше обычных команд — он про свежую игру
 
 
@@ -926,6 +937,8 @@ async def match_board(
             log_network_error(log, f"Stratz: не удалось получить матч {match_id}", exc, health=getattr(stratz, "health", None))
         if warm is not None:
             await warm
+    if full is None:  # Stratz матча не знает или недоступен — полный матч берём у OpenDota
+        full = await _opendota_match(od, match_id)
     if full is None and cached is None and name:  # матч своего игрока по id — без Stratz из кэша БД
         cached = await _build(build_match_view, storage, chat_id, name, match_id)
     tz = storage.get_or_create_chat(chat_id).tz
@@ -940,7 +953,7 @@ async def match_board(
     elif stratz is None:
         return MatchBoard(STRATZ_OFF)
     else:
-        return MatchBoard(f"Матч {match_id} не найден в Stratz (возможно, не ранкед или скрыт).")
+        return MatchBoard(f"Матч {match_id} не найден ни в Stratz, ни в OpenDota (возможно, скрыт или ещё не появился).")
     if want_image(storage, chat_id, image):
         try:
             board.png = await _render(_render_match_png, match, tracked, focus, tz, icons, od, stratz, storage)

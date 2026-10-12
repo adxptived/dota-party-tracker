@@ -279,7 +279,7 @@ def test_match_by_id_any_match_without_stratz_cache(env):
 
 def test_match_unknown_id(env):
     msg = call(botmod.cmd_match, "match", "9999999999", env)
-    assert "не найден в Stratz" in msg.texts and not msg.photos
+    assert "не найден ни в Stratz, ни в OpenDota" in msg.texts and not msg.photos
 
 
 def test_match_by_id_for_stranger_works_when_chat_has_no_players(tmp_path):

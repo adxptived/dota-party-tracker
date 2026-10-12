@@ -91,6 +91,29 @@ def lineup_of(players) -> Optional[tuple[list, list]]:
     return (radiant, dire) if radiant and dire else None
 
 
+def match_from_opendota(raw: dict) -> Optional[dict]:
+    """Матч OpenDota (`/matches/{id}`) → формат `Stratz.get_match`: запасной вариант, когда Stratz матча не знает.
+
+    None — игроков нет (пустой ответ). Позиции/роли/IMP у OpenDota другие — их не заполняем.
+    """
+    players = []
+    for row in (raw or {}).get("players") or []:
+        slot = row.get("player_slot")
+        players.append({
+            "account_id": row.get("account_id"), "name": row.get("personaname") or row.get("name"),
+            "is_radiant": bool(row["isRadiant"]) if "isRadiant" in row else (slot or 0) < 128,
+            "hero_id": row.get("hero_id"), "kills": row.get("kills"), "deaths": row.get("deaths"),
+            "assists": row.get("assists"), "gpm": row.get("gold_per_min"), "xpm": row.get("xp_per_min"),
+            "net_worth": row.get("net_worth"), "hero_damage": row.get("hero_damage"),
+            "tower_damage": row.get("tower_damage"), "hero_healing": row.get("hero_healing"),
+            "last_hits": row.get("last_hits"), "denies": row.get("denies"), "level": row.get("level"),
+        })
+    if not players:
+        return None
+    return {"match_id": raw.get("match_id"), "start_time": raw.get("start_time"), "duration": raw.get("duration"),
+            "radiant_win": raw.get("radiant_win"), "players": players}
+
+
 def _party_size(players: list, me: dict) -> Optional[int]:
     """Размер пати игрока из состава матча: party_size от OpenDota, иначе союзники с тем же party_id."""
     size = me.get("party_size")
