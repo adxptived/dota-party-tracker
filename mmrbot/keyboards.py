@@ -4,7 +4,8 @@
 выбор игрока; `x:close` — удалить сообщение; `r:<период>` — рекорды; `c:<период>` — соревнование чата; `hp:<account_id>:<период>` / `rp:<account_id>:<период>` — герои/позиции с периодом;
 `tx:<вид>:<аргументы>` — тот же отчёт текстом (кнопка «📝 Текстом» под любой карточкой-картинкой;
 старое `mt:<match_id>:<account_id|0>` = `tx:match:…` понимается для уже отправленных сообщений);
-`mx:<match_id>` — весь матч картинкой (кнопка под оповещением о конце матча).
+`mx:<match_id>[:<account_id>]` — весь матч картинкой (кнопка под оповещением и под текстовой карточкой матча);
+`ml:<account_id>:<смещение>` — список матчей игрока, `md:<account_id>:<match_id>:<смещение>` — карточка его матча.
 """
 from __future__ import annotations
 
@@ -201,7 +202,7 @@ def player_actions(account_id: int) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [btn("🦸 Герои", "heroes"), btn("🎯 Позиции", "roles")],
-        [btn("🎭 Steam", "steam")],
+        [btn("📜 Матчи", "matches"), btn("🎭 Steam", "steam")],
         nav_row(),
     ])
 
@@ -236,15 +237,52 @@ def without_text_button(markup: Optional[InlineKeyboardMarkup]) -> Optional[Inli
     return InlineKeyboardMarkup(inline_keyboard=[row for row in rows if row])
 
 
-def match_photo_buttons(match_id: int, focus, text_shown: bool = False) -> InlineKeyboardMarkup:
+def match_photo_buttons(match_id: int, focus, text_shown: bool = False, full: bool = False) -> InlineKeyboardMarkup:
     """Под картинкой матча: «Текстом» (`tx:match:<match_id>:<account_id|0>`), ссылка на Dotabuff, навигация.
 
     text_shown — текст уже отправлен: кнопку «Текстом» убираем, чтобы не плодить дубли.
+    full — под карточкой одного игрока (картинки нет): добавляем «🎮 Весь матч».
     """
     row = [InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{match_id}")]
     if not text_shown:
         row.insert(0, text_button("match", match_id, focus or 0))
-    return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
+    rows = [row, nav_row()]
+    if full:
+        rows.insert(0, [full_match_button(match_id, focus)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+MATCHES_PAGE = 10
+
+
+def full_match_button(match_id: int, focus=None) -> InlineKeyboardButton:
+    """«🎮 Весь матч» (`mx:<match_id>[:<account_id>]`): все 10 игроков картинкой, игрок focus подсвечен."""
+    return InlineKeyboardButton(text="🎮 Весь матч", callback_data=f"mx:{match_id}" + (f":{focus}" if focus else ""))
+
+
+def match_list_buttons(account_id: int, items: list, offset: int, total: int) -> InlineKeyboardMarkup:
+    """Список матчей игрока: кнопка на матч (`md:<account_id>:<match_id>:<смещение>`) и «◀️ ▶️» по страницам (`ml:`)."""
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"md:{account_id}:{match_id}:{offset}")]
+            for label, match_id in items]
+    pager = []
+    if offset > 0:
+        pager.append(InlineKeyboardButton(text="◀️ Новее", callback_data=f"ml:{account_id}:{max(offset - MATCHES_PAGE, 0)}"))
+    if offset + MATCHES_PAGE < total:
+        pager.append(InlineKeyboardButton(text="Старше ▶️", callback_data=f"ml:{account_id}:{offset + MATCHES_PAGE}"))
+    if pager:
+        rows.append(pager)
+    rows.append(nav_row())
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def match_card_buttons(account_id: int, match_id: int, offset: int = 0) -> InlineKeyboardMarkup:
+    """Под карточкой матча игрока: весь матч, Dotabuff, назад к списку."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [full_match_button(match_id, account_id),
+         InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{match_id}")],
+        [InlineKeyboardButton(text="⬅️ К списку", callback_data=f"ml:{account_id}:{offset}")],
+        nav_row(),
+    ])
 
 
 DOUBLE_ON, DOUBLE_OFF = "✅ ×2", "×2"

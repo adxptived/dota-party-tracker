@@ -1133,6 +1133,21 @@ def render_roles(name: str, rows: list[dict], period: str = "all") -> str:
     return title + "\n\n" + "\n".join(blocks)
 
 
+def match_button_label(row: dict, tz: str = "UTC") -> str:
+    """Подпись кнопки матча в списке: «🏆 Pudge 12/3/8 · 14.10»."""
+    from mmrbot.stats import is_win
+    mark = "🏆" if is_win(row["player_slot"], row["radiant_win"]) else "💀"
+    score = f"{row.get('kills') or 0}/{row.get('deaths') or 0}/{row.get('assists') or 0}"
+    return f"{mark} {hero_name(row.get('hero_id'))} {score} · {fmt_local(row['start_time'], tz, '%d.%m')}"
+
+
+def render_match_list_title(player_name: str, total: int, offset: int, shown: int) -> str:
+    if not total:
+        return f"📜 <b>{_esc(player_name)}</b>: ранкед-матчей пока нет."
+    return (f"📜 <b>Матчи: {_esc(player_name)}</b> · {offset + 1}–{offset + shown} из {total}\n"
+            "Выберите матч — покажу всю статистику игрока.")
+
+
 def render_match_card(view: dict, tz: str = "UTC") -> str:
     from mmrbot.stats import is_win
     player, row = view["player"], view["match"]

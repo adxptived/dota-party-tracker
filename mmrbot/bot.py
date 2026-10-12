@@ -18,11 +18,11 @@ from mmrbot import commands as cmd
 from mmrbot import perf, seasons
 from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, is_chat_admin, may_manage
-from mmrbot.formatting import render_mmr_set, render_player_list, render_settings, render_steam_profile, tz_label
+from mmrbot.formatting import match_button_label, render_match_card, render_match_list_title, render_mmr_set, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_photo_buttons, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, contest_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_card_buttons, match_list_buttons, match_photo_buttons, MATCHES_PAGE, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, contest_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
@@ -760,7 +760,36 @@ async def do_match(message: Message, storage: Storage, od: OpenDota, name, match
         await _delete(status)
         await message.answer(FAILED, reply_markup=nav_menu())
         return
-    await _reply_image(message, board, match_photo_buttons(board.match_id, board.focus), status)
+    full = board.png is None and board.match_id is not None  # одна карточка из кэша — даём путь к полной
+    await _reply_image(message, board, match_photo_buttons(board.match_id, board.focus, full=full), status)
+
+
+async def do_match_list(message: Message, storage: Storage, account: str, offset: int) -> None:
+    """Список матчей игрока (новые сверху, по MATCHES_PAGE) — кнопка на каждый открывает его статистику."""
+    player = storage.get_player(message.chat.id, account)
+    if player is None:
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    rows = sorted((m for m in storage.get_matches(player.id) if m.get("lobby_type") == 7),
+                  key=lambda m: m["start_time"], reverse=True)
+    offset = min(max(offset, 0), max((len(rows) - 1) // MATCHES_PAGE * MATCHES_PAGE, 0))
+    page = rows[offset:offset + MATCHES_PAGE]
+    tz = storage.get_or_create_chat(message.chat.id).tz
+    items = [(match_button_label(m, tz), m["match_id"]) for m in page]
+    await message.answer(render_match_list_title(player.display_name, len(rows), offset, len(page)),
+                         parse_mode="HTML", reply_markup=match_list_buttons(player.account_id, items, offset, len(rows)))
+
+
+async def do_match_detail(message: Message, storage: Storage, account: str, match_id: int, offset: int) -> None:
+    """Вся статистика игрока в матче (из БД, без сети) + «🎮 Весь матч»."""
+    player = storage.get_player(message.chat.id, account)
+    row = storage.get_match(player.id, match_id) if player else None
+    if row is None:
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    tz = storage.get_or_create_chat(message.chat.id).tz
+    await message.answer(render_match_card({"player": player, "match": row}, tz), parse_mode="HTML",
+                         reply_markup=match_card_buttons(player.account_id, match_id, offset))
 
 
 # Текстовые версии карточек для кнопки «📝 Текстом»: вид → корутина (storage, od, chat_id, args, stratz) → текст.
@@ -1286,7 +1315,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx", "ml", "md"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -1319,7 +1348,19 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             match_id = int(args[0])
         except (IndexError, ValueError):
             return
-        await do_match(message, storage, od, None, match_id, stratz)
+        focus = storage.get_player(message.chat.id, args[1]) if len(args) > 1 else None
+        await do_match(message, storage, od, focus.display_name if focus else None, match_id, stratz)
+        return
+
+    if kind in {"ml", "md"}:  # список матчей игрока и карточка его матча — правят то же сообщение
+        try:
+            numbers = [int(a) for a in args[1:]]
+            if kind == "ml" and len(numbers) == 1:
+                await do_match_list(_InPlace(message), storage, args[0], numbers[0])
+            elif kind == "md" and len(numbers) == 2:
+                await do_match_detail(_InPlace(message), storage, args[0], numbers[0], numbers[1])
+        except ValueError:
+            pass
         return
 
     if kind in {"tx", "mt"}:  # mt — прежний формат кнопки «Текстом» под матчем (сообщения уже в чатах)
@@ -1426,7 +1467,9 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
 
     if kind == "pp" and len(args) == 2:
         pick, account = args
-        if pick == "heroes":
+        if pick == "matches":
+            await do_match_list(message, storage, account, 0)
+        elif pick == "heroes":
             await do_player_heroes(message, storage, od, account, "all", stratz)
         elif pick == "roles":
             await do_roles(message, storage, od, account, "all", stratz)
