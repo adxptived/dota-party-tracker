@@ -233,6 +233,17 @@ def recent_form(matches: list[dict], n: int = 5) -> list[bool]:
     return [is_win(m["player_slot"], m["radiant_win"]) for m in tail]
 
 
+def recent_games(matches: list[dict], step: int, n: int = 6) -> list[dict]:
+    """Последние n матчей, новые первыми: герой, исход, K/D/A, длительность, время начала и ±MMR за игру."""
+    tail = sorted(matches, key=lambda m: m.get("start_time") or 0)[-n:][::-1]
+    return [{
+        "match_id": m.get("match_id"), "hero_id": m.get("hero_id"), "start_time": m.get("start_time"),
+        "won": is_win(m["player_slot"], m["radiant_win"]), "kills": m.get("kills") or 0,
+        "deaths": m.get("deaths") or 0, "assists": m.get("assists") or 0, "duration": m.get("duration"),
+        "delta": match_mmr_delta(m, step), "double_down": bool(m.get("double_down")),
+    } for m in tail]
+
+
 BEST_GAME_MIN_KA = 10  # меньше убийств+помощи игра «лучшей» не бывает (0 смертей при 2 помощи — не рекорд)
 
 

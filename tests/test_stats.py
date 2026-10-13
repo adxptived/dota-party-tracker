@@ -464,3 +464,18 @@ def test_top_heroes_have_kda_and_last_game_has_details():
     game = last_game([a, b])
     assert (game["duration"], game["gpm"], game["hero_damage"]) == (2280, 512.0, 18000)
     assert last_game([a])["duration"] is None
+
+
+def test_recent_games_newest_first_with_mmr_delta():
+    matches = [
+        {"match_id": 1, "start_time": 100, "player_slot": 0, "radiant_win": True, "hero_id": 1, "kills": 1,
+         "deaths": 2, "assists": 3, "duration": 1800},
+        {"match_id": 2, "start_time": 300, "player_slot": 128, "radiant_win": True, "hero_id": 2, "kills": 4,
+         "deaths": 5, "assists": 6, "duration": None, "double_down": 1},
+        {"match_id": 3, "start_time": 200, "player_slot": 0, "radiant_win": False, "hero_id": 3},
+    ]
+    from mmrbot.stats import recent_games
+    games = recent_games(matches, 25, n=2)
+    assert [g["match_id"] for g in games] == [2, 3]
+    assert games[0]["delta"] == -50 and games[0]["double_down"] and not games[0]["won"]
+    assert games[1]["delta"] == -25 and games[1]["kills"] == 0

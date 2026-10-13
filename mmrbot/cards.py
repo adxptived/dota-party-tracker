@@ -173,8 +173,19 @@ def _text_mask(text: str, size: int, bold: bool, tracked: bool):
     return mask, ascent, ascent + descent, total, pad
 
 
+def fit_size(text: str, size: int, bold: bool, max_w: float, min_size: int) -> int:
+    """Кегль, при котором текст влезает в max_w: уменьшаем шаг за шагом, но не мельче min_size."""
+    while size > min_size and text_width(text, size, bold) > max_w:
+        size -= 1
+    return size
+
+
 def draw_text(draw, xy, text: str, size: int, fill=FG, bold: bool = False, anchor: str = "la",
-              max_w: Optional[float] = None, track: Optional[bool] = None) -> None:
+              max_w: Optional[float] = None, track: Optional[bool] = None, shrink: Optional[int] = None) -> None:
+    """Надпись. max_w — предел ширины: длинный текст обрезается многоточием; с shrink сначала уменьшается кегль
+    (не мельче shrink) — длинный ник или подпись видны целиком, а не обрываются на полуслове."""
+    if max_w and shrink and shrink < size:
+        size = fit_size(text, size, bold, max_w, shrink)
     if max_w:
         text = _fit(text, size, bold, max_w)
     if not text:
@@ -540,16 +551,20 @@ def _drawn_badge(rank_tier: Optional[int], size: int = 64):
 
 # --- мелкие графические элементы -----------------------------------------------------------------
 
-def kda(draw, cx: float, cy: float, kills, deaths, assists, size: int = 28, bold: bool = True) -> None:
-    """K / D / A по центру в cx: смерти — красным, чтобы читалось с одного взгляда."""
+def kda(draw, cx: float, cy: float, kills, deaths, assists, size: int = 28, bold: bool = True,
+        align: str = "center") -> float:
+    """K / D / A по центру в cx (align="left" — от cx вправо): смерти — красным, чтобы читалось с одного взгляда.
+    Возвращает ширину."""
     small = max(size * 3 // 4, 14)  # косые черты мельче и тоньше цифр — цифры остаются главным
     slash = mix(MUTED, PANEL, 0.35)
     parts = [(str(kills or 0), FG, size, bold), (" / ", slash, small, False), (str(deaths or 0), LOSS, size, bold),
              (" / ", slash, small, False), (str(assists or 0), FG, size, bold)]
-    x = cx - sum(text_width(text, sz, b, False) for text, _, sz, b in parts) / 2
+    total = sum(text_width(text, sz, b, False) for text, _, sz, b in parts)
+    x = cx if align == "left" else cx - total / 2
     for text, color, sz, b in parts:
         draw_text(draw, (x, cy), text, sz, color, b, anchor="lm", track=False)
         x += text_width(text, sz, b, False)
+    return total
 
 
 def value_text(draw, xy, text: str, size: int, fill=FG, anchor: str = "rm") -> float:
@@ -671,11 +686,12 @@ def tile(img, draw, box, label: str, value: str, sub: Optional[str] = None, colo
     x0, y0, x1, y1 = box
     panel(img, box, fill, radius=16)
     inner = x1 - x0 - 40
-    draw_text(draw, (x0 + 20, y0 + 16), clean(label), 18, MUTED, anchor="la", max_w=inner)
+    draw_text(draw, (x0 + 20, y0 + 16), clean(label), 18, MUTED, anchor="la", max_w=inner, shrink=15)
     value_mid = (y0 + 42 + (y1 - 40 if sub else y1 - 14)) / 2  # между подписью и нижней строкой
-    draw_text(draw, (x0 + 20, value_mid), clean(value), value_size, color, bold=True, anchor="lm", max_w=inner)
+    draw_text(draw, (x0 + 20, value_mid), clean(value), value_size, color, bold=True, anchor="lm", max_w=inner,
+              shrink=max(value_size * 2 // 3, 18))
     if sub:
-        draw_text(draw, (x0 + 20, y1 - 16), clean(sub), 18, MUTED, anchor="ld", max_w=inner)
+        draw_text(draw, (x0 + 20, y1 - 16), clean(sub), 18, MUTED, anchor="ld", max_w=inner, shrink=15)
 
 
 def stat_cells(draw, x: float, cy: float, cells: Sequence, cell_w: float, value_size: int = 20) -> float:
@@ -733,3 +749,33 @@ def footer(draw, y: int, text: str) -> int:
     """Мелкая приглушённая строка под карточкой (когда обновлено, пояснение к цифрам). Возвращает y под ней."""
     draw_text(draw, (PAD, y + 8), clean(text), 18, mix(MUTED, BG, 0.25), max_w=WIDTH - 2 * PAD)
     return y + 8 + 26
+
+
+# --- дерево талантов -----------------------------------------------------------------------------
+
+def talent_tree(img, box, rows: Sequence[dict], base: str = PANEL, plate: bool = False) -> None:
+    """Дерево талантов только графикой, как значок в игре: «ствол» посередине, на нём 4 ступени (25 сверху, 10 снизу),
+    у каждой — левая и правая планка; выбранная сторона золотая, невыбранная — тёмная, узел ступени золотой, если
+    на ней что-то взято. Без надписей. rows — talents.tree_rows; plate — подложить тёмную плашку (поверх иконки)."""
+    x0, y0, x1, y1 = box
+    if plate:
+        panel(img, box, mix(BG, base, 0.4), radius=max(4, round((y1 - y0) / 6)), outline=mix(BG, GOLD, 0.35))
+        pad = max(3, (y1 - y0) * 0.12)
+        x0, y0, x1, y1 = x0 + pad, y0 + pad, x1 - pad, y1 - pad
+    cx = (x0 + x1) / 2
+    step = (y1 - y0) / 4
+    bar_h = max(3, round(step * 0.55))
+    trunk_w = max(2, round(step * 0.3))
+    node = max(2.5, step * 0.38)
+    off = mix(base, "#ffffff", 0.16)
+    img.paste(mix(base, "#ffffff", 0.28), (round(cx - trunk_w / 2), round(y0 + step / 2), round(cx + trunk_w / 2),
+                                          round(y1 - step / 2)))
+    for i, row in enumerate(reversed(list(rows)[:4])):
+        cy = y0 + step * i + step / 2
+        picked = row.get("pick")
+        for side, (left, right) in (("left", (x0, cx - node - 1)), ("right", (cx + node + 1, x1))):
+            color = GOLD if picked == side else off
+            img.paste(color, (round(left), round(cy - bar_h / 2), round(right), round(cy + bar_h / 2)),
+                      _rr_mask(max(round(right) - round(left), 1), max(round(cy + bar_h / 2) - round(cy - bar_h / 2), 1),
+                               max(1, bar_h // 2)))
+        dot(img, cx, cy, node, GOLD if picked else mix(base, "#ffffff", 0.3))

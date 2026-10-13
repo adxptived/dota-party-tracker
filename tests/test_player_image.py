@@ -14,10 +14,11 @@ def _full():
         "tiles": [{"label": f"T{i}", "value": str(i), "sub": "s"} for i in range(6)],
         "series": [5000, 5025, 5010, 5050], "series_label": "Динамика", "form": [True, False, True],
         "split": [{"label": "Соло", "wins": 3, "losses": 2}, {"label": "В группе", "wins": 0, "losses": 0}],
-        "hours": {"best": "21:00 · 70%", "worst": "03:00 · 30%"},
+        "facts": [("Лучшая серия", "7 побед", "#3ddc84"), ("Пул героев", "23 героя", None)],
         "heroes": [{"hero_id": 12, "name": "Phantom Lancer", "games": 12, "wins": 8, "winrate": 0.66}] * 3,
         "last_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": False},
-        "skills": [{"label": "Фарм", "pct": 0.78}, {"label": "Урон", "pct": 1.4}, {"label": "Бои", "pct": -1}],
+        "recent": [{"hero_id": 12, "name": "PL", "won": i % 2 == 0, "kills": 9, "deaths": 1, "assists": 14, "delta": 25,
+                    "minutes": 38, "when": "12.10"} for i in range(6)], "recent_mmr": True,
         "lobby_rank": 55, "lobby_text": "Legend 5", "standing": "#2 из 5", "note": "заметка",
     }
 
@@ -41,7 +42,7 @@ def test_blocks_are_optional_and_card_shrinks():
 def test_strange_names_and_values_do_not_break():
     card = _full()
     card.update(name="😀" * 3 + "x" * 90 + "\x00", steam_name="y" * 90, series=[5], form=[], tiles=[{}],
-                warnings=["z" * 300], heroes=[], last_game=None, split=[], hours=None, skills=[], mmr_delta=None,
+                warnings=["z" * 300], heroes=[], last_game=None, split=[], facts=None, recent=[{}], mmr_delta=None,
                 streak=("L", 6))
     assert _open(render_player_image(card)).width == WIDTH
     card["series"] = [7] * 30  # плоская линия
@@ -66,3 +67,19 @@ def test_last_game_details_and_hero_kda_are_drawn(drawn):
     for label, value in (("ВРЕМЯ", "38 мин"), ("GPM", "640"), ("УРОН", "31.2k")):
         assert texts[texts.index(label) + 1] == value
     assert "12 игр · 8–4 · KDA 4.1" in texts
+
+
+def test_long_name_and_rank_shrink_instead_of_truncating(drawn):
+    card = _full()
+    card.update(name="Оооочень длинный ник игрока из Steam", rank_text="Immortal #1234", mmr_text="≈12345")
+    render_player_image(card)
+    texts = [t[0] for t in drawn]
+    assert "Оооочень длинный ник игрока из Steam" in texts and "Immortal #1234" in texts
+
+
+def test_recent_games_and_facts_are_drawn(drawn):
+    render_player_image(_full())
+    texts = [t[0] for t in drawn]
+    assert "ПОСЛЕДНИЕ ИГРЫ" in texts and texts.count("+25") == 6 and "38 мин  ·  12.10" in texts
+    assert "Лучшая серия" in texts and "7 побед" in texts
+    assert "ПРОФИЛЬ НАВЫКОВ · МИРОВОЙ ПЕРЦЕНТИЛЬ" not in texts

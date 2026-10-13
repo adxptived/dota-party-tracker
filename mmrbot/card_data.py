@@ -7,10 +7,10 @@ from __future__ import annotations
 import html
 from typing import Optional
 
-from mmrbot.cards import ACCENT, GOLD, MUTED, clean, delta_color, signed
+from mmrbot.cards import ACCENT, GOLD, MUTED, WIN, clean, delta_color, signed
 from mmrbot.formatting import (
     PERIOD_LABELS, POSITION_NAMES, PULSE_RECORDS, best_game_stats, daily_record_picks, fmt_local,
-    fmt_window, local_time, plural_games, plural_heroes,
+    fmt_window, local_time, plural_games, plural_heroes, plural_wins,
 )
 from mmrbot.heroes import hero_name
 
@@ -175,6 +175,36 @@ def _position_tile(s) -> dict:
     return {"label": "Средняя игра", "value": f"{s.avg_duration_min:.0f} мин" if s.avg_duration_min else "—", "sub": None}
 
 
+def _partial(known: Optional[int], games: int) -> Optional[str]:
+    """«по 40 из 56» — показатель известен не по всем играм; иначе подписи нет."""
+    return f"по {known} из {games}" if known is not None and 0 < known < games else None
+
+
+def _facts(s) -> list[tuple]:
+    """Короткие факты под «Соло и группа»: самая длинная серия побед, широта пула героев, средняя длина игры.
+
+    Раньше здесь были «лучший/худший час» — по трём играм в час это шум, а не закономерность.
+    """
+    facts = []
+    if s.longest_win_streak >= 2:
+        facts.append(("Лучшая серия", plural_wins(s.longest_win_streak), WIN))
+    if s.hero_pool:
+        facts.append(("Пул героев", f"{s.hero_pool} {plural_heroes(s.hero_pool)}", None))
+    if s.avg_duration_min:
+        facts.append(("Средняя игра", f"{s.avg_duration_min:.0f} мин", None))
+    return facts
+
+
+def recent_items(games: list, tz: str = "UTC") -> list[dict]:
+    """Последние игры для ленты на карточке: герой, исход, K/D/A, ±MMR, длительность и дата."""
+    from mmrbot.heroes import hero_name
+    return [{"hero_id": g.get("hero_id"), "name": hero_name(g.get("hero_id")), "won": bool(g.get("won")),
+             "kills": g.get("kills") or 0, "deaths": g.get("deaths") or 0, "assists": g.get("assists") or 0,
+             "delta": g.get("delta"), "double_down": bool(g.get("double_down")),
+             "minutes": round(g["duration"] / 60) if g.get("duration") else None,
+             "when": fmt_local(g["start_time"], tz, "%d.%m") if g.get("start_time") else None} for g in games]
+
+
 def player_card(s, standing: Optional[dict] = None, series: Optional[list] = None, note: Optional[str] = None,
                 absolute: bool = False, tz: str = "UTC") -> dict:
     """Сводка игрока → описание карточки для player_image.render_player_image.
@@ -184,7 +214,6 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
     иначе накопленные ±MMR, к которым прибавляется стартовый MMR; note — пометка об устаревании данных;
     tz — часовой пояс чата (время последней игры).
     """
-    from mmrbot.formatting import SKILL_GROUPS
     from mmrbot.ranks import rank_label
 
     games = s.games_total
@@ -205,14 +234,14 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
         card["warnings"].append("Ранкед-игр с момента добавления пока нет.")
         return card
 
-    partial = f"по {s.detail_games} из {games}" if 0 < s.detail_games < games else None
+    damage_games = s.damage_games if s.damage_games is not None else s.detail_games
     card["tiles"] = [
         {"label": "Результат", "value": f"{s.wins_total}–{s.losses_total}", "sub": f"{s.winrate * 100:.0f}% винрейт",
          "color": delta_color((s.winrate - 0.5) * 100)},
         {"label": "KDA", "value": f"{s.kda_ratio:.2f}", "sub": f"{s.avg_kills:.0f}/{s.avg_deaths:.0f}/{s.avg_assists:.0f}"},
-        {"label": "GPM", "value": f"{s.avg_gpm_window:.0f}" if s.avg_gpm_window is not None else "—", "sub": partial},
-        {"label": "Нетворс", "value": _k(s.avg_net_worth_window), "sub": partial},
-        {"label": "Урон по героям", "value": _k(s.avg_hero_damage_window), "sub": partial},
+        {"label": "GPM", "value": f"{s.avg_gpm_window:.0f}" if s.avg_gpm_window is not None else "—",
+         "sub": _partial(s.detail_games, games)},
+        {"label": "Урон по героям", "value": _k(s.avg_hero_damage_window), "sub": _partial(damage_games, games)},
         _position_tile(s),
     ]
     values = list(series or [])
@@ -224,9 +253,7 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
     card["form"] = list(s.form_long or [])
     card["split"] = [{"label": label, "wins": pair[1], "losses": pair[0] - pair[1]}
                      for label, pair in (("Соло", s.solo), ("В группе", s.party)) if pair[0]]
-    if s.best_hour and s.worst_hour:
-        card["hours"] = {"best": f"{s.best_hour[0]:02d}:00 · {s.best_hour[1] * 100:.0f}%",
-                         "worst": f"{s.worst_hour[0]:02d}:00 · {s.worst_hour[1] * 100:.0f}%"}
+    card["facts"] = _facts(s)
     from mmrbot.heroes import hero_name
     card["heroes"] = [{"hero_id": h["hero_id"], "name": hero_name(h["hero_id"]), "games": h["games"], "wins": h["wins"],
                        "winrate": h["winrate"], "kda": h.get("kda")} for h in s.top_heroes]
@@ -236,12 +263,8 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
                              "deaths": lg["deaths"], "assists": lg["assists"], "kda": lg["kda"], "won": lg["won"],
                              "when": fmt_local(lg["start_time"], tz, "%d.%m %H:%M") if lg.get("start_time") else None,
                              "stats": _last_game_stats(lg)}
-    skills = []
-    for label, metrics in SKILL_GROUPS:
-        pcts = [s.skill[m] for m in metrics if m in (s.skill or {})]
-        if pcts:
-            skills.append({"label": label, "pct": sum(pcts) / len(pcts)})
-    card["skills"] = skills
+    card["recent"] = recent_items(s.recent_games or [], tz)
+    card["recent_mmr"] = s.anchor_mmr is not None  # ±MMR за игру — только если MMR игрока задан
     if s.lobby_rank:
         card["lobby_rank"], card["lobby_text"] = s.lobby_rank, rank_label(s.lobby_rank)
     if standing and standing.get("size", 0) >= 2 and standing.get("power_rank"):
@@ -620,3 +643,185 @@ def contest_caption(period: str, table: list[dict], noms: list[dict]) -> str:
         line += f" · дальше {_esc(table[1]['name'])} ({table[1]['points']})"
     good = sum(1 for n in noms if not n["anti"])
     return line + f"\nноминаций: {good}" + (f" и антирекордов: {len(noms) - good}" if len(noms) > good else "")
+
+
+# --- карточка любого игрока по ID (поиск) ----------------------------------------------------------
+
+LOOKUP_GAMES = 100  # сколько последних ранкед-игр берём у OpenDota для карточки игрока не из пати
+
+
+def lookup_matches(matches: list, recent: Optional[list] = None) -> list[dict]:
+    """Ранкед-матчи OpenDota (/matches) + подробности из /recentMatches (GPM, урон) → по возрастанию времени."""
+    from mmrbot.stats import is_ranked_lobby
+    details = {r.get("match_id"): r for r in recent or [] if isinstance(r, dict)}
+    rows = []
+    for raw in matches or []:
+        if not isinstance(raw, dict) or raw.get("start_time") is None or raw.get("player_slot") is None \
+                or raw.get("radiant_win") is None:
+            continue
+        if raw.get("lobby_type") is not None and not is_ranked_lobby(raw["lobby_type"]):
+            continue
+        extra = details.get(raw.get("match_id")) or {}
+        rows.append({
+            "match_id": raw.get("match_id"), "start_time": raw["start_time"], "player_slot": raw["player_slot"],
+            "radiant_win": raw["radiant_win"], "hero_id": raw.get("hero_id"), "kills": raw.get("kills") or 0,
+            "deaths": raw.get("deaths") or 0, "assists": raw.get("assists") or 0, "duration": raw.get("duration"),
+            "party_size": raw.get("party_size"), "average_rank": raw.get("average_rank"),
+            "gpm": extra.get("gold_per_min"), "hero_damage": extra.get("hero_damage"),
+        })
+    return sorted(rows, key=lambda m: m["start_time"])
+
+
+def lookup_card(account_id: int, profile: dict, matches: list[dict], tz: str = "UTC",
+                tracked_name: Optional[str] = None) -> dict:
+    """Карточка игрока, которого нет в пати (поиск по ID): профиль OpenDota и его последние ранкед-игры.
+
+    matches — из lookup_matches. Оценки MMR тут нет (её ведёт только пати), поэтому справа крупно — винрейт,
+    а линия — баланс побед и поражений по играм. Ключи — как у player_card.
+    """
+    import statistics
+
+    from mmrbot import stats
+    from mmrbot.ranks import rank_label
+
+    profile = profile or {}
+    name = clean(profile.get("personaname")) or f"Игрок {account_id}"
+    agg = stats.aggregate(matches)
+    games = agg.games
+    subtitle = f"ID {account_id}" + (f"  ·  в пати: {clean(tracked_name)}" if tracked_name else "  ·  не в пати")
+    card: dict = {
+        "name": name, "subtitle": subtitle, "avatar": profile.get("avatarfull"), "rank_tier": profile.get("rank_tier"),
+        "rank_text": rank_label(profile.get("rank_tier"), profile.get("leaderboard_rank")),
+        "mmr_text": f"{agg.winrate * 100:.0f}%" if games else "—",
+        "headline_note": f"винрейт за {plural_games(games)}" if games else "ранкед-игр не видно",
+        "mmr_delta": None, "perf": None, "warnings": [], "note": "OpenDota · последние ранкед-игры, без оценки MMR",
+    }
+    streak_type, streak_len = stats.current_streak(matches)
+    card["streak"] = (streak_type, streak_len) if streak_len >= 2 else None
+    if not games:
+        card["warnings"].append("Ранкед-игр не видно: профиль закрыт или в Dota 2 выключены публичные данные матчей.")
+        return card
+
+    def mean(key: str) -> tuple[Optional[float], int]:
+        values = [m[key] for m in matches if m.get(key) is not None]
+        return (sum(values) / len(values) if values else None), len(values)
+
+    gpm, gpm_n = mean("gpm")
+    damage, damage_n = mean("hero_damage")
+    pool = stats.hero_pool(matches)
+    card["tiles"] = [
+        {"label": "Результат", "value": f"{agg.wins}–{agg.losses}", "sub": f"{agg.winrate * 100:.0f}% винрейт",
+         "color": delta_color((agg.winrate - 0.5) * 100)},
+        {"label": "KDA", "value": f"{agg.kda_ratio:.2f}", "sub": f"{agg.avg_kills:.0f}/{agg.avg_deaths:.0f}/{agg.avg_assists:.0f}"},
+        {"label": "GPM", "value": f"{gpm:.0f}" if gpm is not None else "—",
+         "sub": f"по {plural_games(gpm_n)}" if gpm_n else None},
+        {"label": "Урон по героям", "value": _k(damage), "sub": f"по {plural_games(damage_n)}" if damage_n else None},
+        {"label": "Пул героев", "value": str(pool), "sub": f"{plural_heroes(pool)} за {plural_games(games)}"},
+    ]
+    balance, series = 0, []
+    for m in matches[-60:]:
+        balance += 1 if stats.is_win(m["player_slot"], m["radiant_win"]) else -1
+        series.append(balance)
+    if len(series) >= 2:
+        card["series"] = series
+        card["series_label"] = f"Победы минус поражения · последние {plural_games(len(series))}"
+    card["form"] = stats.recent_form(matches, 10)
+    split = stats.solo_party_split(matches)
+    card["split"] = [{"label": label, "wins": split[key][1], "losses": split[key][0] - split[key][1]}
+                     for label, key in (("Соло", "solo"), ("В группе", "party")) if split[key][0]]
+    facts = []
+    best = stats.longest_win_streak(matches)
+    if best >= 2:
+        facts.append(("Лучшая серия", plural_wins(best), WIN))
+    duration = stats.duration_stats(matches)["avg_minutes"]
+    if duration:
+        facts.append(("Средняя игра", f"{duration:.0f} мин", None))
+    card["facts"] = facts
+    card["heroes"] = [{"hero_id": h["hero_id"], "name": hero_name(h["hero_id"]), "games": h["games"], "wins": h["wins"],
+                       "winrate": h["winrate"], "kda": h.get("kda")} for h in stats.top_heroes(matches, 3)]
+    last = stats.last_game(matches)
+    if last:
+        card["last_game"] = {"hero_id": last["hero_id"], "name": hero_name(last["hero_id"]), "kills": last["kills"],
+                             "deaths": last["deaths"], "assists": last["assists"], "kda": last["kda"], "won": last["won"],
+                             "when": fmt_local(last["start_time"], tz, "%d.%m %H:%M") if last.get("start_time") else None,
+                             "stats": _last_game_stats(last)}
+    card["recent"] = recent_items(stats.recent_games(matches, 0), tz)
+    card["recent_mmr"] = False
+    lobby = [m["average_rank"] for m in matches if m.get("average_rank")]
+    if lobby:
+        card["lobby_rank"] = statistics.median_low(lobby)
+        card["lobby_text"] = rank_label(card["lobby_rank"])
+    return card
+
+
+def lookup_text(card: dict) -> str:
+    """Та же карточка игрока по ID текстом (для «📝 Текстом» и чатов с отчётами текстом)."""
+    lines = [f"🔎 <b>{_esc(card['name'])}</b> · {html.escape(clean(card.get('rank_text')) or 'Без ранга')}",
+             f"<i>{html.escape(clean(card.get('subtitle')))}</i>"]
+    tiles = {t["label"]: t for t in card.get("tiles") or []}
+    if tiles:
+        result, kda = tiles["Результат"], tiles["KDA"]
+        lines.append(f"📊 {result['value']} ({result['sub']}) · KDA {kda['value']} ({kda['sub']})")
+        econ = [f"{label} {tiles[label]['value']}" for label in ("GPM", "Урон по героям") if tiles[label]["value"] != "—"]
+        if econ:
+            lines.append("💰 " + " · ".join(econ))
+    if card.get("heroes"):
+        heroes = ", ".join(f"{_esc(h['name'])} {h['wins']}–{h['games'] - h['wins']}" for h in card["heroes"])
+        lines.append(f"🦸 {heroes}")
+    if card.get("recent"):
+        lines.append("🕘 " + " ".join(("🟢" if g["won"] else "🔴") for g in card["recent"]) + " — последние, новые слева")
+    if card.get("lobby_text"):
+        lines.append(f"🏟️ Средний уровень лобби: {html.escape(card['lobby_text'])}")
+    lines += [f"⚠️ {html.escape(w)}" for w in card.get("warnings") or []]
+    if card.get("note"):
+        lines.append(f"<i>{html.escape(card['note'])}</i>")
+    return "\n".join(lines)
+
+
+def lookup_caption(card: dict) -> str:
+    """Подпись под картинкой карточки по ID: ник и ранг одной строкой."""
+    return f"🔎 <b>{_esc(card['name'])}</b> · {html.escape(clean(card.get('rank_text')) or 'Без ранга')}"
+
+
+# --- матчи игрока страницей ------------------------------------------------------------------------
+
+def match_list_rows(matches: list, offset: int, step: int, tz: str = "UTC", show_delta: bool = True,
+                    current: Optional[int] = None) -> list[dict]:
+    """Матчи страницы (новые сверху) → строки картинки списка; номер строки (с 1) — подпись кнопки, которая его открывает.
+
+    current — номер открытого сейчас матча на странице (подсвечивается); show_delta — показывать ±MMR (MMR задан).
+    """
+    from mmrbot.stats import is_win, match_mmr_delta
+    rows = []
+    for i, m in enumerate(matches, start=1):
+        extra = []
+        if m.get("position"):
+            extra.append(f"P{m['position']}")
+        if m.get("gpm"):
+            extra.append(f"{round(m['gpm'])} GPM")
+        if m.get("last_hits") is not None:
+            extra.append(f"{m['last_hits']} крипов")
+        rows.append({
+            "n": i, "hero_id": m.get("hero_id"), "name": hero_name(m.get("hero_id")),
+            "won": is_win(m["player_slot"], m["radiant_win"]), "kills": m.get("kills") or 0,
+            "deaths": m.get("deaths") or 0, "assists": m.get("assists") or 0,
+            "delta": match_mmr_delta(m, step) if show_delta else None, "double_down": bool(m.get("double_down")),
+            "minutes": round(m["duration"] / 60) if m.get("duration") else None,
+            "when": fmt_local(m["start_time"], tz, "%d.%m %H:%M") if m.get("start_time") else None,
+            "extra": " · ".join(extra) or None, "current": current == i,
+        })
+    return rows
+
+
+def match_list_text(name: str, rows: list, offset: int, total: int) -> str:
+    """Та же страница текстом: «3. 🏆 Pudge 12/3/8 · +25 · 14.10 21:40» — номер совпадает с кнопкой."""
+    if not total:
+        return f"📜 <b>{_esc(name)}</b>: ранкед-матчей пока нет."
+    lines = [f"📜 <b>Матчи: {_esc(name)}</b> · {offset + 1}–{offset + len(rows)} из {total}",
+             "Нажмите номер матча — покажу его картинкой."]
+    for r in rows:
+        mark = "🏆" if r["won"] else "💀"
+        delta = f" · {signed(r['delta'])}" + (" ×2" if r["double_down"] else "") if r.get("delta") is not None else ""
+        lines.append(f"{r['n']}. {mark} {html.escape(r['name'])} {r['kills']}/{r['deaths']}/{r['assists']}{delta}"
+                     + (f" · {r['when']}" if r.get("when") else ""))
+    return "\n".join(lines)

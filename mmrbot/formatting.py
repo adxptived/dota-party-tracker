@@ -1205,9 +1205,10 @@ def _team_lines(players: list[dict], tracked: dict) -> list[str]:
         mark = "★ " if p.get("account_id") in tracked else ""
         name = tracked.get(p.get("account_id")) or p.get("name") or "—"
         pos = f"P{p['position']}" if p.get("position") else "—"
+        creeps = f" · 🌾 {p['last_hits']}/{p.get('denies') or 0}" if isinstance(p.get("last_hits"), int) else ""
         lines.append(
             f"{mark}{_b(name)} · {_esc(hero_name(p.get('hero_id')))} "
-            f"{p.get('kills') or 0}/{p.get('deaths') or 0}/{p.get('assists') or 0} · {pos} · IMP {_imp(p.get('imp'))}"
+            f"{p.get('kills') or 0}/{p.get('deaths') or 0}/{p.get('assists') or 0} · {pos} · IMP {_imp(p.get('imp'))}{creeps}"
         )
     return lines
 

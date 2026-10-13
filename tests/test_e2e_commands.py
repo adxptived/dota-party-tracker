@@ -574,3 +574,41 @@ def test_match_board_warms_opendota_build_in_parallel_with_stratz(env):
     od.get_match = warm_get_match
     run(botmod.cmd_match(FakeMessage(), cmdobj("match", "9100000005"), storage, od, SlowStratz()))
     assert "od:get_match" in order
+
+
+def test_find_command_shows_any_player_by_id_with_add_button(tmp_path):
+    storage = Storage(str(tmp_path / "find.db"))
+    storage.get_or_create_chat(100)
+    msg = FakeMessage()
+    run(botmod.cmd_find(msg, cmdobj("find", "dotabuff.com/players/777"), storage, FakeOD(), FakeStratz()))
+    (caption, kw), = msg.photos
+    assert "shinoame" in caption
+    data = {b.callback_data for row in kw["reply_markup"].inline_keyboard for b in row}
+    assert "lk:add:777" in data and "tx:lookup:777" in data
+
+
+def test_find_command_shows_match_by_link(tmp_path):
+    storage = Storage(str(tmp_path / "find.db"))
+    storage.get_or_create_chat(100)
+    msg = FakeMessage()
+    run(botmod.cmd_find(msg, cmdobj("find", "https://www.dotabuff.com/matches/9100000007"), storage, FakeOD(),
+                        FakeStratz()))
+    (_, kw), = msg.photos
+    urls = [b.url or "" for row in kw["reply_markup"].inline_keyboard for b in row]
+    assert any(u.endswith("/matches/9100000007") for u in urls)
+
+
+def test_find_without_args_asks_and_reply_is_searched(tmp_path):
+    storage = Storage(str(tmp_path / "find.db"))
+    storage.get_or_create_chat(100)
+    msg = FakeMessage()
+    run(botmod.cmd_find(msg, cmdobj("find", None), storage, FakeOD(), FakeStratz()))
+    assert msg.sent[0][0] == botmod.FIND_PROMPT
+
+
+def test_player_command_with_unknown_id_searches_opendota(tmp_path):
+    storage = Storage(str(tmp_path / "find.db"))
+    storage.get_or_create_chat(100)
+    msg = FakeMessage()
+    run(botmod.cmd_player(msg, cmdobj("player", "777"), storage, FakeOD(), FakeStratz()))
+    assert msg.photos and "shinoame" in msg.photos[0][0]

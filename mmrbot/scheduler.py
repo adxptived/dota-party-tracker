@@ -51,6 +51,7 @@ from mmrbot.tracker import (
     detect_steam_changes,
     refresh_heroes,
     refresh_items,
+    refresh_talents,
 )
 
 log = logging.getLogger(__name__)
@@ -294,6 +295,13 @@ def setup_scheduler(
             new_items = await asyncio.to_thread(refresh_items, od)
             if new_items:
                 log.info("Справочник предметов пополнен: +%d", new_items)
+            try:  # таланты — отдельно: их сбой не должен откладывать героев и предметы на час
+                new_talents = await asyncio.to_thread(refresh_talents, od) if hasattr(od, "get_talent_constants") else 0
+                if new_talents:
+                    log.info("Справочник талантов пополнен: +%d", new_talents)
+            except Exception as exc:
+                log_network_error(log, "Обновление справочника талантов не удалось", exc,
+                                  health=getattr(od, "health", None))
         except Exception as exc:
             log_network_error(log, "Обновление справочника героев не удалось", exc, health=getattr(od, "health", None))
             retry_heroes_in_an_hour()

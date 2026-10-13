@@ -20,6 +20,7 @@ from mmrbot.cards import (
 from mmrbot.charts import BG
 from mmrbot.formatting import _k, fmt_local
 from mmrbot.heroes import hero_name
+from mmrbot.talents import tree_rows
 from mmrbot.upgrade_icons import paste_upgrade
 
 MATCH_WIDTH = 1560
@@ -42,8 +43,9 @@ ITEMS_END = 878  # правее — K/D/A
 UNTIMED_HEAD = "БИЛД · времена после разбора матча"  # иконки шарда и скипетра — после предметов и нейтралки
 UPGRADE_SIZE = 26
 # центры колонок (x) и их заголовки
-COLUMNS = [("kda", 958, "K / D / A"), ("nw", 1090, "НЕТВОРС"), ("gpm", 1225, "GPM / XPM"),
-           ("dmg", 1360, "УРОН"), ("imp", 1480, "IMP")]
+COLUMNS = [("kda", 962, "K / D / A"), ("nw", 1078, "НЕТВОРС"), ("lh", 1178, "КРИПЫ"), ("gpm", 1283, "GPM / XPM"),
+           ("dmg", 1393, "УРОН"), ("imp", 1490, "IMP")]
+TREE_BADGE_W, TREE_BADGE_H = 40, 34  # дерево талантов значком в правом нижнем углу иконки героя
 
 
 def _sorted_team(players: list[dict]) -> list[dict]:
@@ -66,6 +68,11 @@ def _has_times(players: list[dict]) -> bool:
 
 def _has_bear(p: dict) -> bool:
     return bool(_ids(p.get("bear_items")))
+
+
+def _talents(p: dict) -> list:
+    """Дерево талантов игрока (talents.tree_rows); пусто — талантов не знаем."""
+    return tree_rows(p.get("talents"))
 
 
 def _row_h(p: dict) -> int:
@@ -204,7 +211,7 @@ def _draw_items(img, draw, top: float, items, times, neutral, item_icons: dict) 
 
 def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
     """Билд игрока между ником и K/D/A; Лон Друид — две линии (герой и медведь) с подписями."""
-    mid = y + _row_h(p) / 2
+    mid = y + _base_h(p) / 2
     bear = _has_bear(p)
     top = y + 12 if bear else mid - SLOT_H / 2 - 4
     _draw_items(img, draw, top, p.get("items"), p.get("item_times"), p.get("neutral_item"), item_icons)
@@ -225,6 +232,11 @@ def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
             draw_text(draw, (TAGS_X + icon_w + 6, cy), when, 15, TIME_COLOR, anchor="lm", track=False)
 
 
+def _base_h(p: dict) -> int:
+    """Высота строки без талантов: по ней центруется всё, кроме строки талантов."""
+    return ROW_BEAR_H if _has_bear(p) else ROW_H
+
+
 def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons: Optional[dict] = None,
               build: bool = False, top_nw: float = 0, best: Optional[dict] = None) -> None:
     best = best or {}
@@ -237,9 +249,12 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
         cards.stripe(img, PAD, y + 12, y + row_h - 12, TRACKED_MARK)
     else:
         cards.panel(img, box, PANEL, radius=12)
-    mid = y + row_h / 2
+    mid = y + _base_h(p) / 2
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)
+    if _talents(p):  # дерево талантов значком поверх правого нижнего угла иконки героя
+        bx, by = PAD + 24 + ICON_W - TREE_BADGE_W + 6, mid + ICON_H / 2 - TREE_BADGE_H + 6
+        cards.talent_tree(img, (bx, by, bx + TREE_BADGE_W, by + TREE_BADGE_H), _talents(p), PANEL, plate=True)
 
     name_w = (NAME_W_BEAR if _has_bear(p) else NAME_W) if build else NAME_W_FREE
     name = clean(tracked.get(p.get("account_id")) or p.get("name")) or "Скрытый профиль"
@@ -263,6 +278,11 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
                   cards.mix(GOLD, PANEL, 0.25), track=cards.mix(PANEL, "#ffffff", 0.08))
     else:
         draw_text(draw, (cols["nw"], mid), _k(net_worth), 26, GOLD, bold=True, anchor="mm")
+    hits = p.get("last_hits")
+    if _num(hits):  # крипы: добито / не отдано
+        draw_text(draw, (cols["lh"], mid), f"{hits:.0f}/{p.get('denies') or 0:.0f}", 22, FG, anchor="mm", track=False)
+    else:
+        draw_text(draw, (cols["lh"], mid), "—", 22, MUTED, anchor="mm")
     gpm, xpm = p.get("gpm"), p.get("xpm")
     econ = f"{gpm:.0f} / {xpm:.0f}" if gpm is not None and xpm is not None else (f"{gpm:.0f}" if gpm is not None else "—")
     # лучший в матче GPM и урон — жирным и ярче, остальные чуть приглушены: лидер столбца находится взглядом

@@ -107,7 +107,9 @@ def _full_summary(**extra):
         solo=(20, 12), party=(36, 23), best_hour=(21, 0.7), worst_hour=(3, 0.3), last_game={
             "hero_id": 12, "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": True},
         lobby_rank=55, skill={"gold_per_min": 0.8, "xp_per_min": 0.6, "hero_damage_per_min": 0.3, "kills_per_min": 0.5},
-        top_heroes=[{"hero_id": 12, "games": 12, "wins": 8, "winrate": 8 / 12}],
+        top_heroes=[{"hero_id": 12, "games": 12, "wins": 8, "winrate": 8 / 12}], longest_win_streak=7, hero_pool=23,
+        recent_games=[{"hero_id": 12, "won": True, "kills": 9, "deaths": 1, "assists": 14, "duration": 2280,
+                       "start_time": 1_700_000_000, "delta": 25, "double_down": False}],
     )
     base.update(extra)
     return _summary(**base)
@@ -117,14 +119,17 @@ def test_player_card_has_header_tiles_charts_and_blocks():
     card = cd.player_card(_full_summary(), {"size": 5, "power_rank": 2}, [25, 0, 25, 50], "заметка")
     assert card["name"] == "Вася" and card["mmr_text"] == "≈5420" and card["mmr_delta"] == 420
     assert card["delta_note"] == "за 56 игр" and card["perf"] == 73 and card["streak"] == ("W", 4)
-    assert [t["label"] for t in card["tiles"]] == ["Результат", "KDA", "GPM", "Нетворс", "Урон по героям", "Средняя игра"]
-    assert card["tiles"][0]["value"] == "35–21" and card["tiles"][2]["value"] == "540" and card["tiles"][3]["value"] == "18.2k"
+    assert [t["label"] for t in card["tiles"]] == ["Результат", "KDA", "GPM", "Урон по героям", "Средняя игра"]
+    assert card["tiles"][0]["value"] == "35–21" and card["tiles"][2]["value"] == "540" and card["tiles"][3]["value"] == "21.1k"
     assert card["tiles"][2]["sub"] == "по 40 из 56"
     assert card["series"] == [5025, 5000, 5025, 5050] and "последние 4 игры" in card["series_label"]
     assert card["split"] == [{"label": "Соло", "wins": 12, "losses": 8}, {"label": "В группе", "wins": 23, "losses": 13}]
-    assert card["hours"] == {"best": "21:00 · 70%", "worst": "03:00 · 30%"}
+    assert "hours" not in card and "skills" not in card  # «лучший час» по трём играм и перцентили навыков убраны
+    assert [label for label, *_ in card["facts"]] == ["Лучшая серия", "Пул героев", "Средняя игра"]
+    assert card["facts"][0][1] == "7 побед" and card["facts"][1][1] == "23 героя" and card["facts"][2][1] == "36 мин"
     assert card["heroes"][0]["name"] and card["last_game"]["kda"] == 15.0 and card["last_game"]["won"] is True
-    assert {s["label"] for s in card["skills"]} == {"Фарм", "Урон", "Участие в боях"} and card["skills"][0]["pct"] == 0.7
+    (game,) = card["recent"]
+    assert game["won"] and game["delta"] == 25 and game["minutes"] == 38 and game["when"] == "14.11" and card["recent_mmr"]
     assert card["lobby_rank"] == 55 and card["lobby_text"] == "Legend 5"
     assert card["standing"] == "#2 из 5 в чате по силе" and card["note"] == "заметка" and card["warnings"] == []
 
@@ -137,8 +142,19 @@ def test_player_card_warnings_and_missing_data():
     assert any("расходится" in w for w in card["warnings"]) and any("закрыта" in w for w in card["warnings"])
     assert card["mmr_text"] == "≈ ?" and card["perf"] is None and card["streak"] is None
     assert card["tiles"][2]["value"] == "—" and card["series"] == [3, -3] and "±MMR" in card["series_label"]
-    assert not card["split"] and "hours" not in card and "last_game" not in card and card["skills"] == []
+    assert not card["split"] and "last_game" not in card
     assert "standing" not in card and "lobby_rank" not in card
+
+
+def test_player_card_partial_note_counts_each_metric_separately():
+    card = cd.player_card(_full_summary(detail_games=40, damage_games=56))
+    tiles = {t["label"]: t for t in card["tiles"]}
+    assert tiles["GPM"]["sub"] == "по 40 из 56" and tiles["Урон по героям"]["sub"] is None  # урон известен по всем
+
+
+def test_player_card_recent_hides_mmr_without_anchor():
+    card = cd.player_card(_full_summary(anchor_mmr=None))
+    assert card["recent"] and card["recent_mmr"] is False
 
 
 def test_player_card_without_games_is_just_header_and_notice():
@@ -177,3 +193,19 @@ def test_player_card_last_tile_is_position_then_role_then_duration():
     tile = cd.player_card(_full_summary(role_style="саппорт / роумер"))["tiles"][-1]
     assert (tile["label"], tile["value"]) == ("Роль", "Саппорт")
     assert cd.player_card(_full_summary())["tiles"][-1]["label"] == "Средняя игра"
+
+
+def test_match_list_rows_number_buttons_delta_and_extras():
+    matches = [
+        {"match_id": 2, "start_time": 1_700_000_000, "player_slot": 0, "radiant_win": True, "hero_id": 11, "kills": 10,
+         "deaths": 5, "assists": 12, "duration": 2468, "position": 2, "gpm": 536.4, "last_hits": 295, "double_down": 1},
+        {"match_id": 1, "start_time": 1_699_990_000, "player_slot": 128, "radiant_win": True, "hero_id": 1},
+    ]
+    rows = cd.match_list_rows(matches, 0, 25, "UTC", current=2)
+    assert [r["n"] for r in rows] == [1, 2] and rows[1]["current"] and not rows[0]["current"]
+    assert rows[0]["delta"] == 50 and rows[0]["double_down"] and rows[1]["delta"] == -25 and not rows[1]["won"]
+    assert rows[0]["extra"] == "P2 · 536 GPM · 295 крипов" and rows[0]["minutes"] == 41 and rows[1]["extra"] is None
+    assert cd.match_list_rows(matches, 0, 25, show_delta=False)[0]["delta"] is None
+    text = cd.match_list_text("<Вася>", rows, 0, 2)
+    assert "&lt;Вася&gt;" in text and "1. 🏆 Shadow Fiend 10/5/12 · +50 ×2" in text and "2. 💀" in text
+    assert "пока нет" in cd.match_list_text("Вася", [], 0, 0)

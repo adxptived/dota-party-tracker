@@ -29,6 +29,16 @@ class MatchBoard(ImageBoard):
 
 
 @dataclass
+class LookupBoard(ImageBoard):
+    """Результат поиска по ID: найденный матч (match_id, focus) или игрок (account_id; tracked — он есть в пати)."""
+    kind: Optional[str] = None  # "match" | "player" | None — ничего не найдено
+    match_id: Optional[int] = None
+    focus: Optional[int] = None
+    account_id: Optional[int] = None
+    tracked: bool = False
+
+
+@dataclass
 class HeroBoard(ImageBoard):
     """Герой и пати на нём: hero_id нужен кнопкам («Текстом»); None — героя с таким именем нет."""
     hero_id: Optional[int] = None

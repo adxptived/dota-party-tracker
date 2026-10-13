@@ -113,6 +113,9 @@ class PlayerSummary:
     mmr_log: list = field(default_factory=list)  # журнал заданий MMR: [{ts, mmr, drift, games}]
     mmr_drift: bool = False  # оценка MMR разошлась с медалью — стоит обновить /setmmr
     history_closed: bool = False  # история матчей закрыта у OpenDota — цифры могут быть неполными
+    damage_games: Optional[int] = None  # игр с известным уроном по героям (None — как detail_games)
+    net_worth_games: Optional[int] = None  # игр с известным нетворсом (None — как detail_games)
+    recent_games: list = field(default_factory=list)  # последние игры, новые первыми (stats.recent_games)
 
 
 def _normalize(raw: dict) -> dict:
@@ -313,6 +316,15 @@ def refresh_heroes(client: OpenDotaClient) -> int:
     return update_heroes(client.get_heroes())
 
 
+def refresh_talents(client: OpenDotaClient) -> int:
+    """Подтянуть справочник талантов с OpenDota (таланты в матчах). Вернуть число новых талантов."""
+    from mmrbot import talents
+    added = talents.update_talents(talents.build_talents(*client.get_talent_constants()))
+    if added and talents.CACHE_PATH:
+        talents.save_talents(talents.CACHE_PATH)
+    return added
+
+
 def refresh_items(client: OpenDotaClient) -> int:
     """Подтянуть справочник предметов с OpenDota (для иконок билда). Вернуть число новых предметов."""
     from mmrbot import items
@@ -323,7 +335,7 @@ def refresh_items(client: OpenDotaClient) -> int:
 
 
 _ALERT_FIELDS = (
-    "items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time",
+    "items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents",
     "net_worth", "last_hits", "denies", "hero_healing", "tower_damage", "stacks",
 )
 
@@ -404,7 +416,7 @@ def _add_match_score(client: OpenDotaClient, event: dict) -> None:
 
 from mmrbot.items import item_slug  # noqa: E402
 
-BUILD_FIELDS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time")
+BUILD_FIELDS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents")
 
 
 def enrich_match_builds(client: OpenDotaClient, match: dict) -> None:
@@ -1127,6 +1139,9 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         avg_perf=avg_perf,
         enriched_games=len(enriched),
         detail_games=sum(1 for m in all_matches if m.get("gpm") is not None),
+        damage_games=sum(1 for m in all_matches if m.get("hero_damage") is not None),
+        net_worth_games=sum(1 for m in all_matches if m.get("net_worth") is not None),
+        recent_games=stats.recent_games(all_matches, step),
         avg_gpm_window=_mean_field("gpm"),
         avg_hero_damage_window=_mean_field("hero_damage"),
         avg_net_worth_window=_mean_field("net_worth"),
@@ -1403,7 +1418,7 @@ def build_together(storage: Storage, chat_id: int) -> dict:
     }
 
 
-_STORED_KEYS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time")
+_STORED_KEYS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents")
 
 
 def persist_builds(storage, match_id, rows: list) -> None:
@@ -1447,3 +1462,5 @@ def restore_builds(storage, match_id, rows: list) -> None:
         for key in ("shard_time", "scepter_time"):
             if row.get(key) is None and saved.get(key) is not None:
                 row[key] = saved[key]
+        if not row.get("talents") and saved.get("talents"):
+            row["talents"] = saved["talents"]

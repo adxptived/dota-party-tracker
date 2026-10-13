@@ -15,13 +15,16 @@ from typing import Optional
 
 from mmrbot import avatars, hero_icons, item_icons, perf
 from mmrbot.alert_image import alert_caption, render_alert_image
-from mmrbot.boards import CAPTION_LIMIT, HeroBoard, ImageBoard, MatchBoard, MatchupsBoard, build_png, fit_caption
+from mmrbot.boards import (
+    CAPTION_LIMIT, HeroBoard, ImageBoard, LookupBoard, MatchBoard, MatchupsBoard, build_png, fit_caption,
+)
 from mmrbot.contest_image import MAX_TABLE as CONTEST_TABLE_LIMIT, render_contest_image
 from mmrbot.daily_image import render_daily_image
 from mmrbot.card_data import (
     award_items, contest_caption, daily_caption, daily_card, contest_view, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
-    summary_rows,
+    summary_rows, LOOKUP_GAMES, lookup_caption, lookup_card, lookup_matches, lookup_text, match_list_rows,
+    match_list_text,
 )
 from mmrbot.cards import ACCENT
 from mmrbot.compare_image import render_compare_image
@@ -52,12 +55,15 @@ from mmrbot.formatting import (
     stale_note,
     standing_line,
 )
-from mmrbot.texts import HIDDEN_HINT, NO_PLAYERS, NOT_FOUND, STRATZ_OFF
+from mmrbot.texts import HIDDEN_HINT, NO_PLAYERS, NOT_FOUND
+from mmrbot.commands import PLAYER_FIRST_BELOW, parse_lookup
+from mmrbot.ids import resolve_account_id
 from mmrbot.charts import _games_word as games_word, render_mmr_chart, series_stats
 from mmrbot.heroes import find_hero, hero_name
 from mmrbot.heroes_image import LIMIT as HEROES_LIMIT
 from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image
 from mmrbot.match_image import render_match_image
+from mmrbot.match_list_image import render_match_list_image
 from mmrbot.matchups_image import render_matchups_image
 from mmrbot.opendota import OpenDota, match_from_opendota
 from mmrbot.ranks import rank_label
@@ -621,7 +627,8 @@ async def render_together_board(storage: Storage, od: OpenDota, chat_id: int, st
 def _player_png(card: dict) -> bytes:
     """В потоке: иконки героев и аватар (кэш/CDN) + рендер карточки игрока."""
     icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
-    hero_ids = [h["hero_id"] for h in card.get("heroes") or []] + ([card["last_game"]["hero_id"]] if card.get("last_game") else [])
+    hero_ids = ([h["hero_id"] for h in card.get("heroes") or []] + [g.get("hero_id") for g in card.get("recent") or []]
+                + ([card["last_game"]["hero_id"]] if card.get("last_game") else []))
     icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
     found = avatar_loader.get_many([card.get("avatar")]) if avatar_loader is not None else {}
     return render_player_image(card, icons, found)
@@ -950,8 +957,9 @@ async def match_board(
     elif cached is not None:
         board = MatchBoard(render_match_card(cached, tz), match_id=match_id, focus=focus)
         match = _cached_as_match(cached)
-    elif stratz is None:
-        return MatchBoard(STRATZ_OFF)
+    elif stratz is None:  # без Stratz матч ищем только в OpenDota — так и пишем
+        return MatchBoard(f"Матч {match_id} не найден в OpenDota (возможно, скрыт или ещё не появился). "
+                          "С ключом Stratz (STRATZ_API_KEY) бот ищет матчи и там.")
     else:
         return MatchBoard(f"Матч {match_id} не найден ни в Stratz, ни в OpenDota (возможно, скрыт или ещё не появился).")
     if want_image(storage, chat_id, image):
@@ -1112,3 +1120,128 @@ async def season_end_board(
         if board.png is not None:
             board.caption = fit_caption(seasons.end_caption(season, result["champion"], result["table"], nxt))
     return board
+
+
+# --- поиск по ID: матч или любой игрок ----------------------------------------------------------------
+
+def _fetch_lookup(od, account_id: int) -> tuple[dict, list, list]:
+    """В потоке: профиль OpenDota, последние ранкед-матчи и их подробности (GPM, урон) — три запроса."""
+    profile = od.get_profile(account_id) or {}
+    matches = od.get_matches(account_id, limit=LOOKUP_GAMES)
+    try:
+        recent = od.get_recent_matches(account_id)
+    except Exception:  # подробности — не главное: без них карточка просто без GPM и урона
+        log.debug("OpenDota: нет /recentMatches игрока %s", account_id, exc_info=True)
+        recent = []
+    return profile, matches or [], recent or []
+
+
+async def player_lookup_board(
+    storage: Storage, od: Optional[OpenDota], chat_id: int, account_id: int, stratz=None, image: Optional[bool] = None,
+) -> LookupBoard:
+    """Карточка игрока по account_id. Игрок из пати — его обычная карточка (с ≈MMR); любой другой — профиль
+    и последние ранкед-игры из OpenDota. kind=None — профиль не найден (или OpenDota недоступен)."""
+    member = storage.get_player_by_account_id(chat_id, account_id)
+    if member is not None:
+        board = await player_board(storage, od, chat_id, str(account_id), stratz, image)
+        if board is not None:
+            return LookupBoard(board.text, board.png, board.caption, kind="player", account_id=account_id, tracked=True)
+    if od is None or provider_down(od):
+        return LookupBoard("OpenDota сейчас недоступен — поиск игрока не получится, попробуйте позже.")
+    try:
+        profile, raw, recent = await asyncio.to_thread(_fetch_lookup, od, account_id)
+    except Exception as exc:
+        log_network_error(log, f"OpenDota: не удалось найти игрока {account_id}", exc, health=getattr(od, "health", None))
+        return LookupBoard("OpenDota не ответил — попробуйте ещё раз чуть позже.")
+    matches = lookup_matches(raw, recent)
+    if not profile.get("personaname") and not profile.get("rank_tier") and not matches:
+        return LookupBoard(f"Игрок {account_id} не найден в OpenDota (или профиль скрыт).")
+    tz = storage.get_or_create_chat(chat_id).tz
+    card = lookup_card(account_id, profile, matches, tz)
+    board = LookupBoard(lookup_text(card), kind="player", account_id=account_id)
+    if want_image(storage, chat_id, image):
+        board.png = await asyncio.to_thread(build_png, "карточку игрока по ID", lambda: _player_png(card))
+        if board.png is not None:
+            board.caption = lookup_caption(card)
+    return board
+
+
+async def lookup_board(
+    storage: Storage, od: Optional[OpenDota], chat_id: int, query: str, stratz=None, image: Optional[bool] = None,
+) -> LookupBoard:
+    """Поиск по ID или ссылке (/find): матч — разбор матча, игрок — его карточка.
+
+    Голое число до 2 млрд сначала ищем как игрока, больше — как матч; не нашлось — пробуем второй вариант.
+    """
+    try:
+        kind, value = parse_lookup(query)
+        if kind == "vanity":
+            value = await asyncio.to_thread(resolve_account_id, value)
+            kind = "player"
+    except ValueError as exc:
+        return LookupBoard(f"⚠️ {html.escape(str(exc))}")
+    order = [kind]
+    if kind == "auto":
+        order = ["player", "match"] if value < PLAYER_FIRST_BELOW else ["match", "player"]
+    board = LookupBoard("Ничего не найдено.")
+    for what in order:
+        if what == "match":
+            found = await match_board(storage, od, chat_id, None, value, stratz, image)
+            board = LookupBoard(found.text, found.png, found.caption, kind="match" if found.match_id else None,
+                                match_id=found.match_id, focus=found.focus)
+        else:
+            if value > 0xFFFFFFFF:
+                continue
+            board = await player_lookup_board(storage, od, chat_id, value, stratz, image)
+        if board.kind is not None:
+            return board
+    if kind == "auto":
+        board.text = f"По номеру {value} не нашлось ни игрока, ни матча (возможно, профиль скрыт или матч ещё не появился)."
+    return board
+
+
+# --- матчи игрока страницей ----------------------------------------------------------------------------
+
+MATCH_PAGE = 10  # столько матчей на странице — по кнопке-цифре на каждый
+
+
+def player_page(storage: Storage, chat_id: int, account: str, offset: int) -> Optional[tuple]:
+    """(игрок, матчи страницы новыми сверху, смещение в границах, всего матчей); None — игрока нет в чате."""
+    player = storage.get_player(chat_id, account)
+    if player is None:
+        return None
+    rows = sorted((m for m in storage.get_matches(player.id) if m.get("lobby_type") == 7),
+                  key=lambda m: m["start_time"], reverse=True)
+    offset = min(max(offset, 0), max((len(rows) - 1) // MATCH_PAGE * MATCH_PAGE, 0))
+    return player, rows[offset:offset + MATCH_PAGE], offset, len(rows)
+
+
+def _match_list_png(title, subtitle, rows, badge) -> bytes:
+    loader = hero_icons.shared()
+    icons = loader.get_many(r["hero_id"] for r in rows) if loader is not None else {}
+    return render_match_list_image(title, subtitle, rows, icons, badge)
+
+
+async def match_list_board(
+    storage: Storage, chat_id: int, account: str, offset: int, current: Optional[int] = None,
+    image: Optional[bool] = None,
+) -> Optional[tuple[ImageBoard, int, int, int]]:
+    """Страница матчей игрока картинкой (номер у строки = кнопка), текст — запасной вариант.
+
+    Возвращает (борд, account_id, смещение, всего); None — игрока нет. Только БД, без сети.
+    """
+    page = await _build(player_page, storage, chat_id, account, offset)
+    if page is None:
+        return None
+    player, matches, offset, total = page
+    chat = storage.get_or_create_chat(chat_id)
+    rows = match_list_rows(matches, offset, chat.mmr_step, chat.tz, player.anchor_mmr is not None, current)
+    board = ImageBoard(match_list_text(player.display_name, rows, offset, total))
+    if want_image(storage, chat_id, image):
+        subtitle = f"матчи {offset + 1}–{offset + len(rows)} из {total} · нажмите номер, чтобы открыть" if total else None
+        badge = (f"СТР. {offset // MATCH_PAGE + 1}/{(total - 1) // MATCH_PAGE + 1}", ACCENT) if total else None
+        board.png = await asyncio.to_thread(build_png, "список матчей",
+                                            lambda: _match_list_png(f"Матчи · {player.display_name}", subtitle, rows, badge))
+        if board.png is not None:
+            board.caption = f"📜 <b>{html.escape(player.display_name)}</b> · матчи {offset + 1}–{offset + len(rows)} из {total}"
+    return board, player.account_id, offset, total
