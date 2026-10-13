@@ -5,7 +5,7 @@
 лучшие в матче GPM и урон — жирным, в последней колонке — дерево талантов (IMP в таблице нет).
 Рисуем на Pillow (ставится вместе с matplotlib), шрифты — из cards.py.
 Чистая функция: иконки приходят готовыми байтами (см. hero_icons.py), сети здесь нет.
-Палитра — тёмная, как у графиков (charts.py). Ширина больше карточек (1640 против 1280): в строке рядом
+Палитра — тёмная, как у графиков (charts.py). Ширина больше карточек (1840 против 1280): в строке рядом
 с ником помещается билд, и колонки не наезжают друг на друга; Telegram держит фото до 2560 px.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from mmrbot.heroes import hero_name
 from mmrbot.talents import tree_rows
 from mmrbot.upgrade_icons import paste_upgrade
 
-MATCH_WIDTH = 1640
+MATCH_WIDTH = 1840
 TRACKED_PANEL, TRACKED_MARK = MINE_PANEL, GOLD  # строка своего игрока: светлее фон + золотая полоса
 
 HEAD_H = 132
@@ -43,9 +43,9 @@ ITEMS_END = 878  # правее — K/D/A
 UNTIMED_HEAD = "БИЛД · времена после разбора матча"  # иконки шарда и скипетра — после предметов и нейтралки
 UPGRADE_SIZE = 26
 # центры колонок (x) и их заголовки
-COLUMNS = [("kda", 962, "K / D / A"), ("nw", 1078, "НЕТВОРС"), ("lh", 1178, "КРИПЫ"), ("gpm", 1283, "GPM / XPM"),
-           ("dmg", 1393, "УРОН"), ("talents", 1520, "ТАЛАНТЫ")]
-RANK_BADGE = 34  # значок ранга игрока на верхнем правом углу иконки героя
+COLUMNS = [("kda", 962, "K / D / A"), ("nw", 1096, "НЕТВОРС"), ("lh", 1220, "КРИПЫ"), ("gpm", 1360, "GPM / XPM"),
+           ("dmg", 1506, "УРОН"), ("talents", 1636, "ТАЛАНТЫ"), ("rank", 1754, "РАНГ")]
+RANK_BADGE = 52  # медаль ранга игрока — в последней колонке
 TREE_W, TREE_H = 72, 52  # дерево талантов графикой в последней колонке
 
 
@@ -254,10 +254,8 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)
     cards.level_badge(img, draw, PAD + 24 + 6, mid + ICON_H / 2 - 4, p.get("level"))
-    cards.plus_badge(img, draw, PAD + 24 - 16, mid - ICON_H / 2 - 8, p.get("plus_xp"))  # на самом углу иконки, наполовину вне её
-    if p.get("rank_tier"):  # ранг игрока (тир) значком на верхнем правом углу иконки героя
-        cards.paste(img, cards.rank_badge(p["rank_tier"], RANK_BADGE), PAD + 24 + ICON_W - RANK_BADGE + 8,
-                    mid - ICON_H / 2 - 8)
+    cards.plus_badge(img, draw, PAD + 24 + ICON_W - cards.PLUS_BADGE + 12, mid + ICON_H / 2 - cards.PLUS_BADGE + 6,
+                     p.get("plus_xp"))  # на правом нижнем углу иконки, частью вне её
     name_w = (NAME_W_BEAR if _has_bear(p) else NAME_W) if build else NAME_W_FREE
     name = clean(tracked.get(p.get("account_id")) or p.get("name")) or "Скрытый профиль"
     star = "★ " if mine else ""
@@ -298,7 +296,10 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
               bold=top, anchor="mm")
     if tower:  # урон по зданиям — вторым рядом: в колонке нет места для двух чисел в строку
         draw_text(draw, (cols["dmg"], mid + 15), f"{_k(tower)} здания", 17, MUTED, anchor="mm")
-    if _talents(p):  # дерево талантов — в последней колонке, где раньше стоял IMP
+    if p.get("rank_tier"):  # ранг игрока (медаль) — справа от талантов
+        cards.paste(img, cards.rank_badge(p["rank_tier"], RANK_BADGE), cols["rank"] - RANK_BADGE / 2,
+                    mid - RANK_BADGE / 2)
+    if _talents(p):  # дерево талантов — в колонке, где раньше стоял IMP
         cx = cols["talents"]
         cards.talent_tree(img, (cx - TREE_W / 2, mid - TREE_H / 2, cx + TREE_W / 2, mid + TREE_H / 2), _talents(p),
                           TRACKED_PANEL if mine else PANEL)
