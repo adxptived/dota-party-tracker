@@ -1,6 +1,7 @@
 """Чистый разбор аргументов команд (без aiogram) — легко тестируется."""
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 MMR_MIN = 0
@@ -138,18 +139,85 @@ def parse_target_period(args: str) -> tuple[Optional[str], str]:
     return _clean_name(rest), period
 
 
+_MATCH_URL_RE = re.compile(r"/matches?/(\d{6,})", re.IGNORECASE)
+
+
+def match_id_from_link(token: str) -> Optional[int]:
+    """ID матча из ссылки Dotabuff/OpenDota/Stratz (…/matches/<id>); не ссылка на матч — None."""
+    found = _MATCH_URL_RE.search(token or "")
+    return int(found.group(1)) if found else None
+
+
 def parse_match_args(args: str) -> tuple[Optional[int], Optional[str]]:
-    """`[match_id|последний] [игрок|@тег]` → (match_id|None, имя|None)."""
+    """`[match_id|ссылка на матч|последний] [игрок|@тег]` → (match_id|None, имя|None)."""
     match_id = None
     rest = []
     for token in (args or "").split():
         if token.lower() in _LAST_WORDS:
             continue
-        if match_id is None and token.isascii() and token.isdigit() and len(token) >= 8:
+        if match_id is None and match_id_from_link(token) is not None:
+            match_id = match_id_from_link(token)
+        elif match_id is None and token.isascii() and token.isdigit() and len(token) >= 8:
             match_id = int(token)
         else:
             rest.append(token)
     return match_id, _clean_name(rest)
+
+
+LOOKUP_HELP = ("Пришлите ID матча, ID игрока (account_id или SteamID64) или ссылку Dotabuff / OpenDota / Stratz / Steam. "
+               "Например: 8012345678 или dotabuff.com/players/123456789.")
+_MATCH_WORDS = {"матч", "match", "m", "м", "игра"}
+_PLAYER_WORDS = {"игрок", "player", "p", "и", "профиль", "аккаунт", "account"}
+PLAYER_FIRST_BELOW = 2_000_000_000  # account_id сейчас меньше; ID матчей с 2016 года — больше
+
+
+def parse_lookup(text: str) -> tuple[str, object]:
+    """Запрос поиска → (вид, значение) без сети.
+
+    Виды: "match" (ID матча), "player" (account_id), "vanity" (кастомная ссылка Steam — её разрешает сеть),
+    "auto" (голое число, которое может оказаться и игроком, и матчем: решает поиск по OpenDota).
+    Слово «матч»/«игрок» перед числом снимает неоднозначность. Не похоже ни на что — ValueError с подсказкой.
+    """
+    from mmrbot.ids import STEAMID64_BASE, extract_vanity, parse_account_id
+
+    tokens = (text or "").strip().split()
+    if not tokens:
+        raise ValueError(LOOKUP_HELP)
+    forced = None
+    if tokens[0].lower().rstrip(":") in _MATCH_WORDS | _PLAYER_WORDS and len(tokens) > 1:
+        forced = "match" if tokens.pop(0).lower().rstrip(":") in _MATCH_WORDS else "player"
+    raw = tokens[0]
+    match_id = match_id_from_link(raw)
+    if match_id is not None:
+        return "match", match_id
+    if extract_vanity(raw):
+        return "vanity", raw
+    if re.search(r"/(players|profiles)/\d+", raw):
+        return "player", parse_account_id(raw)
+    digits = raw.lstrip("#")
+    if not (digits.isascii() and digits.isdigit()):
+        raise ValueError(LOOKUP_HELP)
+    number = int(digits)
+    if number > STEAMID64_BASE:  # SteamID64 — всегда игрок
+        return "player", parse_account_id(digits)
+    if forced == "player":
+        return "player", parse_account_id(digits)
+    if forced == "match" or number > 0xFFFFFFFF:  # больше 32 бит account_id не бывает
+        if number <= 0:
+            raise ValueError(LOOKUP_HELP)
+        return "match", number
+    if number <= 0:
+        raise ValueError(LOOKUP_HELP)
+    return "auto", number
+
+
+def looks_like_player_id(text: str) -> bool:
+    """Аргумент /player — ID или ссылка на игрока (а не ник участника пати)?"""
+    try:
+        kind, _ = parse_lookup(text)
+    except ValueError:
+        return False
+    return kind in {"player", "vanity", "auto"}
 
 
 def parse_on_off(args: str) -> bool:

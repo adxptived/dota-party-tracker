@@ -114,6 +114,14 @@ def build() -> dict[str, bytes]:
                    neutral_item=10, shard=True, shard_time=1500, scepter=i == 0, scepter_time=2100,
                    net_worth=18200 + i * 900, last_hits=312, denies=14, tower_damage=4200, rank_tier=55 - i * 10)
     out["alert_build.png"] = render_alert_image(event, "Europe/Moscow", icons={12: fake_photo(1, 256)}, item_icons=items)
+    solo = {"kind": "match", "chat_id": 1, "match_id": 9042174049, "start_time": NOW, "duration": 2468,
+            "average_rank": 71, "score": {"radiant": 33, "dire": 32, "gold": (60000, 76100)},
+            "rows": [{"name": "genocide in hell", "hero_id": 11, "kills": 10, "deaths": 5, "assists": 12, "won": False,
+                      "delta": -25, "current_mmr": 4244, "gpm": 536, "hero_damage": 21100, "net_worth": 20400,
+                      "last_hits": 295, "denies": 4, "tower_damage": 1800, "rank_tier": 63, "is_radiant": True,
+                      "position": 2, "imp": -6, "items": [1, 2, 3, 4, 5, 6], "neutral_item": 10,
+                      "item_times": [457, 1948, 2380, 1509, 893, 1085]}]}
+    out["alert_solo.png"] = render_alert_image(solo, "Europe/Moscow", icons={11: fake_photo(3, 256)}, item_icons=items)
     for kind in ("win", "loss", "mixed"):
         out[f"alert_{kind}.png"] = render_alert_image(
             sample_alert(kind), "Europe/Moscow", icons={12: fake_photo(1, 256), 1: fake_photo(2, 256)},
@@ -146,6 +154,19 @@ def build() -> dict[str, bytes]:
         awards[1:], None, icons, avatars, "±MMR")
     out["stats_empty.png"] = render_stats_image("Рейтинг", None, None, [])
     out["player.png"] = render_player_image(sample_player(), icons, avatars)
+    long_card = sample_player()
+    long_card.update(name="Оооочень длинный ник игрока из Steam", steam_name="steam_" + "x" * 40, rank_tier=80,
+                     rank_text="Immortal #1234", mmr_text="≈12345", delta_note="за 1234 игры", streak=("L", 12))
+    out["player_long.png"] = render_player_image(long_card, icons, avatars)
+    from mmrbot.card_data import lookup_card, lookup_matches
+    raw = [{"match_id": 9_000_000_000 + i, "start_time": NOW - i * 7200, "player_slot": 0, "radiant_win": i % 3 != 1,
+            "lobby_type": 7, "kills": 4 + i % 9, "deaths": 2 + i % 6, "assists": 6 + i % 11, "hero_id": [11, 1, 26][i % 3],
+            "duration": 1800 + i * 60, "party_size": 1 + i % 2, "average_rank": 71} for i in range(40)]
+    recent = [{"match_id": 9_000_000_000 + i, "gold_per_min": 520 + i * 7, "hero_damage": 19000 + i * 400} for i in range(20)]
+    found = lookup_card(123456789, {"personaname": "genocide in hell", "rank_tier": 63,
+                                     "avatarfull": "https://avatars.steamstatic.com/a.jpg"},
+                        lookup_matches(raw, recent), "Europe/Moscow")
+    out["player_lookup.png"] = render_player_image(found, icons, avatars)
     card = sample_player()
     card.update(warnings=[], steam_name=None, perf=None, streak=None, series=[], split=[], hours=None, skills=[],
                 heroes=[], last_game=None, lobby_rank=None, standing=None)
@@ -331,14 +352,17 @@ def sample_player() -> dict:
         "series": series, "series_label": "Динамика ≈MMR · последние 20 игр",
         "form": [True, True, False, True, True, True, False, True, True, True],
         "split": [{"label": "Соло", "wins": 12, "losses": 8}, {"label": "В группе", "wins": 23, "losses": 13}],
-        "hours": {"best": "21:00 · 70%", "worst": "03:00 · 30%"},
+        "facts": [("Лучшая серия", "7 побед", WIN), ("Пул героев", "23 героя", None), ("Средняя игра", "38 мин", None)],
         "heroes": [{"hero_id": 12, "name": "Phantom Lancer", "games": 12, "wins": 8, "winrate": 8 / 12, "kda": 4.1},
                    {"hero_id": 1, "name": "Anti-Mage", "games": 9, "wins": 4, "winrate": 4 / 9, "kda": 2.8},
                    {"hero_id": 26, "name": "Lion", "games": 5, "wins": 1, "winrate": 0.2, "kda": 2.1}],
         "last_game": {"hero_id": 12, "name": "Phantom Lancer", "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0, "won": True,
                       "when": "09.10 11:53", "stats": [("Время", "38 мин"), ("GPM", "812"), ("Урон", "42.0k")]},
-        "skills": [{"label": "Фарм", "pct": 0.78}, {"label": "Урон", "pct": 0.41}, {"label": "Участие в боях", "pct": 0.22},
-                   {"label": "Поддержка", "pct": 0.55}],
+        "recent": [{"hero_id": h, "name": "", "won": w, "kills": k, "deaths": d, "assists": a, "delta": 25 if w else -25,
+                    "double_down": i == 2, "minutes": 30 + i * 3, "when": f"{12 - i // 2:02d}.10"}
+                   for i, (h, w, k, d, a) in enumerate([(12, True, 20, 2, 10), (1, False, 4, 9, 6), (26, True, 3, 5, 21),
+                                                       (12, True, 11, 4, 9), (35, False, 6, 7, 8), (12, True, 9, 1, 14)])],
+        "recent_mmr": True,
         "lobby_rank": 55, "lobby_text": "Legend 5", "standing": "#2 из 5 в чате по силе", "note": "данные обновлены 12:30",
     }
 

@@ -1,5 +1,8 @@
 """Карточка игрока картинкой (/player): шапка с аватаром, рангом и ≈MMR, плитки показателей, динамика MMR и форма,
-соло против группы, топ-герои, последняя игра, профиль навыков, предупреждения плашкой.
+соло против группы и короткие факты (лучшая серия, пул героев, средняя игра), топ-герои, последняя игра,
+лента последних игр (герой, исход, K/D/A, ±MMR), предупреждения плашкой.
+
+Длинные ники, ранги и подписи сначала уменьшаются в кегле и лишь потом обрезаются — текст не уходит за края блоков.
 
 Чистая функция: данные приходят словарём (его собирает card_data.player_card), иконки героев и аватар — готовыми
 байтами; сети и БД здесь нет. Ключи словаря — в card_data.player_card.
@@ -12,6 +15,7 @@ from mmrbot import cards
 from mmrbot.cards import (
     ACCENT, BG, FG, GOLD, ICON_H, ICON_W, LOSS, MUTED, PAD, PANEL, WIDTH, WIN, clean, draw_text, signed,
 )
+from mmrbot.formatting import plural_games
 
 HEADER_H = 190
 TILE_H = 112
@@ -19,6 +23,8 @@ GAP = 16
 LEFT_W = 760
 RIGHT_W = WIDTH - 2 * PAD - LEFT_W - GAP
 HERO_ROW_H = 84
+RECENT_N = 6
+RECENT_H = 292
 
 
 def _section(img, draw, box, title: str) -> tuple[int, int]:
@@ -41,7 +47,7 @@ def render_player_image(card: dict, icons: Optional[dict] = None, avatars: Optio
     if warnings:
         y = _draw_warnings(img, draw, y, warnings) + GAP
 
-    tiles = (card.get("tiles") or [])[:6]
+    tiles = (card.get("tiles") or [])[:5]
     if tiles:
         w = (WIDTH - 2 * PAD - GAP * (len(tiles) - 1)) / len(tiles)
         for i, tile in enumerate(tiles):
@@ -50,16 +56,16 @@ def render_player_image(card: dict, icons: Optional[dict] = None, avatars: Optio
                        tile.get("sub"), tile.get("color") or FG, value_size=32, fill=PANEL)
         y += TILE_H + GAP
 
-    if card.get("series") or card.get("form") or card.get("split") or card.get("hours"):
+    if card.get("series") or card.get("form") or card.get("split") or card.get("facts"):
         y = _draw_trend_row(img, draw, y, card) + GAP
 
     heroes, last = card.get("heroes") or [], card.get("last_game")
     if heroes or last:
         y = _draw_heroes_row(img, draw, y, heroes, last, icons) + GAP
 
-    skills = card.get("skills") or []
-    if skills:
-        y = _draw_skills(img, draw, y, skills) + GAP
+    recent = card.get("recent") or []
+    if recent:
+        y = _draw_recent(img, draw, y, recent[:RECENT_N], icons, card.get("recent_mmr", True)) + GAP
 
     if card.get("lobby_rank") or card.get("standing"):
         y = _draw_footer_row(img, draw, y, card)
@@ -95,37 +101,55 @@ def _draw_header(img, draw, y: int, card: dict, avatars: dict, tone: str = GOLD)
     cards.paste(img, ring, PAD + 28, y + (HEADER_H - ring.size[1]) / 2)
     x = PAD + 28 + ring.size[0] + 28
 
-    draw_text(draw, (x, y + 50), name, 46, FG, bold=True, anchor="lm", max_w=560)
-    if card.get("steam_name"):
-        draw_text(draw, (x, y + 92), f"Steam: {clean(card['steam_name'])}", 22, cards.mix(MUTED, "#ffffff", 0.12),
-                  anchor="lm", max_w=560)
-    cards.paste(img, cards.rank_badge(card.get("rank_tier"), 56), x, y + 112)
-    rank_text = clean(card.get("rank_text")) or "Без ранга"
-    draw_text(draw, (x + 72, y + 140), rank_text, 28, FG, bold=True, anchor="lm", max_w=300)
-    streak = card.get("streak")
-    if streak and streak[1] >= 2:
-        is_win = streak[0] == "W"
-        tx = x + 72 + min(cards.text_width(rank_text, 28, True), 300) + 20
-        cards.chip(img, draw, tx, y + 140, f"{'▲' if is_win else '▼'} {streak[1]} подряд", WIN if is_win else LOSS,
-                   size=20, pad=14, base=PANEL)
-
+    # правый блок (≈MMR, дельта, перф) рисуем первым: его ширина ограничивает ник и ранг слева
     right = WIDTH - PAD - 32
-    cards.value_text(draw, (right, y + 62), clean(card.get("mmr_text")) or "—", 72, FG)
+    mmr_w = cards.value_text(draw, (right, y + 62), clean(card.get("mmr_text")) or "—", 72, FG)
+    block_w = mmr_w
     delta = card.get("mmr_delta")
     if delta is not None and card.get("delta_note"):
-        cards.delta_text(draw, (right, y + 116), f"{signed(delta)} {clean(card['delta_note'])}", 24, cards.delta_color(delta))
+        text = f"{signed(delta)} {clean(card['delta_note'])}"
+        cards.delta_text(draw, (right, y + 116), text, 24, cards.delta_color(delta), max_w=360)
+        block_w = max(block_w, min(cards.text_width(text, 24), 360))
+    elif card.get("headline_note"):  # пояснение к крупному числу без знака (винрейт у игрока не из пати)
+        text = clean(card["headline_note"])
+        draw_text(draw, (right, y + 116), text, 22, MUTED, anchor="rm", max_w=360)
+        block_w = max(block_w, min(cards.text_width(text, 22), 360))
     if card.get("perf") is not None:
-        cards.chip(img, draw, right, y + 156, f"перф {card['perf']}/100", GOLD, size=20, align="right", pad=14, base=PANEL)
+        block_w = max(block_w, cards.chip(img, draw, right, y + 156, f"перф {card['perf']}/100", GOLD, size=20,
+                                          align="right", pad=14, base=PANEL))
+    room = right - block_w - 32 - x
+
+    draw_text(draw, (x, y + 50), name, 46, FG, bold=True, anchor="lm", max_w=room, shrink=28)
+    subtitle = clean(card.get("subtitle")) or (f"Steam: {clean(card['steam_name'])}" if card.get("steam_name") else "")
+    if subtitle:
+        draw_text(draw, (x, y + 92), subtitle, 22, cards.mix(MUTED, "#ffffff", 0.12), anchor="lm", max_w=room, shrink=18)
+    cards.paste(img, cards.rank_badge(card.get("rank_tier"), 56), x, y + 112)
+    rank_text = clean(card.get("rank_text")) or "Без ранга"
+    streak = card.get("streak")
+    chip_text = None
+    if streak and streak[1] >= 2:
+        chip_text = f"{'▲' if streak[0] == 'W' else '▼'} {streak[1]} подряд"
+    chip_w = cards.text_width(chip_text, 20, True, False) + 28 + 20 if chip_text else 0
+    rank_room = room - 72
+    if chip_text and rank_room - chip_w < 140:  # серия не помещается рядом с рангом — ранг важнее
+        chip_text, chip_w = None, 0
+    size = cards.fit_size(rank_text, 28, True, rank_room - chip_w, 20)
+    draw_text(draw, (x + 72, y + 140), rank_text, size, FG, bold=True, anchor="lm", max_w=rank_room - chip_w)
+    if chip_text:
+        tx = x + 72 + min(cards.text_width(rank_text, size, True), rank_room - chip_w) + 20
+        is_win = streak[0] == "W"
+        cards.chip(img, draw, tx, y + 140, chip_text, WIN if is_win else LOSS, size=20, pad=14, base=PANEL)
     return y + HEADER_H
 
 
 def _draw_trend_row(img, draw, y: int, card: dict) -> int:
-    h = 244
+    facts = (card.get("facts") or [])[:3]
+    h = max(244, 56 + 4 + len(card.get("split") or []) * 58 + len(facts) * 30 + 24)
     x0, y0 = _section(img, draw, (PAD, y, PAD + LEFT_W, y + h), card.get("series_label") or "Динамика ≈MMR")
     series = card.get("series") or []
     if len(series) >= 2:
         draw_text(draw, (PAD + LEFT_W - 24, y + 28), f"{series[0]} → {series[-1]}", 20, FG, bold=True, anchor="rm")
-        cards.sparkline(img, (x0, y0 - 6, PAD + LEFT_W - 24, y0 + 108), series, ACCENT)
+        cards.sparkline(img, (x0, y0 - 6, PAD + LEFT_W - 24, y + h - 96), series, ACCENT)
     else:
         draw_text(draw, (x0, y0 + 40), "мало игр для графика", 22, MUTED, anchor="lm")
     form = card.get("form") or []
@@ -141,18 +165,20 @@ def _draw_trend_row(img, draw, y: int, card: dict) -> int:
     row_y = y1 + 4
     for item in card.get("split") or []:
         games = item["wins"] + item["losses"]
-        draw_text(draw, (x1, row_y + 4), clean(item["label"]), 22, FG, bold=True, anchor="lm")
+        draw_text(draw, (x1, row_y + 4), clean(item["label"]), 22, FG, bold=True, anchor="lm", max_w=RIGHT_W - 160)
         draw_text(draw, (rx + RIGHT_W - 24, row_y + 4), f"{item['wins']}–{item['losses']}" if games else "—", 22, FG,
                   bold=True, anchor="rm")
         if games:
             cards.winrate_bar(img, (x1, row_y + 24, rx + RIGHT_W - 24, row_y + 36), item["wins"], item["losses"])
         row_y += 58
-    hours = card.get("hours")
-    if hours:
-        draw_text(draw, (x1, row_y + 8), "Лучший час", 20, MUTED, anchor="lm")
-        draw_text(draw, (rx + RIGHT_W - 24, row_y + 8), clean(hours["best"]), 20, WIN, bold=True, anchor="rm")
-        draw_text(draw, (x1, row_y + 38), "Худший час", 20, MUTED, anchor="lm")
-        draw_text(draw, (rx + RIGHT_W - 24, row_y + 38), clean(hours["worst"]), 20, LOSS, bold=True, anchor="rm")
+    inner = RIGHT_W - 48
+    for label, value, *color in facts:
+        value = clean(value)
+        value_w = min(cards.text_width(value, 20, True), inner * 0.55)
+        draw_text(draw, (rx + RIGHT_W - 24, row_y + 8), value, 20, (color[0] if color and color[0] else FG), bold=True,
+                  anchor="rm", max_w=inner * 0.55)
+        draw_text(draw, (x1, row_y + 8), clean(label), 20, MUTED, anchor="lm", max_w=inner - value_w - 12)
+        row_y += 30
     return y + h
 
 
@@ -163,11 +189,12 @@ def _draw_heroes_row(img, draw, y: int, heroes: list, last: Optional[dict], icon
         top = y0 + i * HERO_ROW_H
         cards.paste(img, cards.hero_icon(icons.get(hero["hero_id"]), hero["hero_id"]), x0, top + (HERO_ROW_H - ICON_H) / 2 - 4)
         tx = x0 + ICON_W + 20
-        draw_text(draw, (tx, top + 22), clean(hero["name"]), 26, FG, bold=True, anchor="lm", max_w=330)
-        line = f"{hero['games']} игр · {hero['wins']}–{hero['games'] - hero['wins']}"
+        draw_text(draw, (tx, top + 22), clean(hero["name"]), 26, FG, bold=True, anchor="lm", max_w=PAD + LEFT_W - 24 - 190 - tx,
+                  shrink=20)
+        line = f"{plural_games(hero['games'])} · {hero['wins']}–{hero['games'] - hero['wins']}"
         if isinstance(hero.get("kda"), (int, float)):
             line += f" · KDA {hero['kda']:.1f}"
-        draw_text(draw, (tx, top + 52), line, 20, MUTED, anchor="lm", max_w=360)
+        draw_text(draw, (tx, top + 52), line, 20, MUTED, anchor="lm", max_w=PAD + LEFT_W - 24 - 90 - tx, shrink=17)
         right = PAD + LEFT_W - 24
         cards.winrate_bar(img, (right - 170, top + 14, right, top + 26), hero["wins"], hero["games"] - hero["wins"])
         draw_text(draw, (right, top + 52), f"{round(hero['winrate'] * 100)}%", 24, FG, bold=True, anchor="rm")
@@ -176,7 +203,8 @@ def _draw_heroes_row(img, draw, y: int, heroes: list, last: Optional[dict], icon
     x1, y1 = _section(img, draw, (rx, y, rx + RIGHT_W, y + h), "Последняя игра")
     if last:
         cards.paste(img, cards.hero_icon(icons.get(last["hero_id"]), last["hero_id"]), x1, y1 + 4)
-        draw_text(draw, (x1 + ICON_W + 20, y1 + 18), clean(last["name"]), 24, FG, bold=True, anchor="lm", max_w=RIGHT_W - ICON_W - 70)
+        draw_text(draw, (x1 + ICON_W + 20, y1 + 18), clean(last["name"]), 24, FG, bold=True, anchor="lm",
+                  max_w=RIGHT_W - ICON_W - 70, shrink=18)
         cards.chip(img, draw, x1 + ICON_W + 20, y1 + 52, "победа" if last.get("won") else "поражение",
                    WIN if last.get("won") else LOSS, size=18, pad=12, base=PANEL)
         if last.get("when"):
@@ -196,18 +224,40 @@ def _draw_heroes_row(img, draw, y: int, heroes: list, last: Optional[dict], icon
     return y + h
 
 
-def _draw_skills(img, draw, y: int, skills: list) -> int:
-    skills = skills[:4]
-    h = 56 + len(skills) * 46 + 14
-    x0, y0 = _section(img, draw, (PAD, y, WIDTH - PAD, y + h), "Профиль навыков · мировой перцентиль")
-    draw_text(draw, (WIDTH - PAD - 24, y + 28), "50% — средний игрок", 18, MUTED, anchor="rm")
-    for i, skill in enumerate(skills):
-        cy = y0 + i * 46 + 18
-        pct = max(0.0, min(1.0, skill["pct"]))
-        color = WIN if pct >= 0.6 else LOSS if pct < 0.4 else ACCENT
-        draw_text(draw, (x0, cy), clean(skill["label"]), 22, FG, bold=True, anchor="lm", max_w=250)
-        cards.bar(img, (x0 + 290, cy - 9, WIDTH - PAD - 24 - 110, cy + 9), pct, color, marker=0.5)
-        draw_text(draw, (WIDTH - PAD - 24, cy), f"{round(pct * 100)}%", 24, color, bold=True, anchor="rm")
+def _draw_recent(img, draw, y: int, games: list, icons: dict, show_delta: bool = True) -> int:
+    """Лента последних игр слева направо от новой к старой: иконка героя, исход и ±MMR, K/D/A, длительность и дата."""
+    h = RECENT_H
+    x0, y0 = _section(img, draw, (PAD, y, WIDTH - PAD, y + h), "Последние игры")
+    draw_text(draw, (WIDTH - PAD - 24, y + 28), "новые слева", 18, MUTED, anchor="rm")
+    gap = 12
+    col_w = (WIDTH - 2 * PAD - 48 - gap * (RECENT_N - 1)) / RECENT_N
+    icon_w = round(col_w - 24)
+    icon_h = round(icon_w * 9 / 16)
+    for i, game in enumerate(games):
+        left = x0 + i * (col_w + gap)
+        won = bool(game.get("won"))
+        color = WIN if won else LOSS
+        fill = cards.mix(PANEL, color, 0.07)
+        bottom = y + h - 18
+        cards.panel(img, (left, y0, left + col_w, bottom), fill, radius=14, outline=cards.mix(fill, color, 0.3))
+        cx = left + col_w / 2
+        cards.paste(img, cards.hero_icon(icons.get(game.get("hero_id")), game.get("hero_id"), icon_w, icon_h, 8),
+                    left + 12, y0 + 12)
+        line_y = y0 + 12 + icon_h + 22
+        result = "ПОБЕДА" if won else "ПОРАЖЕНИЕ"
+        delta = game.get("delta") if show_delta else None
+        if delta is not None:
+            text = signed(delta) + (" ×2" if game.get("double_down") else "")
+            draw_text(draw, (left + col_w - 12, line_y), text, 18, color, bold=True, anchor="rm", track=False)
+            draw_text(draw, (left + 12, line_y), result, 15, color, bold=True, anchor="lm",
+                      max_w=col_w - 30 - cards.text_width(text, 18, True, False))
+        else:
+            draw_text(draw, (cx, line_y), result, 16, color, bold=True, anchor="mm")
+        cards.kda(draw, cx, line_y + 34, game.get("kills"), game.get("deaths"), game.get("assists"), 26)
+        info = "  ·  ".join(part for part in (f"{game['minutes']} мин" if game.get("minutes") else None,
+                                              clean(game.get("when"))) if part)
+        if info:
+            draw_text(draw, (cx, line_y + 68), info, 17, MUTED, anchor="mm", max_w=col_w - 16, shrink=14, track=False)
     return y + h
 
 
@@ -217,7 +267,9 @@ def _draw_footer_row(img, draw, y: int, card: dict) -> int:
     x = PAD + 24
     if card.get("lobby_rank"):
         cards.paste(img, cards.rank_badge(card["lobby_rank"], 44), x, y + (h - 44) / 2)
-        draw_text(draw, (x + 58, y + h / 2), f"Средний уровень лобби · {clean(card.get('lobby_text'))}", 22, FG, anchor="lm", max_w=520)
+        draw_text(draw, (x + 58, y + h / 2), f"Средний уровень лобби · {clean(card.get('lobby_text'))}", 22, FG, anchor="lm",
+                  max_w=520, shrink=18)
     if card.get("standing"):
-        draw_text(draw, (WIDTH - PAD - 24, y + h / 2), clean(card["standing"]), 22, GOLD, bold=True, anchor="rm", max_w=560)
+        draw_text(draw, (WIDTH - PAD - 24, y + h / 2), clean(card["standing"]), 22, GOLD, bold=True, anchor="rm", max_w=560,
+                  shrink=18)
     return y + h + 6

@@ -113,6 +113,9 @@ class PlayerSummary:
     mmr_log: list = field(default_factory=list)  # журнал заданий MMR: [{ts, mmr, drift, games}]
     mmr_drift: bool = False  # оценка MMR разошлась с медалью — стоит обновить /setmmr
     history_closed: bool = False  # история матчей закрыта у OpenDota — цифры могут быть неполными
+    damage_games: Optional[int] = None  # игр с известным уроном по героям (None — как detail_games)
+    net_worth_games: Optional[int] = None  # игр с известным нетворсом (None — как detail_games)
+    recent_games: list = field(default_factory=list)  # последние игры, новые первыми (stats.recent_games)
 
 
 def _normalize(raw: dict) -> dict:
@@ -1127,6 +1130,9 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         avg_perf=avg_perf,
         enriched_games=len(enriched),
         detail_games=sum(1 for m in all_matches if m.get("gpm") is not None),
+        damage_games=sum(1 for m in all_matches if m.get("hero_damage") is not None),
+        net_worth_games=sum(1 for m in all_matches if m.get("net_worth") is not None),
+        recent_games=stats.recent_games(all_matches, step),
         avg_gpm_window=_mean_field("gpm"),
         avg_hero_damage_window=_mean_field("hero_damage"),
         avg_net_worth_window=_mean_field("net_worth"),

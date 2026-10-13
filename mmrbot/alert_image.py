@@ -1,7 +1,7 @@
-"""Оповещение о конце матча картинкой: шапка с исходом, счётом матча и лобби, по строке на каждого игрока пати
-(аватар, иконка героя, ник, позиция и исход линии, K/D/A, ±MMR → ≈MMR, серия; под строкой — билд и подписанные
-ячейки: у коров нетворс, добито/не отдано, урон, здания; у саппортов — варды, стаки, лечение, урон),
-внизу «Сегодня вместе».
+"""Оповещение о конце матча картинкой. Цифры не толпятся наверху: шапка — только исход и лобби; в строке игрока
+сверху — аватар, герой, ник, позиция и исход линии, ±MMR → ≈MMR, ранг и серия; ниже — билд со временем покупки
+и подписанные ячейки (K/D/A, IMP, GPM; у коров нетворс, добито/не отдано, урон, здания; у саппортов — варды, стаки,
+лечение, урон); под игроками — итог матча (счёт, золото, длительность, начало, ID) и «Сегодня вместе».
 
 Чистая функция: иконки героев и аватары приходят готовыми байтами, сети и БД здесь нет.
 """
@@ -24,20 +24,21 @@ from mmrbot.heroes import hero_name
 from mmrbot.ranks import rank_label
 from mmrbot.upgrade_icons import paste_upgrade
 
-ROW_H, ROW_GAP = 104, 10
+TOP_H = 96  # верх строки игрока: аватар, герой, ник и ±MMR — без россыпи чисел
+ROW_GAP = 10
 AVATAR = 64
 NAME_X = PAD + 22 + AVATAR + 14 + ICON_W + 20
-NAME_MAX_W = 360
-KDA_X = 760
 RIGHT = WIDTH - PAD - 24
-FOOT_H = 76
-STRIP_H = 52  # полоса под строкой игрока: билд, апгрейды, фарм, ранг (только если есть что показать)
+CELLS_X = PAD + 24
+BUILD_H = 54  # линия билда под верхом строки (только если билд известен)
 TIME_H = 20  # + подписи времени покупки под иконками предметов
+CELLS_H = 66  # ряд подписанных ячеек: K/D/A, IMP, экономика, урон
 ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
-BADGE = 40
 UPGRADE_SIZE = 32
-STRIP_TEXT_X = 610  # ячейки экономики и урона — правее билда и значков апгрейдов
-STRIP_CELL_W = 112
+CELL_MAX_W = 176
+SUMMARY_H = 84  # итог матча внизу: счёт, золото, длительность, дата и ID
+FOOT_H = 76
+BANNER_H = 112
 TIME_COLOR = cards.TIME_COLOR
 
 
@@ -66,10 +67,8 @@ def clock(seconds) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
-def _has_strip(row: dict) -> bool:
-    return bool(row.get("items") or row.get("neutral_item") or row.get("rank_tier") or row.get("shard")
-                or row.get("scepter") or row.get("tower_damage") or row.get("net_worth")
-                or (is_support(row) and (_number(row.get("wards")) or _number(row.get("stacks")))))
+def _has_build(row: dict) -> bool:
+    return bool(row.get("items") or row.get("neutral_item") or row.get("shard") or row.get("scepter"))
 
 
 def _times(row: dict) -> list:
@@ -77,10 +76,18 @@ def _times(row: dict) -> list:
     return [clock(t) for t in (row.get("item_times") or [])[: len(row.get("items") or [])]]
 
 
+def _build_h(row: dict) -> int:
+    if not _has_build(row):
+        return 0
+    return BUILD_H + (TIME_H if any(_times(row)) or _upgrade_times(row) else 0)
+
+
+def _upgrade_times(row: dict) -> bool:
+    return any(row.get(key) and clock(row.get(f"{key}_time")) for key in ("shard", "scepter"))
+
+
 def _row_h(row: dict) -> int:
-    if not _has_strip(row):
-        return ROW_H
-    return ROW_H + STRIP_H + (TIME_H if any(_times(row)) else 0)
+    return TOP_H + _build_h(row) + CELLS_H
 
 
 @lru_cache(maxsize=512)
@@ -105,20 +112,29 @@ def render_alert_image(
 ) -> bytes:
     """Событие `detect_new_games` (kind="match") → PNG-байты.
 
+    Сверху — только исход и лобби; в строке игрока наверху — кто и на ком играл и ±MMR, цифры матча (K/D/A, IMP,
+    экономика, урон) — подписанными ячейками внизу строки; счёт, золото, длительность, дата и ID — итогом под игроками.
     icons: {hero_id: PNG-байты}; avatars: {url: байты}; item_icons: {item_id: PNG-байты};
     отсутствующие рисуются заглушками.
     """
     icons, avatars, item_icons = icons or {}, avatars or {}, item_icons or {}
     rows = event.get("rows") or []
     label, color = _outcome(rows) if rows else ("МАТЧ", ACCENT)
-    canvas = cards.Canvas(260 + sum(_row_h(r) + ROW_GAP for r in rows) + FOOT_H + 100, accent=color)
+    summary = _summary_cells(event, tz)
+    height = (PAD + BANNER_H + 14 + sum(_row_h(r) + ROW_GAP for r in rows) + (SUMMARY_H + ROW_GAP if summary else 0)
+              + FOOT_H + PAD)
+    canvas = cards.Canvas(height, accent=color)
     img, draw = canvas.img, canvas.draw
-    y = _draw_banner(img, draw, PAD, event, tz, label, color) + 14
+    y = _draw_banner(img, draw, PAD, event, label, color) + 14
 
     mvp = _mvp_name(rows)
     for row in rows:
         _draw_row(img, draw, y, row, icons, avatars, mvp, item_icons)
         y += _row_h(row) + ROW_GAP
+
+    if summary:
+        _draw_summary(img, draw, y, summary, event)
+        y += SUMMARY_H + ROW_GAP
 
     shared = event.get("shared")
     if shared and shared.get("games"):
@@ -127,64 +143,54 @@ def render_alert_image(
     return canvas.png(y)
 
 
-BANNER_H = 136
-
-
-def _draw_banner(img, draw, y: int, event: dict, tz: str, label: str, color: str) -> int:
-    """Шапка-плашка: исход крупно цветом (это главное в оповещении), под ним «Матч завершён · дата · длительность»,
-    справа — средний ранг лобби и ID матча. Возвращает y под плашкой."""
+def _draw_banner(img, draw, y: int, event: dict, label: str, color: str) -> int:
+    """Шапка-плашка: исход крупно цветом (это главное в оповещении), справа — средний ранг лобби. Счёт, золото, дата и ID — в итоге под игроками: верх картинки не пестрит цифрами."""
     box = (PAD, y, WIDTH - PAD, y + BANNER_H)
     cards.gradient_panel(img, box, cards.mix(PANEL, color, 0.34), cards.mix(PANEL, color, 0.04), radius=20,
                          outline=cards.mix(PANEL, color, 0.42))
     cards.stripe(img, PAD, y + 20, y + BANNER_H - 20, color)
-    when = fmt_local(event.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
-    sub = "Матч завершён  ·  " + when + (f"  ·  {clock(event['duration'])}" if event.get("duration") else "")
-    score = match_score(event)
-    if score and score["mixed"]:  # игроки на разных сторонах: «наш» счёт не определён — подписываем стороны
-        sub += f"  ·  Radiant {score['left']} : {score['right']} Dire"
     right = WIDTH - PAD - 28
     rank = event.get("average_rank")
-    side_w = 300 if rank else 240
-    draw_text(draw, (PAD + 32, y + 52), label, 56, cards.mix(color, "#ffffff", 0.12), bold=True, anchor="lm",
-              max_w=WIDTH - 2 * PAD - 60 - side_w)
-    _draw_score(draw, PAD + 32 + cards.text_width(label, 56, True) + 36, y + 52, event,
-                WIDTH - PAD - 60 - side_w)
-    draw_text(draw, (PAD + 34, y + 104), sub, 22, cards.mix(MUTED, "#ffffff", 0.25), anchor="lm",
-              max_w=WIDTH - 2 * PAD - 60 - side_w)
-    match_id = f"ID {event.get('match_id')}"
+    side_w = 300 if rank else 0
+    room = WIDTH - 2 * PAD - 60 - side_w
+    draw_text(draw, (PAD + 32, y + 48), label, 56, cards.mix(color, "#ffffff", 0.12), bold=True, anchor="lm",
+              max_w=room, shrink=36)
+    sub = "Матч завершён"  # длительность, дата и ID — в итоге внизу
+    draw_text(draw, (PAD + 34, y + 90), sub, 21, cards.mix(MUTED, "#ffffff", 0.25), anchor="lm", max_w=room)
     if rank:
-        cards.paste(img, cards.rank_badge(rank, 64), right - 64, y + 20)
-        draw_text(draw, (right - 78, y + 38), "ЛОББИ", 18, cards.mix(MUTED, "#ffffff", 0.2), bold=True, anchor="rm")
-        draw_text(draw, (right - 78, y + 66), rank_label(rank), 24, FG, bold=True, anchor="rm", max_w=side_w - 90)
-        draw_text(draw, (right, y + 108), match_id, 18, cards.mix(MUTED, "#ffffff", 0.1), anchor="rm")
-    else:
-        draw_text(draw, (right, y + BANNER_H / 2), match_id, 20, cards.mix(MUTED, "#ffffff", 0.1), anchor="rm")
+        mid = y + BANNER_H / 2
+        cards.paste(img, cards.rank_badge(rank, 64), right - 64, mid - 32)
+        draw_text(draw, (right - 78, mid - 13), "ЛОББИ", 18, cards.mix(MUTED, "#ffffff", 0.2), bold=True, anchor="rm")
+        draw_text(draw, (right - 78, mid + 15), rank_label(rank), 24, FG, bold=True, anchor="rm", max_w=side_w - 90,
+                  shrink=18)
     return y + BANNER_H
 
 
-def _draw_score(draw, x: float, cy: float, event: dict, limit: float) -> None:
-    """Счёт матча по убийствам рядом с исходом (слева — пати) и её перевес по золоту.
-
-    Игроки на разных сторонах — счёт со сторонами стоит в строке под исходом, здесь его нет.
-    Не помещается до правого блока — не рисуется: наезжать нельзя.
-    """
+def _summary_cells(event: dict, tz: str) -> list:
+    """Итог матча ячейками (подпись, значение[, цвет]): счёт, перевес по золоту, длительность, начало."""
+    cells = []
     score = match_score(event)
-    if not score or score["mixed"]:
-        return
-    text = f"{score['left']} : {score['right']}"
-    if x + cards.text_width(text, 44, True) > limit:
-        return
-    tone = cards.mix(FG, MUTED, 0.25)
-    draw_text(draw, (x, cy), text, 44, tone, bold=True, anchor="lm")
-    x += cards.text_width(text, 44, True) + 20
-    caption = "СЧЁТ ПО УБИЙСТВАМ"
-    lead = score["lead"]
-    gold = (f"золото {gold_lead(lead)}", cards.delta_color(lead)) if lead is not None else None
-    if x + cards.text_width(caption, 16, True) > limit:
-        return
-    draw_text(draw, (x, cy - 12 if gold else cy), caption, 16, cards.mix(MUTED, "#ffffff", 0.1), bold=True, anchor="lm")
-    if gold and x + cards.text_width(gold[0], 20, True) <= limit:
-        draw_text(draw, (x, cy + 13), gold[0], 20, gold[1], bold=True, anchor="lm", track=False)
+    if score:
+        label = "Radiant : Dire" if score["mixed"] else "Счёт"
+        cells.append((label, f"{score['left']} : {score['right']}"))
+        if score["lead"] is not None and not score["mixed"]:
+            cells.append(("Золото", gold_lead(score["lead"]), cards.delta_color(score["lead"])))
+    if event.get("duration"):
+        cells.append(("Длительность", clock(event["duration"])))
+    if event.get("start_time"):
+        cells.append(("Начало", fmt_local(event["start_time"], tz, "%d.%m %H:%M")))
+    return cells
+
+
+def _draw_summary(img, draw, y: int, cells: list, event: dict) -> None:
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + SUMMARY_H), cards.PANEL_HI, radius=16)
+    mid = y + SUMMARY_H / 2
+    match_id = f"матч {event.get('match_id')}" if event.get("match_id") else ""
+    id_w = cards.text_width(match_id, 18) + 24 if match_id else 0
+    cell_w = min(230, (RIGHT - CELLS_X - id_w) / max(len(cells), 1))
+    cards.stat_cells(draw, CELLS_X, mid, cells, cell_w, value_size=26)
+    if match_id:
+        draw_text(draw, (RIGHT, mid), match_id, 18, cards.mix(MUTED, "#ffffff", 0.1), anchor="rm")
 
 
 def _draw_row(
@@ -193,14 +199,19 @@ def _draw_row(
     won = bool(row.get("won"))
     accent = WIN if won else LOSS
     fill = cards.mix(PANEL, accent, 0.05)
-    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + _row_h(row)), cards.mix(PANEL, accent, 0.16), fill, radius=16,
+    row_h = _row_h(row)
+    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + row_h), cards.mix(PANEL, accent, 0.16), fill, radius=16,
                          outline=cards.mix(fill, "#ffffff", 0.07))
-    cards.stripe(img, PAD, y + 16, y + ROW_H - 16, accent)
-    mid = y + ROW_H / 2
+    cards.stripe(img, PAD, y + 16, y + TOP_H - 12, accent)
+    mid = y + TOP_H / 2
 
     name = clean(row.get("name")) or "Игрок"
     cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, AVATAR), PAD + 22, mid - AVATAR / 2)
-    cards.paste(img, cards.hero_icon(icons.get(row.get("hero_id")), row.get("hero_id")), PAD + 22 + AVATAR + 14, mid - ICON_H / 2)
+    cards.paste(img, cards.hero_icon(icons.get(row.get("hero_id")), row.get("hero_id")), PAD + 22 + AVATAR + 14,
+                mid - ICON_H / 2)
+
+    mmr_left = _draw_mmr(img, draw, mid, row, fill)
+    name_room = mmr_left - 28 - NAME_X  # ник и строка героя не заходят на ±MMR справа
 
     tags = []
     if name == mvp:
@@ -208,48 +219,53 @@ def _draw_row(
     if (row.get("leaver_status") or 0) >= 2:
         tags.append(("вышел", LOSS))
     tags_w = sum(cards.text_width(t, 18, True) + 20 + 8 for t, _ in tags)
-    name_max = NAME_MAX_W - tags_w
-    draw_text(draw, (NAME_X, mid - 26), name, 28, FG, bold=True, anchor="lm", max_w=name_max)
-    tag_x = NAME_X + min(cards.text_width(name, 28, True), name_max) + 12
+    name_max = max(name_room - tags_w, 120)
+    size = cards.fit_size(name, 28, True, name_max, 22)
+    draw_text(draw, (NAME_X, mid - 15), name, size, FG, bold=True, anchor="lm", max_w=name_max)
+    tag_x = NAME_X + min(cards.text_width(name, size, True), name_max) + 12
     for text, tag_color in tags:
-        tag_x += cards.pill(img, draw, tag_x, mid - 26, text, BG, tag_color, size=18, pad=10) + 8
+        tag_x += cards.pill(img, draw, tag_x, mid - 15, text, BG, tag_color, size=18, pad=10) + 8
     hero = hero_name(row.get("hero_id")) + (f"  ·  P{row['position']}" if row.get("position") else "")
     if lane_text(row):
         hero += f"  ·  {lane_text(row)}"
-    draw_text(draw, (NAME_X, mid + 2), hero, 20, MUTED, anchor="lm", max_w=NAME_MAX_W + 60)
-    x = NAME_X
-    imp = row.get("imp")
-    if imp is not None:  # IMP — оценка игры: знак и цвет читаются раньше остальных цифр строки
-        text = f"IMP {signed(imp)}"
-        draw_text(draw, (x, mid + 28), text, 18, cards.delta_color(imp), bold=True, anchor="lm", track=False)
-        x += cards.text_width(text, 18, True, False)
-    extra = []
-    if row.get("gpm"):
-        extra.append(f"{round(row['gpm'])} GPM")
-    if row.get("hero_damage") and not _has_strip(row):  # с полосой под строкой урон стоит там отдельной ячейкой
-        extra.append(f"{_thousands(row['hero_damage'])} урона")
-    if extra:
-        line = ("  ·  " if x > NAME_X else "") + "  ·  ".join(extra)
-        draw_text(draw, (x, mid + 28), line, 18, MUTED, anchor="lm", max_w=NAME_X + NAME_MAX_W + 60 - x)
+    draw_text(draw, (NAME_X, mid + 17), hero, 20, MUTED, anchor="lm", max_w=name_room, shrink=17)
 
-    cards.kda(draw, KDA_X, mid, row.get("kills"), row.get("deaths"), row.get("assists"), 38)
+    sep = y + TOP_H - 2
+    img.paste(cards.mix(fill, "#ffffff", 0.07), (CELLS_X, sep, RIGHT, sep + 1))
+    if _has_build(row):
+        _draw_build(img, draw, y + TOP_H + 8 + ITEM_H / 2, row, item_icons or {})
+    _draw_cells(draw, y + TOP_H + _build_h(row) + CELLS_H / 2 - 2, row)
 
+
+def _draw_mmr(img, draw, mid: float, row: dict, fill: str) -> float:
+    """Справа в верхней части строки: «±MMR → ≈MMR», под ним ранг игрока и серия. Возвращает левый край блока."""
     delta = _delta(row)
     mmr = row.get("current_mmr")
     streak = row.get("streak_len") or 0
-    top = mid - 12 if streak >= 3 else mid
+    rank = row.get("rank_tier")
+    second = rank or streak >= 3
+    top = mid - 14 if second else mid
     x = RIGHT
     if mmr is not None:
-        x -= cards.value_text(draw, (x, top), f"≈{mmr}", 36, FG) + 12
-        draw_text(draw, (x, top), "→", 24, cards.mix(MUTED, PANEL, 0.3), anchor="rm")
-        x -= cards.text_width("→", 24) + 12
-    draw_text(draw, (x, top), signed(delta), 36, cards.delta_color(delta), bold=True, anchor="rm")
+        x -= cards.value_text(draw, (x, top), f"≈{mmr}", 34, FG) + 12
+        draw_text(draw, (x, top), "→", 22, cards.mix(MUTED, PANEL, 0.3), anchor="rm")
+        x -= cards.text_width("→", 22) + 12
+    draw_text(draw, (x, top), signed(delta), 34, cards.delta_color(delta), bold=True, anchor="rm")
+    left = x - cards.text_width(signed(delta), 34, True)
+    if not second:
+        return left
+    low, x = mid + 22, RIGHT
+    if rank:
+        badge = 28
+        cards.paste(img, cards.rank_badge(rank, badge), x - badge, low - badge / 2)
+        text = rank_label(rank)
+        draw_text(draw, (x - badge - 8, low), text, 18, cards.mix(FG, MUTED, 0.25), anchor="rm")
+        x -= badge + 8 + cards.text_width(text, 18) + 14
     if streak >= 3:
         is_win = row.get("streak_type") == "W"
         text = f"▲ {streak} подряд" if is_win else f"▼ {streak} подряд"
-        cards.chip(img, draw, RIGHT, mid + 28, text, WIN if is_win else LOSS, size=18, pad=12, align="right", base=fill)
-    if _has_strip(row):
-        _draw_strip(img, draw, y + ROW_H + STRIP_H / 2 - 2, row, item_icons or {})
+        x -= cards.chip(img, draw, x, low, text, WIN if is_win else LOSS, size=16, pad=10, align="right", base=fill)
+    return min(left, x)
 
 
 def _number(value) -> bool:
@@ -257,10 +273,10 @@ def _number(value) -> bool:
 
 
 def _strip_cells(row: dict) -> list:
-    """Показатели игрока ячейками с подписями; чего нет в данных — той ячейки нет.
+    """Экономика и урон игрока ячейками с подписями; чего нет в данных — той ячейки нет.
 
-    Кор — экономика и урон; саппорт (P4/P5) — то, чем он полезен: варды, стаки, лечение, и лишь затем урон и нетворс.
-    Не больше четырёх ячеек: столько помещается между билдом и рангом.
+    Кор — нетворс, добито/не отдано, урон, здания; саппорт (P4/P5) — то, чем он полезен: варды, стаки, лечение,
+    и лишь затем урон и нетворс. Не больше четырёх: вместе с K/D/A, IMP и GPM ряд занимает ширину строки.
     """
     def k(key: str, fmt=_k) -> Optional[str]:
         return fmt(row[key]) if _number(row.get(key)) and row[key] else None
@@ -278,9 +294,34 @@ def _strip_cells(row: dict) -> list:
             ("Здания", k("tower_damage"))]
 
 
-def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
-    """Билд (6 слотов + нейтралка) слева, фарм посередине, ранг справа."""
-    x = PAD + 22
+def _row_cells(row: dict) -> list:
+    """Все ячейки ряда под строкой: IMP и GPM, затем экономика и урон (K/D/A рисуется первой отдельно)."""
+    cells = []
+    imp = row.get("imp")
+    if _number(imp):
+        cells.append(("IMP", signed(imp), cards.delta_color(imp)))
+    if _number(row.get("gpm")) and row["gpm"]:
+        cells.append(("GPM", str(round(row["gpm"]))))
+    return cells + [cell for cell in _strip_cells(row) if cell[1]]
+
+
+KDA_CELL_W = 190
+
+
+def _draw_cells(draw, mid: float, row: dict) -> None:
+    """Ряд ячеек «подпись над значением»: K/D/A (смерти красным), IMP, GPM, экономика и урон."""
+    label_color = cards.mix(MUTED, PANEL, 0.2)
+    draw_text(draw, (CELLS_X, mid - 14), "K / D / A", 16, label_color, bold=True, anchor="lm")
+    cards.kda(draw, CELLS_X, mid + 13, row.get("kills"), row.get("deaths"), row.get("assists"), 24, align="left")
+    cells = _row_cells(row)
+    if cells:
+        x = CELLS_X + KDA_CELL_W
+        cards.stat_cells(draw, x, mid, cells, min(CELL_MAX_W, (RIGHT - x) / len(cells)), value_size=22)
+
+
+def _draw_build(img, draw, mid: float, row: dict, item_icons: dict) -> None:
+    """Билд: 6 слотов, нейтралка, шард и скипетр; под иконками — время покупки."""
+    x = CELLS_X
     times = _times(row)
     for i, item_id in enumerate(row.get("items") or []):
         cards.paste(img, _item_icon(item_icons.get(item_id)), x, mid - ITEM_H / 2)
@@ -302,16 +343,6 @@ def _draw_strip(img, draw, mid: float, row: dict, item_icons: dict) -> None:
             if when:  # время покупки — подписью под иконкой, как у предметов
                 draw_text(draw, (x + icon_w / 2, mid + ITEM_H / 2 + 12), when, 17, TIME_COLOR, anchor="mm", track=False)
             x += max(icon_w, cards.text_width(when, 17) if when else 0) + 10
-    limit = RIGHT
-    if row.get("rank_tier"):
-        rank = rank_label(row["rank_tier"])
-        cards.paste(img, cards.rank_badge(row["rank_tier"], BADGE), RIGHT - BADGE, mid - BADGE / 2)
-        draw_text(draw, (RIGHT - BADGE - 10, mid), rank, 20, FG, anchor="rm")
-        limit = RIGHT - BADGE - 10 - cards.text_width(rank, 20) - 16
-    cells = [cell for cell in _strip_cells(row) if cell[1]]
-    start = max(x + 10, STRIP_TEXT_X)
-    if cells:  # ячейки делят место между билдом и рангом: длинный билд их сжимает, а не толкает на ранг
-        cards.stat_cells(draw, start, mid, cells, min(STRIP_CELL_W, (limit - start) / len(cells)))
 
 
 def _draw_shared(img, draw, y: int, shared: dict) -> None:
@@ -327,7 +358,6 @@ def _draw_shared(img, draw, y: int, shared: dict) -> None:
     bar_x0 = x + cards.text_width(text, 26, True) + 28
     if bar_x1 - bar_x0 > 80:
         cards.winrate_bar(img, (bar_x0, mid - 6, bar_x1, mid + 6), shared.get("wins", 0), shared.get("losses", 0))
-
 
 
 def alert_caption(event: dict) -> str:

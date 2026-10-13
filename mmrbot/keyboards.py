@@ -5,7 +5,8 @@
 `tx:<вид>:<аргументы>` — тот же отчёт текстом (кнопка «📝 Текстом» под любой карточкой-картинкой;
 старое `mt:<match_id>:<account_id|0>` = `tx:match:…` понимается для уже отправленных сообщений);
 `mx:<match_id>[:<account_id>]` — весь матч картинкой (кнопка под оповещением и под текстовой карточкой матча);
-`ml:<account_id>:<смещение>` — список матчей игрока, `md:<account_id>:<match_id>:<смещение>` — карточка его матча.
+`ml:<account_id>:<смещение>` — список матчей игрока, `md:<account_id>:<match_id>:<смещение>` — карточка его матча;
+`lk:add:<account_id>` — добавить в пати игрока, найденного по ID.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ CATEGORIES = {
         [("🪪 Карточка игрока", "player"), ("🎭 Steam-профиль", "steam")],
         [("🦸 Герои и позиции", "heroes"), ("🔎 Статистика героя", "hero")],
         [("🎮 Матч", "match"), ("🏁 Последний матч", "last")],
-        [("⚔️ Против кого", "matchups")],
+        [("🔎 Поиск по ID", "find"), ("⚔️ Против кого", "matchups")],
     ]),
     "records": ("🌟 Рекорды и графики", [
         [("🌟 Рекорды", "records"), ("📈 График MMR", "graph")],
@@ -250,6 +251,17 @@ def match_photo_buttons(match_id: int, focus, text_shown: bool = False, full: bo
     if full:
         rows.insert(0, [full_match_button(match_id, focus)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def lookup_buttons(account_id: int) -> InlineKeyboardMarkup:
+    """Под карточкой игрока не из пати: «Текстом», «➕ Добавить в пати», ссылки на OpenDota и Dotabuff, навигация."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [text_button("lookup", account_id),
+         InlineKeyboardButton(text="➕ Добавить в пати", callback_data=f"lk:add:{account_id}")],
+        [InlineKeyboardButton(text="🔗 OpenDota", url=f"https://www.opendota.com/players/{account_id}"),
+         InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/players/{account_id}")],
+        nav_row(),
+    ])
 
 
 MATCHES_PAGE = 10

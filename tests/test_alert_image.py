@@ -83,11 +83,12 @@ def _png(color=(200, 50, 50)) -> bytes:
     return buf.getvalue()
 
 
-def test_build_strip_adds_height_only_for_rows_with_build_or_rank():
+def test_build_line_adds_height_only_for_rows_with_build():
     plain = _open(render_alert_image(_event(), "UTC"))
     built = _open(render_alert_image(_event([_row("A", items=[1, 2, 3])]), "UTC"))
     ranked = _open(render_alert_image(_event([_row("A", rank_tier=75)]), "UTC"))
-    assert built.height > plain.height + 30 and ranked.height > plain.height + 30
+    assert built.height > plain.height + 30
+    assert ranked.height == plain.height  # ранг стоит под ±MMR в верхней части строки, места не добавляет
 
 
 def test_build_icons_and_neutral_are_drawn_and_junk_does_not_break():
@@ -123,9 +124,9 @@ def test_purchase_times_shard_scepter_and_tower_damage_are_drawn():
     assert _open(timed_png).height > _open(plain_png).height  # подписи времени под иконками
 
 
-def test_tower_damage_alone_or_upgrades_alone_make_a_strip():
+def test_upgrades_alone_make_a_build_line():
     plain = _open(render_alert_image(_event(), "UTC"))
-    assert _open(render_alert_image(_event([_row("A", tower_damage=5000)]), "UTC")).height > plain.height
+    assert _open(render_alert_image(_event([_row("A", tower_damage=5000)]), "UTC")).height == plain.height
     assert _open(render_alert_image(_event([_row("A", shard=True)]), "UTC")).height > plain.height
     junk = _row("A", items=[1], item_times=["x", None], shard=True, shard_time="bad", tower_damage="много")
     assert _open(render_alert_image(_event([junk]), "UTC")).width == WIDTH  # странные данные не роняют рендер
@@ -135,28 +136,43 @@ def test_strip_stats_are_labelled_cells(drawn):
     row = _row("Вася", items=[1, 2], net_worth=18200, last_hits=312, denies=14, tower_damage=4200, rank_tier=55)
     render_alert_image(_event([row]), "UTC")
     texts = [t[0] for t in drawn]
-    for label, value in (("НЕТВОРС", "18.2k"), ("ДОБИТО", "312/14"), ("УРОН", "31.2k"), ("ЗДАНИЯ", "4.2k")):
+    for label, value in (("IMP", "+21"), ("GPM", "640"), ("НЕТВОРС", "18.2k"), ("ДОБИТО", "312/14"),
+                         ("УРОН", "31.2k"), ("ЗДАНИЯ", "4.2k")):
         assert texts[texts.index(label) + 1] == value
-    assert not any(t.startswith("NW ") or "по зданиям" in t for t in texts)
-    assert not any("урона" in t for t in texts)  # урон переехал в ячейку, в строке под ником не дублируется
+    assert "K / D / A" in texts
+    assert not any(t.startswith("NW ") or "по зданиям" in t or "урона" in t or "GPM" in t and t != "GPM" for t in texts)
 
 
-def test_imp_is_colored_by_sign_and_damage_stays_in_line_without_strip(drawn):
+def test_imp_is_a_cell_colored_by_sign(drawn):
     from mmrbot.cards import LOSS, WIN
     render_alert_image(_event([_row("A"), _row("B", imp=-14)]), "UTC")
-    assert ("IMP +21", WIN, True) in drawn and ("IMP −14", LOSS, True) in drawn
-    assert any("31.2k урона" in t[0] for t in drawn)
+    assert ("+21", WIN, True) in drawn and ("−14", LOSS, True) in drawn
 
 
-def test_score_and_support_cells_are_drawn_without_changing_layout():
-    plain = _open(render_alert_image(_event(), "UTC"))
-    scored = _open(render_alert_image(_event([_row("Вася", is_radiant=True)],
+def test_banner_has_no_numbers_and_summary_holds_score_time_and_id(drawn):
+    event = _event([_row("Вася", is_radiant=True)], score={"radiant": 41, "dire": 27, "gold": (98400, 86000)})
+    render_alert_image(event, "UTC")
+    texts = [t[0] for t in drawn]
+    banner = texts[:texts.index("Legend 5")]  # исход, подпись, «ЛОББИ»; ранг лобби — словами
+    assert banner and not any(ch.isdigit() for t in banner for ch in t)  # в шапке нет цифр
+    for label, value in (("СЧЁТ", "41 : 27"), ("ЗОЛОТО", "+12.4k"), ("ДЛИТЕЛЬНОСТЬ", "38:00")):
+        assert texts[texts.index(label) + 1] == value
+    assert "матч 7812345678" in texts
+
+
+def test_score_adds_summary_and_support_cells_keep_layout():
+    plain = _open(render_alert_image(_event(start_time=None, duration=None), "UTC"))
+    scored = _open(render_alert_image(_event([_row("Вася", is_radiant=True)], start_time=None, duration=None,
                                              score={"radiant": 41, "dire": 27, "gold": (98400, 86000)}), "UTC"))
-    assert scored.size == plain.size and scored.tobytes() != plain.tobytes()  # счёт — в шапке, высота та же
+    assert scored.height > plain.height                                         # итог матча — отдельной плашкой
     support = _open(render_alert_image(_event([_row("Петя", position=5, wards=18, stacks=4)]), "UTC"))
-    assert support.height > plain.height                                       # у саппорта появилась полоса ячеек
     core = _open(render_alert_image(_event([_row("Вася", wards=18, stacks=4)]), "UTC"))
-    assert core.height == plain.height                                         # кору варды не показываем
+    assert support.height == core.height == _open(render_alert_image(_event(), "UTC")).height
+
+
+def test_long_name_shrinks_instead_of_running_under_mmr(drawn):
+    render_alert_image(_event([_row("Оооочень длинный ник игрока номер один")]), "UTC")
+    assert any(t[0] == "Оооочень длинный ник игрока номер один" for t in drawn)  # целиком, без многоточия
 
 
 def test_support_strip_puts_vision_first_and_keeps_four_cells():

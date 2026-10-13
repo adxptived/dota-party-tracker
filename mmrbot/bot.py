@@ -22,7 +22,7 @@ from mmrbot.formatting import match_button_label, render_match_card, render_matc
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
-from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, match_card_buttons, match_list_buttons, match_photo_buttons, MATCHES_PAGE, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, contest_buttons, settings_menu, parse_callback, period_buttons, players_picker
+from mmrbot.keyboards import CATEGORIES, STEPS, category_menu, category_title, TIMEZONES, confirm_remove, graph_buttons, list_actions, lookup_buttons, match_card_buttons, match_list_buttons, match_photo_buttons, MATCHES_PAGE, player_actions, with_text_button, without_text_button, stats_tabs, main_menu, nav_menu, records_buttons, contest_buttons, settings_menu, parse_callback, period_buttons, players_picker
 from mmrbot.opendota import OpenDota
 from mmrbot.progress import DeferredStatus
 from mmrbot.service import (
@@ -39,8 +39,10 @@ from mmrbot.service import (
     render_records_board,
     heroes_board,
     render_heroes_board,
+    lookup_board,
     match_board,
     matchups_board,
+    player_lookup_board,
     season_board,
     season_end_board,
     player_board,
@@ -137,6 +139,7 @@ BOT_COMMANDS = [
     BotCommand(command="last", description="🏁 Последний матч"),
     BotCommand(command="match", description="🎮 Разбор матча"),
     BotCommand(command="player", description="🪪 Карточка игрока"),
+    BotCommand(command="find", description="🔎 Найти матч или игрока по ID"),
     BotCommand(command="matchups", description="⚔️ Против кого и с кем"),
     BotCommand(command="records", description="🌟 Рекорды пати"),
     BotCommand(command="graph", description="📈 График MMR"),
@@ -174,6 +177,7 @@ HELP_TEXT = (
     '/matchups [имя] — против каких героев тяжело и с кем лучше\n'
     '/last [игрок] — последний матч\n'
     '/match [id] — разбор матча\n'
+    '/find ID или ссылка — найти любой матч или игрока (не только из пати)\n'
     '/together — игры вместе\n'
     '/compare — кто сильнее\n'
     '/records · /graph · /achievements (соревнование чата)\n'
@@ -393,7 +397,8 @@ ADD_PROMPT = "➕ Ответьте ссылкой или ID. Имя и MMR — �
 ADD_EXAMPLE = "Пример: dotabuff.com/players/123456 Вася 5400"
 SETMMR_PROMPT = "✏️ Задать MMR игрока {name} (id {account}): ответьте числом."
 HERO_PROMPT = "🔎 Ответьте названием героя, например Axe."
-MATCHID_PROMPT = "🔢 Ответьте ID матча (8+ цифр)."
+MATCHID_PROMPT = "🔢 Ответьте ID матча (8+ цифр) или ссылкой на матч."
+FIND_PROMPT = "🔎 Ответьте ID матча, ID игрока или ссылкой (Dotabuff / OpenDota / Stratz / Steam)."
 _SETMMR_RE = re.compile(r"^✏️ Задать MMR игрока .+ \(id (\d+)\)")
 
 
@@ -406,6 +411,10 @@ async def _prompt_add(message: Message) -> None:
 
 async def _prompt_hero(message: Message) -> None:
     await message.answer(HERO_PROMPT, reply_markup=ForceReply(force_reply=True, input_field_placeholder="Axe"))
+
+
+async def _prompt_find(message: Message) -> None:
+    await message.answer(FIND_PROMPT, reply_markup=ForceReply(force_reply=True, input_field_placeholder="ID или ссылка"))
 
 
 async def _prompt_matchid(message: Message) -> None:
@@ -439,7 +448,8 @@ async def cmd_add(
     await do_add(message, storage, od, command.args or "", stratz)
 
 
-async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, stratz=None) -> None:
+async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, stratz=None, user=None) -> None:
+    """Добавить игрока. user — кто добавляет (кнопка под карточкой: сообщение там от бота, а нажал человек)."""
     try:
         identifier, name, mmr = cmd.parse_add_args(args)
         account_id = await asyncio.to_thread(resolve_account_id, identifier)
@@ -470,7 +480,7 @@ async def do_add(message: Message, storage: Storage, od: OpenDota, args: str, st
         return
 
     if getattr(message.chat, "type", None) != "private":  # кто добавил — того и считаем этим игроком (если своего ещё нет)
-        link_adder(storage, message.chat.id, player, getattr(message, "from_user", None))
+        link_adder(storage, message.chat.id, player, user or getattr(message, "from_user", None))
 
     try:
         await asyncio.to_thread(refresh_player, storage, od, player, now, stratz)
@@ -877,7 +887,16 @@ async def _text_matchups(storage: Storage, od: OpenDota, chat_id: int, args: lis
     return await render_matchups_board(storage, od, chat_id, None if args[0] == "0" else args[0], args[1], stratz)
 
 
-TEXT_VIEWS = {"together": _text_together, "compare": _text_compare, "records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
+async def _text_lookup(storage: Storage, od: OpenDota, chat_id: int, args: list[str], stratz=None) -> Optional[str]:
+    """tx:lookup:<account_id> — карточка игрока не из пати текстом."""
+    try:
+        account_id = int(args[0])
+    except (IndexError, ValueError):
+        return None
+    return (await player_lookup_board(storage, od, chat_id, account_id, stratz, image=False)).text
+
+
+TEXT_VIEWS = {"lookup": _text_lookup, "together": _text_together, "compare": _text_compare, "records": _text_records, "match": _text_match, "stats": _text_stats, "player": _text_player, "hp": _text_player_heroes,
               "mu": _text_matchups, "rp": _text_roles, "heroes": _text_party_heroes, "hero": _text_hero, "ach": _text_contest}
 
 
@@ -909,6 +928,29 @@ async def do_player_card(message: Message, storage: Storage, od: OpenDota, name:
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
     markup = with_text_button(player_actions(player.account_id), "player", player.account_id) if player else nav_menu()
+    await _reply_image(message, board, markup, status)
+
+
+async def do_find(message: Message, storage: Storage, od: OpenDota, query: str, stratz=None) -> None:
+    """Поиск по ID или ссылке: матч — разбор картинкой, игрок (любой, не только из пати) — карточка картинкой."""
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await lookup_board(storage, od, message.chat.id, query, stratz)
+    except Exception:
+        log.exception("Ошибка поиска по ID для чата %s", message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    if board.kind is None:
+        await _delete(status)
+        await message.answer(board.text, parse_mode="HTML", reply_markup=nav_menu())
+        return
+    if board.kind == "match":
+        markup = match_photo_buttons(board.match_id, board.focus)
+    elif board.tracked:
+        markup = with_text_button(player_actions(board.account_id), "player", board.account_id)
+    else:
+        markup = lookup_buttons(board.account_id)
     await _reply_image(message, board, markup, status)
 
 
@@ -1202,7 +1244,19 @@ async def cmd_player(message: Message, command: CommandObject, storage: Storage,
         if await _has_players(message, storage):
             await _ask_player(message, storage, "player", "Выберите игрока для просмотра карточки:")
         return
+    if storage.get_player(message.chat.id, name) is None and cmd.looks_like_player_id(name):
+        await do_find(message, storage, od, f"игрок {name}", stratz)  # не из пати — карточка по ID из OpenDota
+        return
     await do_player_card(message, storage, od, name, stratz)
+
+
+@router.message(Command("find", "search", "id"))
+async def cmd_find(message: Message, command: CommandObject, storage: Storage, od: OpenDota, stratz=None) -> None:
+    query = (command.args or "").strip()
+    if not query:
+        await _prompt_find(message)
+        return
+    await do_find(message, storage, od, query, stratz)
 
 
 # --- ответы на подсказки кнопок («Добавить», «Задать MMR») ---------------
@@ -1221,6 +1275,9 @@ async def on_prompt_reply(message: Message, storage: Storage, od: OpenDota, stra
         return
     if prompt.startswith(HERO_PROMPT):
         await do_hero(message, storage, od, (message.text or "").strip(), "all", stratz)
+        return
+    if prompt.startswith(FIND_PROMPT):
+        await do_find(message, storage, od, (message.text or "").strip(), stratz)
         return
     if prompt.startswith(MATCHID_PROMPT):
         match_id, name = cmd.parse_match_args(message.text or "")
@@ -1315,7 +1372,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx", "ml", "md"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx", "ml", "md", "lk"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -1350,6 +1407,14 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             return
         focus = storage.get_player(message.chat.id, args[1]) if len(args) > 1 else None
         await do_match(message, storage, od, focus.display_name if focus else None, match_id, stratz)
+        return
+
+    if kind == "lk":  # кнопки под карточкой игрока не из пати: «➕ Добавить в пати»
+        if len(args) == 2 and args[0] == "add" and args[1].isdigit():
+            if storage.get_player_by_account_id(message.chat.id, int(args[1])) is not None:
+                await message.answer("Этот игрок уже в пати.", reply_markup=nav_menu())
+            else:
+                await do_add(message, storage, od, args[1], stratz, user=getattr(query, "from_user", None))
         return
 
     if kind in {"ml", "md"}:  # список матчей игрока и карточка его матча — правят то же сообщение
@@ -1445,6 +1510,8 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
             await _ask_match(message, storage)
         elif action == "matchid":
             await _prompt_matchid(message)
+        elif action == "find":
+            await _prompt_find(message)
         elif action == "hero":
             await _prompt_hero(message)
         elif action == "add":
