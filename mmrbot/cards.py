@@ -443,6 +443,15 @@ def hero_icon(data: Optional[bytes], hero_id, w: int = ICON_W, h: int = ICON_H, 
     return _hero_icon_cached(data, hero_id, w, h, radius)
 
 
+def level_badge(img, draw, cx: float, cy: float, level, r: int = 14) -> None:
+    """Уровень героя кружком (как в игре): тёмный круг с золотой каймой и числом; не число — ничего не рисуем."""
+    if isinstance(level, bool) or not isinstance(level, (int, float)) or level <= 0:
+        return
+    dot(img, cx, cy, r + 2, GOLD)
+    dot(img, cx, cy, r, BG)
+    draw_text(draw, (cx, cy), str(int(level)), 17 if level < 100 else 13, FG, bold=True, anchor="mm", track=False)
+
+
 def paste(img, sprite, x: float, y: float) -> None:
     img.paste(sprite, (round(x), round(y)), sprite)
 

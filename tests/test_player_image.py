@@ -83,3 +83,14 @@ def test_recent_games_and_facts_are_drawn(drawn):
     assert "ПОСЛЕДНИЕ ИГРЫ" in texts and texts.count("+25") == 6 and "38 мин  ·  12.10" in texts
     assert "Лучшая серия" in texts and "7 побед" in texts
     assert "ПРОФИЛЬ НАВЫКОВ · МИРОВОЙ ПЕРЦЕНТИЛЬ" not in texts
+
+
+def test_hero_level_is_drawn_on_last_game_and_recent():
+    plain = _open(render_player_image(_full())).convert("RGB")
+    card = _full()
+    card["last_game"]["level"] = 25
+    last_only = _open(render_player_image(card)).convert("RGB")
+    card["recent"][0]["level"] = 18
+    both = _open(render_player_image(card)).convert("RGB")
+    assert plain.tobytes() != last_only.tobytes()
+    assert last_only.tobytes() != both.tobytes()

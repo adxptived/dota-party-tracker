@@ -200,7 +200,7 @@ def recent_items(games: list, tz: str = "UTC") -> list[dict]:
     from mmrbot.heroes import hero_name
     return [{"hero_id": g.get("hero_id"), "name": hero_name(g.get("hero_id")), "won": bool(g.get("won")),
              "kills": g.get("kills") or 0, "deaths": g.get("deaths") or 0, "assists": g.get("assists") or 0,
-             "delta": g.get("delta"), "double_down": bool(g.get("double_down")),
+             "delta": g.get("delta"), "double_down": bool(g.get("double_down")), "level": g.get("level"),
              "minutes": round(g["duration"] / 60) if g.get("duration") else None,
              "when": fmt_local(g["start_time"], tz, "%d.%m") if g.get("start_time") else None} for g in games]
 
@@ -262,7 +262,7 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
         card["last_game"] = {"hero_id": lg["hero_id"], "name": hero_name(lg["hero_id"]), "kills": lg["kills"],
                              "deaths": lg["deaths"], "assists": lg["assists"], "kda": lg["kda"], "won": lg["won"],
                              "when": fmt_local(lg["start_time"], tz, "%d.%m %H:%M") if lg.get("start_time") else None,
-                             "stats": _last_game_stats(lg)}
+                             "stats": _last_game_stats(lg), "level": lg.get("level")}
     card["recent"] = recent_items(s.recent_games or [], tz)
     card["recent_mmr"] = s.anchor_mmr is not None  # ±MMR за игру — только если MMR игрока задан
     if s.lobby_rank:
@@ -808,7 +808,7 @@ def match_list_rows(matches: list, offset: int, step: int, tz: str = "UTC", show
             "delta": match_mmr_delta(m, step) if show_delta else None, "double_down": bool(m.get("double_down")),
             "minutes": round(m["duration"] / 60) if m.get("duration") else None,
             "when": fmt_local(m["start_time"], tz, "%d.%m %H:%M") if m.get("start_time") else None,
-            "extra": " · ".join(extra) or None, "current": current == i,
+            "extra": " · ".join(extra) or None, "current": current == i, "level": m.get("level"),
         })
     return rows
 

@@ -39,7 +39,7 @@ query {
     players {
       steamAccountId isRadiant heroId position role lane kills deaths assists imp
       goldPerMinute experiencePerMinute networth heroDamage towerDamage heroHealing
-      numLastHits numDenies level
+      numLastHits numDenies level dotaPlusHeroXp
       additionalUnit { item0Id item1Id item2Id item3Id item4Id item5Id neutral0Id }
       steamAccount { name }
       stats { itemPurchases { time itemId } }
@@ -264,6 +264,7 @@ class Stratz:
             }
             for src, out in _FIELD_MAP.items():
                 player[out] = row.get(src)
+            player["plus_xp"] = row.get("dotaPlusHeroXp")  # опыт героя в Dota Plus → значок тира на иконке
             purchases = _purchase_times(row.get("stats"))
             if purchases:
                 player["purchases"] = purchases

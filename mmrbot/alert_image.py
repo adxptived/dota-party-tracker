@@ -214,8 +214,9 @@ def _draw_row(
 
     name = clean(row.get("name")) or "Игрок"
     cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, AVATAR), PAD + 22, mid - AVATAR / 2)
-    cards.paste(img, cards.hero_icon(icons.get(row.get("hero_id")), row.get("hero_id")), PAD + 22 + AVATAR + 14,
-                mid - ICON_H / 2)
+    icon_x = PAD + 22 + AVATAR + 14
+    cards.paste(img, cards.hero_icon(icons.get(row.get("hero_id")), row.get("hero_id")), icon_x, mid - ICON_H / 2)
+    cards.level_badge(img, draw, icon_x + 6, mid + ICON_H / 2 - 4, row.get("level"))
 
     mmr_left = _draw_mmr(img, draw, mid, row, fill)
     name_room = mmr_left - 28 - NAME_X  # ник и строка героя не заходят на ±MMR справа

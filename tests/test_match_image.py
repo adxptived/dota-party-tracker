@@ -199,3 +199,28 @@ def test_creeps_column_and_talents_line(drawn):
     assert talented != render_match_image(dict(base, players=[dict(base["players"][0], talents=None),
                                                                base["players"][1]]), {})
     assert not any("Shadowraze" in t[0] for t in drawn)  # без подписей
+
+
+def test_hero_level_and_rank_tier_are_drawn():
+    """Уровень героя кружком на иконке и ранг игрока значком рисуются, если они известны."""
+    match = _full_match()
+    match["players"] = [_player(1, True, 1, 1), _player(2, True, 2, 2)]
+    plain = _open(render_match_image(match, {}, None, "UTC", {})).convert("RGB")
+    match["players"][0]["level"] = 25
+    leveled = _open(render_match_image(match, {}, None, "UTC", {})).convert("RGB")
+    match["players"][0]["rank_tier"] = 54
+    ranked = _open(render_match_image(match, {}, None, "UTC", {})).convert("RGB")
+    assert plain.tobytes() != leveled.tobytes()
+    assert leveled.tobytes() != ranked.tobytes()
+
+
+def test_dota_plus_hero_tier_badge_is_drawn():
+    match = _full_match()
+    match["players"] = [_player(1, True, 1, 1), _player(2, True, 2, 2)]
+    plain = _open(render_match_image(match, {}, None, "UTC", {})).convert("RGB")
+    match["players"][0]["plus_xp"] = 72050
+    plus = _open(render_match_image(match, {}, None, "UTC", {})).convert("RGB")
+    match["players"][0]["plus_xp"] = 0  # героя ещё не качали — значка нет
+    zero = _open(render_match_image(match, {}, None, "UTC", {})).convert("RGB")
+    assert plain.tobytes() != plus.tobytes()
+    assert plain.tobytes() == zero.tobytes()

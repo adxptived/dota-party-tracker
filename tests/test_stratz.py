@@ -359,3 +359,11 @@ def test_get_match_reads_item_purchase_times():
     assert first["purchases"] == {42: 700, 1123: 353}  # время последней покупки; мусорная запись пропущена
     assert "purchases" not in second
     assert "itemPurchases" in session.calls[0]["json"]["query"]
+
+
+def test_full_match_carries_dota_plus_hero_xp():
+    raw = {"data": {"match": {"id": 5, "players": [{"heroId": 1, "dotaPlusHeroXp": 72050}, {"heroId": 2}]}}}
+    session = FakeSession([raw])
+    match = Stratz("k", session=session, min_interval=0).get_match(5)
+    assert "dotaPlusHeroXp" in session.calls[0]["json"]["query"]
+    assert [p["plus_xp"] for p in match["players"]] == [72050, None]

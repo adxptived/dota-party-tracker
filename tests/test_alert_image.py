@@ -197,3 +197,15 @@ def test_talent_tree_is_graphic_only(drawn):
     assert alone.height > _open(render_alert_image(_event(), "UTC")).height  # без билда дерево занимает его линию
     junk = _open(render_alert_image(_event([_row("A", talents=[["x"], None, {"level": 10}])]), "UTC"))
     assert junk.height == _open(render_alert_image(_event(), "UTC")).height  # без выбранных талантов дерева нет
+
+
+def test_hero_level_is_drawn_on_alert_icon():
+    from PIL import Image
+    import io
+    from mmrbot.alert_image import render_alert_image
+    row = {"name": "Вася", "hero_id": 1, "won": True, "kills": 1, "deaths": 2, "assists": 3, "delta": 25}
+    event = {"match_id": 1, "rows": [row]}
+    plain = Image.open(io.BytesIO(render_alert_image(event))).convert("RGB")
+    event["rows"] = [dict(row, level=22)]
+    leveled = Image.open(io.BytesIO(render_alert_image(event))).convert("RGB")
+    assert plain.tobytes() != leveled.tobytes()

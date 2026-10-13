@@ -209,3 +209,10 @@ def test_match_list_rows_number_buttons_delta_and_extras():
     text = cd.match_list_text("<Вася>", rows, 0, 2)
     assert "&lt;Вася&gt;" in text and "1. 🏆 Shadow Fiend 10/5/12 · +50 ×2" in text and "2. 💀" in text
     assert "пока нет" in cd.match_list_text("Вася", [], 0, 0)
+
+
+def test_player_card_passes_hero_level_to_last_game_and_recent():
+    last = {"hero_id": 12, "kills": 1, "deaths": 2, "assists": 3, "kda": 2.0, "won": True, "level": 24}
+    recent = [{"hero_id": 12, "won": True, "kills": 1, "deaths": 2, "assists": 3, "level": 19}]
+    card = cd.player_card(_full_summary(last_game=last, recent_games=recent))
+    assert card["last_game"]["level"] == 24 and card["recent"][0]["level"] == 19

@@ -336,7 +336,7 @@ def refresh_items(client: OpenDotaClient) -> int:
 
 _ALERT_FIELDS = (
     "items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents",
-    "net_worth", "last_hits", "denies", "hero_healing", "tower_damage", "stacks",
+    "net_worth", "last_hits", "denies", "hero_healing", "tower_damage", "stacks", "level",
 )
 
 
@@ -416,6 +416,7 @@ def _add_match_score(client: OpenDotaClient, event: dict) -> None:
 
 from mmrbot.items import item_slug  # noqa: E402
 
+EXTRA_FIELDS = ("level", "rank_tier")  # на иконке героя: уровень и ранг игрока
 BUILD_FIELDS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents")
 
 
@@ -428,8 +429,7 @@ def enrich_match_builds(client: OpenDotaClient, match: dict) -> None:
     players = match.get("players") or []
     if not players or _provider_down(client):
         return
-    if any(t is not None for p in players for t in p.get("item_times") or []):
-        return  # билды с временами уже есть (матч из кэша Stratz)
+    timed = any(t is not None for p in players for t in p.get("item_times") or [])
     try:
         builds = client.get_match_builds(match["match_id"])
     except Exception as exc:
@@ -439,12 +439,18 @@ def enrich_match_builds(client: OpenDotaClient, match: dict) -> None:
     for player in players:
         build = builds.get(player.get("hero_id"))
         if build:
+            for key in EXTRA_FIELDS:  # уровень и ранг — не из Stratz; уже известное не затираем
+                if player.get(key) is None and build.get(key) is not None:
+                    player[key] = build[key]
+        if timed:
+            continue  # билды с временами уже есть (матч из кэша Stratz)
+        if build:
             player.update({key: build[key] for key in BUILD_FIELDS if key in build})
             if player.get("bear_items"):  # лог покупок общий на героя и медведя: датируем предметы медведя по нему
                 bought = build.get("bought") or {}
                 player["bear_item_times"] = [bought.get(item_slug(i)) for i in player["bear_items"]]
         _fill_times_from_purchases(player)
-    if builds and not any(t is not None for p in players for t in p.get("item_times") or []):
+    if not timed and builds and not any(t is not None for p in players for t in p.get("item_times") or []):
         _request_parse(client, match.get("match_id"))
 
 

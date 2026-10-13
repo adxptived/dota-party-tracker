@@ -73,6 +73,8 @@ def _player_build(player: dict) -> dict:
         "scepter_time": bought.get("ultimate_scepter"),
         "bought": bought,  # {предмет: время последней покупки} — для предметов медведя Лон Друида
         "talents": talent_tree(player.get("ability_upgrades_arr")),  # дерево талантов: 4 ступени и выбранная сторона
+        "level": player.get("level"),
+        "rank_tier": player.get("rank_tier"),
     }
 
 
@@ -109,6 +111,7 @@ def match_from_opendota(raw: dict) -> Optional[dict]:
             "net_worth": row.get("net_worth"), "hero_damage": row.get("hero_damage"),
             "tower_damage": row.get("tower_damage"), "hero_healing": row.get("hero_healing"),
             "last_hits": row.get("last_hits"), "denies": row.get("denies"), "level": row.get("level"),
+            "rank_tier": row.get("rank_tier"),
         })
     if not players:
         return None

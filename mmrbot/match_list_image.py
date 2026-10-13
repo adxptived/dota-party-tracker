@@ -53,6 +53,7 @@ def _draw_row(img, draw, y: int, row: dict, icons: dict) -> None:
 
     x = PAD + 26 + NUM_D + 20
     cards.paste(img, cards.hero_icon(icons.get(row.get("hero_id")), row.get("hero_id")), x, mid - ICON_H / 2)
+    cards.level_badge(img, draw, x + 6, mid + ICON_H / 2 - 4, row.get("level"))
     tx = x + ICON_W + 18
     room = KDA_X - 110 - tx
     draw_text(draw, (tx, mid - 14), clean(row.get("name")) or "—", 24, FG, bold=True, anchor="lm", max_w=room, shrink=18)

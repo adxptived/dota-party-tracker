@@ -479,3 +479,10 @@ def test_recent_games_newest_first_with_mmr_delta():
     assert [g["match_id"] for g in games] == [2, 3]
     assert games[0]["delta"] == -50 and games[0]["double_down"] and not games[0]["won"]
     assert games[1]["delta"] == -25 and games[1]["kills"] == 0
+
+
+def test_last_and_recent_games_carry_hero_level():
+    from mmrbot import stats
+    m = {"match_id": 1, "start_time": 5, "player_slot": 0, "radiant_win": True, "hero_id": 1, "level": 23}
+    assert stats.last_game([m])["level"] == 23
+    assert stats.recent_games([m], 25)[0]["level"] == 23
