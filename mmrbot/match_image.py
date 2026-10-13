@@ -254,7 +254,7 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)
     cards.level_badge(img, draw, PAD + 24 + 6, mid + ICON_H / 2 - 4, p.get("level"))
-    cards.plus_badge(img, draw, PAD + 24 + 4, mid - ICON_H / 2 + 4, p.get("plus_xp"))
+    cards.plus_badge(img, draw, PAD + 24 - 16, mid - ICON_H / 2 - 8, p.get("plus_xp"))  # на самом углу иконки, наполовину вне её
     if p.get("rank_tier"):  # ранг игрока (тир) значком на верхнем правом углу иконки героя
         cards.paste(img, cards.rank_badge(p["rank_tier"], RANK_BADGE), PAD + 24 + ICON_W - RANK_BADGE + 8,
                     mid - ICON_H / 2 - 8)
