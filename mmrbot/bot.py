@@ -956,7 +956,8 @@ async def do_player_card(message: Message, storage: Storage, od: OpenDota, name:
         await _delete(status)
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
-    markup = with_text_button(player_actions(player.account_id), "player", player.account_id) if player else nav_menu()
+    markup = (with_text_button(player_actions(player.account_id, board.match_ids), "player", player.account_id)
+              if player else nav_menu())
     await _reply_image(message, board, markup, status)
 
 
@@ -1003,9 +1004,9 @@ async def do_find(message: Message, storage: Storage, od: OpenDota, query: str, 
     if board.kind == "match":
         markup = match_photo_buttons(board.match_id, board.focus)
     elif board.tracked:
-        markup = with_text_button(player_actions(board.account_id), "player", board.account_id)
+        markup = with_text_button(player_actions(board.account_id, board.match_ids), "player", board.account_id)
     else:
-        markup = lookup_buttons(board.account_id)
+        markup = lookup_buttons(board.account_id, board.match_ids)
     await _reply_image(message, board, markup, status)
 
 

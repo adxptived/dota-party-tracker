@@ -24,7 +24,7 @@ from mmrbot.daily_image import render_daily_image
 from mmrbot.card_data import (
     award_items, contest_caption, daily_caption, daily_card, contest_view, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
-    summary_rows, LOOKUP_GAMES, lookup_caption, lookup_card, lookup_matches, lookup_text, match_list_rows,
+    summary_rows, weekly_spotlight, LOOKUP_GAMES, lookup_caption, lookup_card, lookup_matches, lookup_text, match_list_rows,
     match_list_text,
 )
 from mmrbot.cards import ACCENT
@@ -298,13 +298,16 @@ def _stale_line(storage: Storage, chat_id: int, od) -> str:
     return text.strip()
 
 
-def _stats_png(title, subtitle, badge, rows, tiles, records, awards, note, big_label="MMR") -> bytes:
+def _stats_png(title, subtitle, badge, rows, tiles, records, awards, note, big_label="MMR", spotlight=None) -> bytes:
     """В потоке: иконки героев и аватары (кэш/CDN) + рендер таблицы рейтинга."""
     icon_loader, avatar_loader = hero_icons.shared(), avatars.shared()
-    hero_ids = [r.get("hero_id") for r in rows] + [r.get("hero_id") for r in records]
+    spot_heroes = [(spotlight.get(k) or {}).get("hero_id") for k in ("game", "hero")] if spotlight else []
+    hero_ids = [r.get("hero_id") for r in rows] + [r.get("hero_id") for r in records] + spot_heroes
     icons = icon_loader.get_many(hero_ids) if icon_loader is not None else {}
-    found = avatar_loader.get_many(r.get("avatar") for r in rows) if avatar_loader is not None else {}
-    return render_stats_image(title, subtitle, badge, rows, tiles, records, awards, note, icons, found, big_label)
+    urls = [r.get("avatar") for r in rows] + ([spotlight.get("avatar")] if spotlight else [])
+    found = avatar_loader.get_many(urls) if avatar_loader is not None else {}
+    return render_stats_image(title, subtitle, badge, rows, tiles, records, awards, note, icons, found, big_label,
+                              spotlight)
 
 
 STATS_MODES = {"stats": ("Рейтинг", "игры — с начала отслеживания, ±MMR — оценка от стартового MMR", ("ВСЁ ВРЕМЯ", ACCENT)),
@@ -491,9 +494,10 @@ async def render_graph_board(
     return result
 
 
-def _weekly_png(rows, tiles, records, awards, note) -> bytes:
+def _weekly_png(rows, tiles, records, awards, note, spotlight=None) -> bytes:
     """В потоке: иконка героя недели и аватары (кэш/CDN) + рендер итогов недели той же таблицей, что и рейтинг."""
-    return _stats_png("Итоги недели", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", ACCENT), rows, tiles, records, awards, note, "±MMR")
+    return _stats_png("Итоги недели", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", ACCENT), rows, tiles, records, awards, note,
+                      "±MMR", spotlight)
 
 
 async def weekly_board(storage: Storage, chat_id: int, now: int, image: Optional[bool] = None) -> ImageBoard:
@@ -507,7 +511,7 @@ async def weekly_board(storage: Storage, chat_id: int, now: int, image: Optional
                 for p in storage.list_players(chat_id)}
         rows = period_rows(played, info)
         board.png = await _render_png("итоги недели", _weekly_png, rows, weekly_tiles(report), weekly_records(report),
-                                      weekly_awards(report), None)
+                                      weekly_awards(report), None, weekly_spotlight(report, info))
         if board.png is not None:
             board.caption = fit_caption(weekly_caption(report))
     return board
@@ -648,7 +652,7 @@ def _mmr_values(storage: Storage, chat_id: int, player_id: int) -> list[int]:
 
 async def player_board(
     storage: Storage, od: Optional[OpenDota], chat_id: int, name: str, stratz=None, image: Optional[bool] = None,
-    refresh: bool = True,
+    refresh: bool = True, numbered: bool = True,
 ) -> Optional[ImageBoard]:
     """Карточка игрока: текст всегда, картинка с короткой подписью — если нарисовалась; None — игрока нет.
 
@@ -665,6 +669,8 @@ async def player_board(
     standing = standing_line(comparison, summary.display_name)
     tz = storage.get_or_create_chat(chat_id).tz
     board = ImageBoard(_with_stale(storage, chat_id, render_player_card(summary, standing=standing, tz=tz), od))
+    if numbered:
+        board.match_ids = [g.get("match_id") for g in summary.recent_games or []][:6]
     if want_image(storage, chat_id, image):
         note = _stale_line(storage, chat_id, od)
         plain = re.sub(r"<[^>]+>", "", html.unescape(note)) if note else None
@@ -672,6 +678,7 @@ async def player_board(
         series = await _build(_mmr_values, storage, chat_id, player.id) if player is not None else []
         position = dict(comparison["players"].get(summary.display_name) or {}, size=comparison["size"])
         card = player_card(summary, position, series, plain, absolute=True, tz=tz)
+        card["recent_numbers"] = numbered
         board.png = await asyncio.to_thread(build_png, "карточку игрока", lambda: _player_png(card))
         if board.png is not None:
             board.caption = fit_caption(player_caption(summary) + (f"\n{note}" if note else ""))
@@ -1162,7 +1169,8 @@ async def player_lookup_board(
     if member is not None:
         board = await player_board(storage, od, chat_id, str(account_id), stratz, image)
         if board is not None:
-            return LookupBoard(board.text, board.png, board.caption, kind="player", account_id=account_id, tracked=True)
+            return LookupBoard(board.text, board.png, board.caption, board.match_ids, kind="player",
+                               account_id=account_id, tracked=True)
     if od is None or provider_down(od):
         return LookupBoard("OpenDota сейчас недоступен — поиск игрока не получится, попробуйте позже.")
     try:
@@ -1175,7 +1183,9 @@ async def player_lookup_board(
         return LookupBoard(f"Игрок {account_id} не найден в OpenDota (или профиль скрыт).")
     tz = storage.get_or_create_chat(chat_id).tz
     card = lookup_card(account_id, profile, matches, tz)
-    board = LookupBoard(lookup_text(card), kind="player", account_id=account_id)
+    card["recent_numbers"] = True
+    board = LookupBoard(lookup_text(card), kind="player", account_id=account_id,
+                        match_ids=[g.get("match_id") for g in card.get("recent") or []][:6])
     if want_image(storage, chat_id, image):
         board.png = await asyncio.to_thread(build_png, "карточку игрока по ID", lambda: _player_png(card))
         if board.png is not None:

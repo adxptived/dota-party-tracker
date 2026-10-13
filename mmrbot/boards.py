@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ class ImageBoard:
     text: str
     png: Optional[bytes] = None
     caption: Optional[str] = None
+    match_ids: list = field(default_factory=list)  # пронумерованные на картинке матчи — их открывают кнопки-цифры
 
 
 @dataclass

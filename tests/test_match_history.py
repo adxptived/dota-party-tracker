@@ -221,3 +221,19 @@ def test_match_list_image_renders_rows_and_empty_page(drawn):
     numbers = [texts[i - 1] for i, t in enumerate(texts) if t == "Shadow Fiend"]  # номер рисуется перед героем
     assert numbers == [str(n) for n in range(1, 11)]
     assert "12.10 21:50  ·  40 мин  ·  295 крипов" in texts
+
+
+def test_open_match_has_neighbour_buttons_instead_of_pages():
+    buttons = _flat(match_list_buttons(ACC, 10, IDS, total=25, current=IDS[2]))
+    data = {b.text: b.callback_data for b in buttons}
+    assert data["◀️ Новее"] == f"mv:{ACC}:10:{IDS[1]}" and data["Старше ▶️"] == f"mv:{ACC}:10:{IDS[3]}"
+    edge = {b.text for b in _flat(match_list_buttons(ACC, 0, IDS, total=25, current=IDS[0]))}
+    assert "◀️ Новее" not in edge and "Старше ▶️" in edge
+
+
+def test_recent_games_buttons_under_player_and_lookup_cards():
+    from mmrbot.keyboards import lookup_buttons
+    row = player_actions(ACC, [91, None, 93]).inline_keyboard[0]
+    assert [(b.text, b.callback_data) for b in row] == [("1", f"mx:91:{ACC}"), ("3", f"mx:93:{ACC}")]
+    assert player_actions(ACC).inline_keyboard[0][0].text == "🦸 Герои"  # без матчей — как раньше
+    assert lookup_buttons(ACC, [91]).inline_keyboard[0][0].callback_data == f"mx:91:{ACC}"

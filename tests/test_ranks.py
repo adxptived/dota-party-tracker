@@ -83,3 +83,26 @@ def test_average_rank_tier_mixed_and_skips_uncalibrated():
     assert average_rank_tier([71, 75]) == 73
     assert average_rank_tier([75, 80, 80]) == 80
     assert average_rank_tier([None, 0]) is None
+
+
+def test_suggest_step_fits_medal_middle():
+    from mmrbot.ranks import suggest_step
+    # старт 3000, +40 побед в балансе при шаге 25 → оценка 4000; середина Legend 5 (3696–3850) ≈ 3773 → шаг ≈ 20
+    assert suggest_step(3000, 0, 25 * 40, 25, 55) == 20
+    assert suggest_step(3000, 0, 25 * 5, 25, 55) is None        # мало игр — не подсказываем
+    assert suggest_step(None, 0, 1000, 25, 55) is None          # MMR не задан
+    assert suggest_step(3000, 0, 1000, 25, None) is None        # медали нет
+    assert suggest_step(3000, 0, 25 * 40, 25, 80) is None or 10 <= suggest_step(3000, 0, 25 * 40, 25, 80) <= 60
+    assert suggest_step(1000, 0, 25 * 10, 25, 80) is None       # нужен шаг больше 60 — это не про шаг
+    assert suggest_step(3773 - 25 * 40, 0, 25 * 40, 25, 55) is None  # текущий шаг и так подходит
+
+
+def test_player_card_drift_warning_suggests_step():
+    from mmrbot import card_data as cd
+    from mmrbot.tracker import PlayerSummary
+    s = PlayerSummary(display_name="Вася", account_id=1, rank="Legend 5", anchor_mmr=3000, current_mmr=4000,
+                      mmr_delta=1000, games_total=60, wins_total=50, losses_total=10, winrate=0.83, kda_ratio=3,
+                      avg_kills=1, avg_deaths=1, avg_assists=1, games_today=0, wins_today=0, losses_today=0,
+                      delta_today=0, rank_tier=55, mmr_drift=True, mmr_step=25, anchor_games=60)
+    warning = cd.player_card(s)["warnings"][0]
+    assert "/setmmr" in warning and "шаг ±20 (/setstep 20)" in warning

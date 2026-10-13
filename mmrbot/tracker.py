@@ -116,6 +116,7 @@ class PlayerSummary:
     damage_games: Optional[int] = None  # игр с известным уроном по героям (None — как detail_games)
     net_worth_games: Optional[int] = None  # игр с известным нетворсом (None — как detail_games)
     recent_games: list = field(default_factory=list)  # последние игры, новые первыми (stats.recent_games)
+    mmr_step: int = 0  # шаг ±MMR за игру в чате (для подсказки подходящего шага)
 
 
 def _normalize(raw: dict) -> dict:
@@ -728,6 +729,7 @@ def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
     hero, streak = _period_highlights(named)
     return {
         "rows": rows,
+        "mvp": player_of_period(rows, named),
         "champion": contest_champion(build_contest(storage, chat_id, since)["points"]),
         "hero": hero,
         "streak": streak,
@@ -735,6 +737,21 @@ def build_weekly_report(storage: Storage, chat_id: int, now: int) -> dict:
         "step": chat.mmr_step,
         "awards": build_period_awards(storage, chat_id, since),
     }
+
+
+MVP_MIN_GAMES = 3  # «игрок недели» — только у того, кто сыграл хотя бы столько
+
+
+def player_of_period(rows: list[dict], named: list[tuple[str, list[dict]]]) -> Optional[dict]:
+    """Игрок периода: наибольший рост ±MMR (при равенстве — баланс побед, затем KDA) среди сыгравших не меньше
+    MVP_MIN_GAMES и ушедших в плюс; к нему — лучшая игра и любимый герой периода. None — такого нет."""
+    played = [r for r in rows if r["games"] >= MVP_MIN_GAMES and r["delta"] > 0]
+    if not played:
+        return None
+    best = max(played, key=lambda r: (r["delta"], r["wins"] - r["losses"], r["kda"]))
+    matches = dict(named).get(best["name"]) or []
+    heroes = stats.top_heroes(matches, 1)
+    return dict(best, best_game=stats.best_game(matches), hero=heroes[0] if heroes else None)
 
 
 def _period_highlights(named: list[tuple[str, list[dict]]]) -> tuple[Optional[dict], Optional[tuple[str, int]]]:
@@ -1142,6 +1159,7 @@ def _build_player_summary(storage: Storage, chat: Chat, player: Player, now: int
         damage_games=sum(1 for m in all_matches if m.get("hero_damage") is not None),
         net_worth_games=sum(1 for m in all_matches if m.get("net_worth") is not None),
         recent_games=stats.recent_games(all_matches, step),
+        mmr_step=step,
         avg_gpm_window=_mean_field("gpm"),
         avg_hero_damage_window=_mean_field("hero_damage"),
         avg_net_worth_window=_mean_field("net_worth"),

@@ -65,7 +65,8 @@ def render_player_image(card: dict, icons: Optional[dict] = None, avatars: Optio
 
     recent = card.get("recent") or []
     if recent:
-        y = _draw_recent(img, draw, y, recent[:RECENT_N], icons, card.get("recent_mmr", True)) + GAP
+        y = _draw_recent(img, draw, y, recent[:RECENT_N], icons, card.get("recent_mmr", True),
+                         bool(card.get("recent_numbers"))) + GAP
 
     if card.get("lobby_rank") or card.get("standing"):
         y = _draw_footer_row(img, draw, y, card)
@@ -224,11 +225,14 @@ def _draw_heroes_row(img, draw, y: int, heroes: list, last: Optional[dict], icon
     return y + h
 
 
-def _draw_recent(img, draw, y: int, games: list, icons: dict, show_delta: bool = True) -> int:
-    """Лента последних игр слева направо от новой к старой: иконка героя, исход и ±MMR, K/D/A, длительность и дата."""
+def _draw_recent(img, draw, y: int, games: list, icons: dict, show_delta: bool = True, numbered: bool = False) -> int:
+    """Лента последних игр слева направо от новой к старой: иконка героя, исход и ±MMR, K/D/A, длительность и дата.
+
+    numbered — в углу иконки номер игры: под карточкой кнопки с теми же цифрами открывают матч."""
     h = RECENT_H
     x0, y0 = _section(img, draw, (PAD, y, WIDTH - PAD, y + h), "Последние игры")
-    draw_text(draw, (WIDTH - PAD - 24, y + 28), "новые слева", 18, MUTED, anchor="rm")
+    hint = "новые слева · номер — кнопка под карточкой" if numbered else "новые слева"
+    draw_text(draw, (WIDTH - PAD - 24, y + 28), hint, 18, MUTED, anchor="rm")
     gap = 12
     col_w = (WIDTH - 2 * PAD - 48 - gap * (RECENT_N - 1)) / RECENT_N
     icon_w = round(col_w - 24)
@@ -243,6 +247,9 @@ def _draw_recent(img, draw, y: int, games: list, icons: dict, show_delta: bool =
         cx = left + col_w / 2
         cards.paste(img, cards.hero_icon(icons.get(game.get("hero_id")), game.get("hero_id"), icon_w, icon_h, 8),
                     left + 12, y0 + 12)
+        if numbered:  # номер в углу иконки — та же цифра, что на кнопке
+            cards.dot(img, left + 30, y0 + 30, 15, cards.mix(BG, PANEL, 0.3))
+            draw_text(draw, (left + 30, y0 + 30), str(i + 1), 18, FG, bold=True, anchor="mm", track=False)
         line_y = y0 + 12 + icon_h + 22
         result = "ПОБЕДА" if won else "ПОРАЖЕНИЕ"
         delta = game.get("delta") if show_delta else None

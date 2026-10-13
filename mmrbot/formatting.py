@@ -452,7 +452,9 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str
     if mmr_log_line(s, tz):
         lines.append(mmr_log_line(s, tz))
     if s.mmr_drift:
-        lines.append(f"<i>⚠️ Оценка MMR расходится с медалью {_esc(s.rank)} — обновите стартовый: /setmmr</i>")
+        from mmrbot.card_data import step_hint
+        lines.append(f"<i>⚠️ Оценка MMR расходится с медалью {_esc(s.rank)} — обновите стартовый: /setmmr"
+                     f"{step_hint(s)}</i>")
     lines.append(f"{s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)   последние игры: {_form_icons(s.recent_form)}")
 
     # Бой + экономика (всё за окно).

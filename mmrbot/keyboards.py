@@ -197,12 +197,19 @@ def stats_tabs(current: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[row, nav_row()])
 
 
-def player_actions(account_id: int) -> InlineKeyboardMarkup:
-    """Под карточкой игрока: герои, позиции, Steam (`pp:<вид>:<account_id>`)."""
+def recent_match_row(match_ids: Optional[list], account_id: int) -> list:
+    """Цифры 1…N под карточкой с лентой последних игр: каждая открывает свой матч картинкой (`mx:<match_id>:<игрок>`)."""
+    return [InlineKeyboardButton(text=str(n), callback_data=f"mx:{match_id}:{account_id}")
+            for n, match_id in enumerate(match_ids or [], start=1) if match_id]
+
+
+def player_actions(account_id: int, match_ids: Optional[list] = None) -> InlineKeyboardMarkup:
+    """Под карточкой игрока: цифры последних игр, герои, позиции, Steam (`pp:<вид>:<account_id>`)."""
     def btn(text, kind):
         return InlineKeyboardButton(text=text, callback_data=f"pp:{kind}:{account_id}")
 
-    return InlineKeyboardMarkup(inline_keyboard=[
+    numbers = recent_match_row(match_ids, account_id)
+    return InlineKeyboardMarkup(inline_keyboard=([numbers] if numbers else []) + [
         [btn("🦸 Герои", "heroes"), btn("🎯 Позиции", "roles")],
         [btn("📜 Матчи", "matches"), btn("🎭 Steam", "steam")],
         nav_row(),
@@ -254,9 +261,10 @@ def match_photo_buttons(match_id: int, focus, text_shown: bool = False, full: bo
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def lookup_buttons(account_id: int) -> InlineKeyboardMarkup:
-    """Под карточкой игрока не из пати: «Текстом», «➕ Добавить в пати», ссылки на OpenDota и Dotabuff, навигация."""
-    return InlineKeyboardMarkup(inline_keyboard=[
+def lookup_buttons(account_id: int, match_ids: Optional[list] = None) -> InlineKeyboardMarkup:
+    """Под карточкой игрока не из пати: цифры последних игр, «Текстом», «➕ Добавить в пати», OpenDota и Dotabuff."""
+    numbers = recent_match_row(match_ids, account_id)
+    return InlineKeyboardMarkup(inline_keyboard=([numbers] if numbers else []) + [
         [text_button("lookup", account_id),
          InlineKeyboardButton(text="➕ Добавить в пати", callback_data=f"lk:add:{account_id}")],
         [InlineKeyboardButton(text="🔗 OpenDota", url=f"https://www.opendota.com/players/{account_id}"),
@@ -290,6 +298,16 @@ def match_list_buttons(account_id: int, offset: int, match_ids: list, total: int
                      InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{current}"),
                      InlineKeyboardButton(text="📋 Список", callback_data=f"ml:{account_id}:{offset}")])
     pager = []
+    if current is not None and current in match_ids:  # открыт матч: соседние матчи страницы — без возврата к списку
+        i = match_ids.index(current)
+        if i > 0:
+            pager.append(InlineKeyboardButton(text="◀️ Новее", callback_data=f"mv:{account_id}:{offset}:{match_ids[i - 1]}"))
+        if i + 1 < len(match_ids):
+            pager.append(InlineKeyboardButton(text="Старше ▶️", callback_data=f"mv:{account_id}:{offset}:{match_ids[i + 1]}"))
+        if pager:
+            rows.append(pager)
+        rows.append(nav_row())
+        return InlineKeyboardMarkup(inline_keyboard=rows)
     if offset > 0:
         pager.append(InlineKeyboardButton(text="◀️ Новее", callback_data=f"ml:{account_id}:{max(offset - MATCHES_PAGE, 0)}"))
     if offset + MATCHES_PAGE < total:

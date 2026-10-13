@@ -165,7 +165,10 @@ def build() -> dict[str, bytes]:
     out["weekly.png"] = render_stats_image(
         "Итоги недели", "оценка ±MMR за 7 дней", ("НЕДЕЛЯ", ACCENT), weekly_rows, tiles,
         [{"label": "Герой недели", "value": "Phantom Lancer", "player": "9 игр · 67%", "hero_id": 12}],
-        awards[1:], None, icons, avatars, "±MMR")
+        awards[1:], None, icons, avatars, "±MMR",
+        {"title": "Игрок недели", "name": "Вася", "avatar": "https://avatars.steamstatic.com/a.jpg", "big": "+175",
+         "line": "11–4 · 15 игр · KDA 4.20", "game": {"hero_id": 12, "kills": 20, "deaths": 2, "assists": 10},
+         "hero": {"hero_id": 1, "name": "Anti-Mage", "line": "6 игр · 83%"}})
     out["stats_empty.png"] = render_stats_image("Рейтинг", None, None, [])
     out["player.png"] = render_player_image(sample_player(), icons, avatars)
     from mmrbot.match_list_image import render_match_list_image
