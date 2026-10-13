@@ -22,6 +22,7 @@ from mmrbot.formatting import (
 )
 from mmrbot.heroes import hero_name
 from mmrbot.ranks import rank_label
+from mmrbot.talents import tree_rows
 from mmrbot.upgrade_icons import paste_upgrade
 
 TOP_H = 96  # верх строки игрока: аватар, герой, ник и ±MMR — без россыпи чисел
@@ -33,7 +34,7 @@ CELLS_X = PAD + 24
 BUILD_H = 54  # линия билда под верхом строки (только если билд известен)
 TIME_H = 20  # + подписи времени покупки под иконками предметов
 CELLS_H = 66  # ряд подписанных ячеек: K/D/A, IMP, экономика, урон
-TALENTS_H = 70  # выбранные таланты сеткой 2×2 (если известны)
+TALENTS_H = 136  # дерево талантов (если известно): 4 ступени, 25 наверху
 ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
 UPGRADE_SIZE = 32
 CELL_MAX_W = 176
@@ -88,8 +89,8 @@ def _upgrade_times(row: dict) -> bool:
 
 
 def _talents(row: dict) -> list:
-    """Выбранные таланты [[уровень, название]] без мусора."""
-    return [t for t in row.get("talents") or [] if isinstance(t, (list, tuple)) and len(t) == 2 and t[1]]
+    """Дерево талантов игрока (talents.tree_rows); пусто — талантов не знаем."""
+    return tree_rows(row.get("talents"))
 
 
 def _row_h(row: dict) -> int:
@@ -247,17 +248,10 @@ def _draw_row(
 
 
 def _draw_talents(img, draw, top: float, row: dict, fill: str) -> None:
-    """Выбранные таланты сеткой 2×2 (10 и 15 — слева, 20 и 25 — справа): уровень золотой таблеткой и название."""
+    """Дерево талантов как в игре: подпись слева, дерево — на всю ширину ряда ячеек."""
     label_color = cards.mix(MUTED, PANEL, 0.2)
-    draw_text(draw, (CELLS_X, top + 16), "ТАЛАНТЫ", 16, label_color, bold=True, anchor="lm")
-    left = CELLS_X + KDA_CELL_W
-    col = (RIGHT - left) / 2
-    for i, (level, name) in enumerate(_talents(row)[:4]):
-        x, cy = left + (i // 2) * col, top + 16 + (i % 2) * 32
-        w = cards.chip(img, draw, x, cy, str(level), GOLD, size=15, pad=8, base=fill)
-        lx = x + w + 10
-        draw_text(draw, (lx, cy), clean(name), 18, cards.mix(FG, MUTED, 0.15), anchor="lm", max_w=x + col - 18 - lx,
-                  shrink=14, track=False)
+    draw_text(draw, (CELLS_X, top + TALENTS_H / 2 - 6), "ТАЛАНТЫ", 16, label_color, bold=True, anchor="lm")
+    cards.talent_tree(img, draw, (CELLS_X + KDA_CELL_W - 40, top, RIGHT, top + TALENTS_H - 12), _talents(row), fill)
 
 
 def _draw_mmr(img, draw, mid: float, row: dict, fill: str) -> float:

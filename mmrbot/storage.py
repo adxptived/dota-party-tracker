@@ -1198,7 +1198,7 @@ class Storage:
             return
         keep = {k: build.get(k) for k in ("items", "item_times", "neutral_item", "shard", "shard_time",
                                            "scepter", "scepter_time")}
-        if build.get("talents"):  # выбранные таланты [[уровень, название]] — только если известны
+        if build.get("talents"):  # дерево талантов (talents.talent_tree) — только если известно
             keep["talents"] = build["talents"]
         with self._conn() as conn:
             row = conn.execute("SELECT build FROM match_builds WHERE account_id = ? AND match_id = ?",

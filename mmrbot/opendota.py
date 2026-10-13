@@ -16,7 +16,7 @@ import requests
 from .health import ProviderHealth, ProviderUnavailable
 from .items import item_slug
 from .ranks import average_rank_tier
-from .talents import talent_picks
+from .talents import talent_tree
 
 BASE_URL = "https://api.opendota.com/api"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
@@ -72,7 +72,7 @@ def _player_build(player: dict) -> dict:
         "scepter": bool(player.get("aghanims_scepter")) or "ultimate_scepter" in bought,
         "scepter_time": bought.get("ultimate_scepter"),
         "bought": bought,  # {предмет: время последней покупки} — для предметов медведя Лон Друида
-        "talents": talent_picks(player.get("ability_upgrades_arr")),  # [[уровень, название]] — выбранные таланты
+        "talents": talent_tree(player.get("ability_upgrades_arr")),  # дерево талантов: 4 ступени и выбранная сторона
     }
 
 

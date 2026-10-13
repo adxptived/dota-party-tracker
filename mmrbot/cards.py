@@ -749,3 +749,55 @@ def footer(draw, y: int, text: str) -> int:
     """Мелкая приглушённая строка под карточкой (когда обновлено, пояснение к цифрам). Возвращает y под ней."""
     draw_text(draw, (PAD, y + 8), clean(text), 18, mix(MUTED, BG, 0.25), max_w=WIDTH - 2 * PAD)
     return y + 8 + 26
+
+
+# --- дерево талантов -----------------------------------------------------------------------------
+
+def talent_tree(img, draw, box, rows: Sequence[dict], base: str = PANEL) -> None:
+    """Дерево талантов как в игре: ступени снизу вверх (10 внизу, 25 наверху), уровень — в кружке на «стволе»,
+    левый талант — слева от него, правый — справа. Выбранный — светлым текстом на золотистой плашке, второй
+    вариант ступени — приглушённо. rows — talents.tree_rows (4 ступени по возрастанию уровня)."""
+    x0, y0, x1, y1 = box
+    cx = (x0 + x1) / 2
+    step = (y1 - y0) / 4
+    r = min(13, step / 2 - 2)
+    trunk = mix(base, "#ffffff", 0.12)
+    img.paste(trunk, (round(cx - 1), round(y0 + step / 2), round(cx + 1), round(y1 - step / 2)))
+    side_w = (x1 - x0) / 2 - r - 22
+    for i, row in enumerate(reversed(list(rows)[:4])):
+        cy = y0 + step * i + step / 2
+        picked = row.get("pick")
+        dot(img, cx, cy, r, GOLD if picked else mix(base, "#ffffff", 0.18))
+        draw_text(draw, (cx, cy), str(row.get("level", "")), 13 if r >= 12 else 11, BG if picked else MUTED, bold=True,
+                  anchor="mm", track=False)
+        for side, sign in (("left", -1), ("right", 1)):
+            text = clean(row.get(side))
+            if not text:
+                continue
+            chosen = picked == side
+            size = fit_size(text, 17, chosen, side_w - 20, 12)
+            w = min(text_width(text, size, chosen, False), side_w - 20)
+            edge = cx + sign * (r + 14)
+            if chosen:
+                left = edge - w - 10 if sign < 0 else edge - 10
+                panel(img, (left, cy - step / 2 + 3, left + w + 20, cy + step / 2 - 3), mix(base, GOLD, 0.16),
+                      radius=round(step / 2 - 3), outline=mix(base, GOLD, 0.45))
+            color = mix(GOLD, "#ffffff", 0.55) if chosen else mix(MUTED, base, 0.35 if picked else 0.15)
+            draw_text(draw, (edge, cy), text, size, color, bold=chosen, anchor="rm" if sign < 0 else "lm",
+                      max_w=side_w - 20, track=False)
+
+
+def talent_glyph(img, x: float, cy: float, rows: Sequence[dict], cell: int = 12, base: str = PANEL) -> float:
+    """Маленький значок дерева: 4 ступени по две клетки (выбранная — золотом), 25 сверху. Возвращает ширину."""
+    bar, gap, trunk = 5, 2, 4
+    h = 4 * bar + 3 * gap
+    top = cy - h / 2
+    off = mix(base, "#ffffff", 0.14)
+    img.paste(mix(base, "#ffffff", 0.3), (round(x + cell), round(top), round(x + cell + trunk), round(top + h)))
+    for i, row in enumerate(reversed(list(rows)[:4])):
+        y = top + i * (bar + gap)
+        for j, side in enumerate(("left", "right")):
+            left = x + j * (cell + trunk)
+            color = GOLD if row.get("pick") == side else off
+            img.paste(color, (round(left), round(y), round(left + cell), round(y + bar)))
+    return 2 * cell + trunk

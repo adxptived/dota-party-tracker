@@ -184,12 +184,18 @@ def test_support_strip_puts_vision_first_and_keeps_four_cells():
     assert [label for label, _ in _strip_cells(core)] == ["Нетворс", "Крипы", "Урон", "Здания"]
 
 
-def test_talents_are_drawn_as_grid_and_add_height(drawn):
+def test_talent_tree_is_drawn_with_both_options_and_adds_height(drawn):
     plain = _open(render_alert_image(_event(), "UTC"))
-    talents = [[10, "+30 Shadowraze Stack Damage"], [15, "+25 Movement Speed"], [20, "x"], [25, "Shadowraze Applies"]]
-    with_talents = _open(render_alert_image(_event([_row("A", talents=talents)]), "UTC"))
-    assert with_talents.height > plain.height
+    tree = [{"level": 10, "left": "+30 Feast of Souls Attack Speed", "right": "+30 Shadowraze Stack Damage",
+             "pick": "left"},
+            {"level": 25, "left": "Shadowraze Applies Attack Damage", "right": "+30% Cast Speed", "pick": None}]
+    with_tree = _open(render_alert_image(_event([_row("A", talents=tree)]), "UTC"))
+    assert with_tree.height > plain.height
     texts = [t[0] for t in drawn]
-    assert "ТАЛАНТЫ" in texts and "+30 Shadowraze Stack Damage" in texts and "Shadowraze Applies" in texts
-    junk = _open(render_alert_image(_event([_row("A", talents=[["x"], None, [10, ""]])]), "UTC"))
-    assert junk.height == plain.height  # мусор вместо талантов — строки нет
+    for text in ("ТАЛАНТЫ", "10", "15", "20", "25", "+30 Shadowraze Stack Damage", "Shadowraze Applies Attack Damage"):
+        assert text in texts
+    chosen = next(t for t in drawn if t[0] == "+30 Feast of Souls Attack Speed")
+    other = next(t for t in drawn if t[0] == "+30 Shadowraze Stack Damage")
+    assert chosen[2] and not other[2]  # выбранный — жирным, второй вариант — обычным
+    junk = _open(render_alert_image(_event([_row("A", talents=[["x"], None, {"level": 10}])]), "UTC"))
+    assert junk.height == plain.height  # без выбранных талантов дерева нет

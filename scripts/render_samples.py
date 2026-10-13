@@ -107,7 +107,9 @@ def build() -> dict[str, bytes]:
                  neutral_item=10, shard=i % 2 == 0, scepter=i % 3 == 0, tower_damage=1200 * i)
     for p in built["players"][:6]:
         p.update(last_hits=120 + p["account_id"] * 31, denies=p["account_id"] * 2,
-                 talents=[[10, "+20 Damage"], [15, "+300 Health"], [20, "-12s Healing Ward Cooldown"], [25, "+1 Omnislash Jump"]])
+                 talents=[{"level": lv, "left": f"+{lv} Damage", "right": f"+{lv * 20} Health",
+                           "pick": ("left", "right")[(lv // 5 + p["account_id"]) % 2] if lv < 25 else None}
+                          for lv in (10, 15, 20, 25)])
     built["players"][2].update(bear_items=[1, 2, 3, 4], bear_item_times=[300, 900, 1500, 2000], bear_neutral=11)
     out["match_build.png"] = render_match_image(built, {1: "Вася", 7: "Петя"}, focus=7, tz="Europe/Moscow", icons={},
                                                 item_icons=items)
@@ -124,8 +126,15 @@ def build() -> dict[str, bytes]:
                       "last_hits": 295, "denies": 4, "tower_damage": 1800, "rank_tier": 63, "is_radiant": True,
                       "position": 2, "imp": -6, "items": [1, 2, 3, 4, 5, 6], "neutral_item": 10,
                       "item_times": [457, 1948, 2380, 1509, 893, 1085],
-                      "talents": [[10, "+30 Shadowraze Stack Damage"], [15, "+2 Feast of Souls Souls Collected Per Hero"],
-                                  [20, "+25 Movement Speed"], [25, "Shadowraze Applies Attack Damage"]]}]}
+                      "talents": [
+                          {"level": 10, "right": "+30 Shadowraze Stack Damage", "left": "+30 Feast of Souls Attack Speed",
+                           "pick": "left"},
+                          {"level": 15, "right": "+1.5 Presence Armor Reduction",
+                           "left": "+2 Feast of Souls Souls Collected Per Hero", "pick": "right"},
+                          {"level": 20, "right": "+5 Necromastery Max Souls", "left": "+0.2s Requiem Fear per line",
+                           "pick": "right"},
+                          {"level": 25, "right": "Feast of Souls Grants +30% Cast Speed",
+                           "left": "Shadowraze Applies Attack Damage", "pick": None}]}]}
     out["alert_solo.png"] = render_alert_image(solo, "Europe/Moscow", icons={11: fake_photo(3, 256)}, item_icons=items)
     for kind in ("win", "loss", "mixed"):
         out[f"alert_{kind}.png"] = render_alert_image(

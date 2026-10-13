@@ -20,6 +20,7 @@ from mmrbot.cards import (
 from mmrbot.charts import BG
 from mmrbot.formatting import _k, fmt_local
 from mmrbot.heroes import hero_name
+from mmrbot.talents import tree_rows
 from mmrbot.upgrade_icons import paste_upgrade
 
 MATCH_WIDTH = 1560
@@ -70,8 +71,8 @@ def _has_bear(p: dict) -> bool:
 
 
 def _talents(p: dict) -> list:
-    """Выбранные таланты [[уровень, название]] без мусора."""
-    return [t for t in p.get("talents") or [] if isinstance(t, (list, tuple)) and len(t) == 2 and t[1]]
+    """Дерево талантов игрока (talents.tree_rows); пусто — талантов не знаем."""
+    return tree_rows(p.get("talents"))
 
 
 def _row_h(p: dict) -> int:
@@ -236,18 +237,22 @@ def _base_h(p: dict) -> int:
     return ROW_BEAR_H if _has_bear(p) else ROW_H
 
 
-def _draw_talents(draw, y: float, p: dict, base: str) -> None:
-    """Таланты строкой под игроком: «10 · +30 Shadowraze Stack Damage   15 · …» от начала ника до края."""
-    picks = _talents(p)[:4]
+def _draw_talents(img, draw, y: float, p: dict, base: str) -> None:
+    """Таланты строкой под игроком: значок дерева (выбранные стороны золотом) и выбранные таланты по ступеням."""
+    rows = _talents(p)
     x0, x1 = PAD + 24, MATCH_WIDTH - PAD - 24
     draw_text(draw, (x0, y), "ТАЛАНТЫ", 14, cards.mix(MUTED, base, 0.2), bold=True, anchor="lm")
-    x = x0 + cards.text_width("ТАЛАНТЫ", 14, True) + 18
+    x = x0 + cards.text_width("ТАЛАНТЫ", 14, True) + 14
+    x += cards.talent_glyph(img, x, y, rows, base=base) + 18
     col = (x1 - x) / 4
-    for level, name in picks:
-        draw_text(draw, (x, y), str(level), 15, GOLD, bold=True, anchor="lm", track=False)
-        lx = x + cards.text_width(str(level), 15, True, False) + 8
-        draw_text(draw, (lx, y), cards.clean(name), 15, cards.mix(FG, MUTED, 0.2), anchor="lm", max_w=x + col - 16 - lx,
-                  shrink=12, track=False)
+    for row in rows:
+        name = row.get(row["pick"]) if row.get("pick") else None
+        if name:
+            draw_text(draw, (x, y), str(row["level"]), 15, GOLD, bold=True, anchor="lm", track=False)
+            lx = x + cards.text_width(str(row["level"]), 15, True, False) + 8
+            arrow = "◂ " if row["pick"] == "left" else "▸ "
+            draw_text(draw, (lx, y), arrow + cards.clean(name), 15, cards.mix(FG, MUTED, 0.2), anchor="lm",
+                      max_w=x + col - 16 - lx, shrink=12, track=False)
         x += col
 
 
@@ -265,7 +270,7 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
         cards.panel(img, box, PANEL, radius=12)
     mid = y + _base_h(p) / 2
     if _talents(p):
-        _draw_talents(draw, y + _base_h(p) + 16, p, TRACKED_PANEL if mine else PANEL)
+        _draw_talents(img, draw, y + _base_h(p) + 16, p, TRACKED_PANEL if mine else PANEL)
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)
 

@@ -191,6 +191,9 @@ def test_creeps_column_and_talents_line(drawn):
     plain = Image.open(io.BytesIO(render_match_image(base, {})))
     texts = [t[0] for t in drawn]
     assert "КРИПЫ" in texts and "295/4" in texts
-    base["players"][0]["talents"] = [[10, "+30 Shadowraze Stack Damage"], [25, "Shadowraze Applies Attack Damage"]]
+    base["players"][0]["talents"] = [{"level": 10, "left": "+30 Feast", "right": "+30 Shadowraze", "pick": "right"},
+                                      {"level": 25, "left": "Shadowraze Applies Attack Damage", "right": "x",
+                                       "pick": "left"}]
     talented = Image.open(io.BytesIO(render_match_image(base, {})))
-    assert talented.height > plain.height and "Shadowraze Applies Attack Damage" in [t[0] for t in drawn]
+    texts = [t[0] for t in drawn]
+    assert talented.height > plain.height and "◂ Shadowraze Applies Attack Damage" in texts and "▸ +30 Shadowraze" in texts
