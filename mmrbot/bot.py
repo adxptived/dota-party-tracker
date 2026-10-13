@@ -1428,235 +1428,303 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx", "ml", "md", "mv", "lk"})
+# Кнопки разбираются таблицами: префикс callback_data → обработчик, действие меню → обработчик. Обработчик получает
+# контекст нажатия (_Press); добавить кнопку — дописать функцию и строку в таблицу, не трогая общий диспетчер.
+
+PERIODS_ALL = {"day", "week", "month", "year", "all"}
+PERIODS_NO_YEAR = {"day", "week", "month", "all"}
+
+
+class _Press:
+    """Нажатие кнопки: запрос, сообщение под кнопкой, хранилище и клиенты, аргументы callback_data."""
+
+    def __init__(self, query: CallbackQuery, storage: Storage, od: OpenDota, stratz, args: list[str]) -> None:
+        self.query, self.message, self.storage, self.od, self.stratz, self.args = (
+            query, query.message, storage, od, stratz, args)
+
+    @property
+    def user(self):
+        return getattr(self.query, "from_user", None)
+
+    @property
+    def bot(self):
+        return getattr(self.query, "bot", None)
+
+    def arg(self, i: int, default: str = "") -> str:
+        return self.args[i] if len(self.args) > i else default
+
+
+async def _cb_close(p: _Press) -> None:
+    await _delete(p.message)
+
+
+async def _cb_settings(p: _Press) -> None:
+    await _on_settings(p.message, p.storage, p.args, p.bot, p.user)
+
+
+async def _cb_records(p: _Press) -> None:
+    period = p.arg(0, "week")
+    if period in PERIODS_ALL:
+        await do_records(p.message, p.storage, p.od, period, p.stratz, edit=True)  # меняем период на месте
+
+
+async def _cb_contest(p: _Press) -> None:
+    period = p.arg(0, "week")
+    if period in PERIODS_KEYS:
+        await do_contest(p.message, p.storage, p.od, period, p.stratz, edit=True)  # меняем период на месте
+
+
+async def _cb_full_match(p: _Press) -> None:
+    """«🎮 Весь матч» и цифры последних игр: тот же разбор, что и /match <id>."""
+    try:
+        match_id = int(p.arg(0))
+    except ValueError:
+        return
+    focus = p.storage.get_player(p.message.chat.id, p.args[1]) if len(p.args) > 1 else None
+    await do_match(p.message, p.storage, p.od, focus.display_name if focus else None, match_id, p.stratz)
+
+
+async def _cb_lookup(p: _Press) -> None:
+    """Кнопки под карточкой игрока не из пати: «➕ Добавить в пати»."""
+    if len(p.args) == 2 and p.args[0] == "add" and p.args[1].isdigit():
+        if p.storage.get_player_by_account_id(p.message.chat.id, int(p.args[1])) is not None:
+            await p.message.answer("Этот игрок уже в пати.", reply_markup=nav_menu())
+        else:
+            await do_add(p.message, p.storage, p.od, p.args[1], p.stratz, user=p.user)
+
+
+async def _cb_matches(p: _Press, kind: str) -> None:
+    """Список матчей игрока (ml), его матч (mv) и карточка (md) — правят то же сообщение."""
+    try:
+        numbers = [int(a) for a in p.args[1:]]
+    except ValueError:
+        return
+    message, account = _InPlace(p.message), p.arg(0)
+    if kind == "ml" and len(numbers) == 1:
+        await do_match_list(message, p.storage, account, numbers[0])
+    elif kind == "mv" and len(numbers) == 2:
+        await do_match_pick(message, p.storage, p.od, account, numbers[0], numbers[1], p.stratz)
+    elif kind == "md" and len(numbers) == 2:
+        await do_match_detail(message, p.storage, account, numbers[0], numbers[1])
+
+
+async def _cb_text(p: _Press, kind: str) -> None:
+    """«📝 Текстом»; mt — прежний формат кнопки под матчем (сообщения уже в чатах)."""
+    await on_text_view(p.message, p.storage, p.od, p.args if kind == "tx" else ["match", *p.args], p.stratz)
+
+
+async def _cb_graph(p: _Press) -> None:
+    period, by_games = p.arg(0, "week"), "n" in p.args[1:]
+    if period not in PERIODS_ALL:
+        return
+    if getattr(p.message, "photo", None):
+        await edit_graph(p.message, p.storage, p.od, period, p.stratz, by_games)  # график меняется на месте
+    else:
+        await _delete(p.message)
+        await do_graph(p.message, p.storage, p.od, period, p.stratz, by_games)
+
+
+async def _cb_matchups(p: _Press) -> None:
+    if len(p.args) == 2 and p.args[1] in PERIODS_NO_YEAR:
+        account = None if p.args[0] == "0" else p.args[0]
+        await do_matchups(p.message, p.storage, p.od, account, p.args[1], p.stratz, edit=True)
+
+
+async def _cb_player_period(p: _Press, kind: str) -> None:
+    """Герои (hp) и позиции (rp) игрока: смена периода на месте."""
+    if len(p.args) == 2 and p.args[1] in PERIODS_NO_YEAR:
+        action = do_player_heroes if kind == "hp" else do_roles
+        await action(p.message, p.storage, p.od, p.args[0], p.args[1], p.stratz, edit=True)
+
+
+# --- главное меню (`m:<действие>`) ---
+
+PICK_PROMPTS = {
+    "remove": "Кого удалить", "setmmr": "Выберите игрока, чтобы задать MMR",
+    "heroes": "Выберите игрока для просмотра героев", "roles": "Выберите игрока для просмотра позиций",
+    "player": "Выберите игрока для просмотра карточки", "steam": "Выберите игрока для просмотра Steam-профиля",
+    "double": "Чей последний матч отметить дабл-дауном (×2)",
+}
+
+
+async def _menu_settings(p: _Press, message) -> None:
+    chat = p.storage.get_or_create_chat(message.chat.id)
+    await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
+
+
+async def _menu_category(p: _Press, message) -> None:
+    key = p.arg(1)
+    if key in CATEGORIES:
+        await message.answer(f"{category_title(key)} — выберите действие:", reply_markup=category_menu(key))
+    else:
+        await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
+
+
+async def _menu_me(p: _Press, message) -> None:
+    if await _has_players(message, p.storage):
+        kick = [[InlineKeyboardButton(text="🚫 Отвязать меня", callback_data="pp:meoff:0")]]
+        await message.answer(
+            "🙋 Кто вы из игроков? Привяжу ваш Telegram к нему — тогда тег участника покажет ваш MMR.",
+            reply_markup=players_picker(p.storage.list_players(message.chat.id), "me", extra=kick),
+        )
+
+
+def _needs_players(action):
+    """Действие меню, которому нужны игроки: без них — подсказка добавить."""
+    async def run(p: _Press, message) -> None:
+        if await _has_players(message, p.storage):
+            await action(p, message)
+    return run
+
+
+MENU_ACTIONS = {
+    "menu": lambda p, m: m.answer("📋 Выберите раздел:", reply_markup=main_menu()),
+    "c": _menu_category,
+    "season": lambda p, m: do_season(m, p.storage, p.od, p.stratz),
+    "hall": lambda p, m: m.answer(seasons.render_hall(p.storage.list_seasons(m.chat.id),
+                                                      p.storage.get_or_create_chat(m.chat.id).tz),
+                                  parse_mode="HTML", reply_markup=nav_menu()),
+    "matchups": _needs_players(lambda p, m: do_matchups(m, p.storage, p.od, None, "all", p.stratz)),
+    "records": _needs_players(lambda p, m: do_records(m, p.storage, p.od, "week", p.stratz)),
+    "graph": _needs_players(lambda p, m: do_graph(m, p.storage, p.od, "week", p.stratz)),
+    "achv": _needs_players(lambda p, m: do_contest(m, p.storage, p.od, "week", p.stratz)),
+    "settings": _menu_settings,
+    "tags": _menu_settings,
+    "help": lambda p, m: m.answer(HELP_TEXT, reply_markup=nav_menu()),
+    "terms": lambda p, m: m.answer(TERMS, reply_markup=nav_menu()),
+    "list": lambda p, m: _send_roster(p, m),
+    "stats": lambda p, m: do_stats(m, p.storage, p.od, p.stratz),
+    "today": lambda p, m: do_stats(m, p.storage, p.od, p.stratz, today_only=True),
+    "week": lambda p, m: do_period_stats(m, p.storage, p.od, "week", p.stratz),
+    "month": lambda p, m: do_period_stats(m, p.storage, p.od, "month", p.stratz),
+    "compare": lambda p, m: do_compare(m, p.storage, p.od, p.stratz),
+    "together": lambda p, m: do_together(m, p.storage, p.od, p.stratz),
+    "match": lambda p, m: _ask_match(m, p.storage),
+    "matchid": lambda p, m: _prompt_matchid(m),
+    "find": lambda p, m: _prompt_find(m),
+    "hero": lambda p, m: _prompt_hero(m),
+    "add": lambda p, m: _prompt_add(m),
+    "me": _menu_me,
+    **{action: _needs_players(lambda p, m, action=action: _ask_player(m, p.storage, action, f"{PICK_PROMPTS[action]}:"))
+       for action in PICK_PROMPTS},
+}
+
+
+async def _send_roster(p: _Press, message) -> None:
+    await message.answer(await _roster_text(p.storage, message.chat.id), parse_mode="HTML", reply_markup=list_actions())
+
+
+async def _cb_menu(p: _Press) -> None:
+    action = p.arg(0, "menu")
+    if action in {"go", "status", "last"}:  # отвечают новым сообщением и зависят от того, кто нажал
+        raw, user = p.message, p.query.from_user
+        if action == "go":
+            await gather.start(raw, p.storage, user)
+        elif action == "status":
+            await do_status(raw, p.storage, p.od, p.stratz, p.query.bot, user)
+        elif await _has_players(raw, p.storage):
+            mine = next((pl for pl in p.storage.list_players(raw.chat.id) if pl.tg_user_id == user.id), None)
+            await do_match(raw, p.storage, p.od, mine.display_name if mine else None, None, p.stratz)
+        return
+    handler = MENU_ACTIONS.get(action)
+    if handler is not None:  # переход в другой раздел правит то же сообщение на месте — чат не засоряется
+        await handler(p, _InPlace(p.message))
+
+
+# --- выбор игрока (`pp:<что>:<account_id>`) ---
+
+async def _pick_player(p: _Press, message, account: str):
+    """Игрок чата по account_id из кнопки; нет — сообщение «не найден» и None."""
+    player = p.storage.get_player(message.chat.id, account)
+    if player is None:
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+    return player
+
+
+async def _pick_double(p: _Press, message, account: str) -> None:
+    player = p.storage.get_player(message.chat.id, account)
+    result = doubles.toggle(p.storage, message.chat.id, player, None, int(time.time())) if player else None
+    text = (doubles.describe(player.display_name, result) if result else
+            (NOT_FOUND_TEXT if player is None else doubles.NO_MATCH))
+    await message.answer(text, parse_mode="HTML", reply_markup=nav_menu())
+
+
+async def _pick_remove(p: _Press, message, account: str) -> None:
+    player = await _pick_player(p, message, account)
+    if player is not None:
+        await _confirm_remove(message, player)
+
+
+async def _pick_remove_yes(p: _Press, message, account: str) -> None:
+    player = await _pick_player(p, message, account)
+    if player is not None and await _may_remove(message, p.storage, player, p.user, p.bot):
+        p.storage.remove_player(message.chat.id, str(player.account_id))
+        await message.answer(f"🗑️ {player.display_name} удалён.", reply_markup=nav_menu())
+
+
+async def _pick_me(p: _Press, message, account: str, off: bool = False) -> None:
+    if message.chat.type == "private":
+        await message.answer("🙋 Работает в группе.", reply_markup=nav_menu())
+    elif off:
+        await _unlink_me(message, p.storage, p.query.bot, p.query.from_user)
+    else:
+        player = await _pick_player(p, message, account)
+        if player is not None:
+            await _link_me(message, p.storage, p.query.bot, p.query.from_user, player)
+
+
+async def _pick_match(p: _Press, message, account: str) -> None:
+    player = None if account == "last" else p.storage.get_player(message.chat.id, account)
+    await do_match(message, p.storage, p.od, player.display_name if player else None, None, p.stratz)
+
+
+async def _pick_setmmr(p: _Press, message, account: str) -> None:
+    player = await _pick_player(p, message, account)
+    if player is not None:
+        await _prompt_setmmr(message, player)
+
+
+PICK_ACTIONS = {
+    "matches": lambda p, m, a: do_match_list(m, p.storage, a, 0),
+    "heroes": lambda p, m, a: do_player_heroes(m, p.storage, p.od, a, "all", p.stratz),
+    "roles": lambda p, m, a: do_roles(m, p.storage, p.od, a, "all", p.stratz),
+    "player": lambda p, m, a: do_player_card(m, p.storage, p.od, a, p.stratz),
+    "steam": lambda p, m, a: do_steam(m, p.storage, p.od, a),
+    "double": _pick_double,
+    "remove": _pick_remove,
+    "rmyes": _pick_remove_yes,
+    "me": _pick_me,
+    "meoff": lambda p, m, a: _pick_me(p, m, a, off=True),
+    "match": _pick_match,
+    "setmmr": _pick_setmmr,
+}
+
+
+async def _cb_pick(p: _Press) -> None:
+    handler = PICK_ACTIONS.get(p.arg(0)) if len(p.args) == 2 else None
+    if handler is not None:
+        await handler(p, _InPlace(p.message), p.args[1])
+
+
+CALLBACKS = {
+    "x": _cb_close, "s": _cb_settings, "r": _cb_records, "c": _cb_contest, "mx": _cb_full_match, "lk": _cb_lookup,
+    "ml": lambda p: _cb_matches(p, "ml"), "md": lambda p: _cb_matches(p, "md"), "mv": lambda p: _cb_matches(p, "mv"),
+    "tx": lambda p: _cb_text(p, "tx"), "mt": lambda p: _cb_text(p, "mt"), "g": _cb_graph, "m": _cb_menu,
+    "pp": _cb_pick, "mu": _cb_matchups, "hp": lambda p: _cb_player_period(p, "hp"),
+    "rp": lambda p: _cb_player_period(p, "rp"),
+}
+
+
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in CALLBACKS)
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
-    await query.answer()  # убрать «часики» на кнопке
-    message = query.message
-    if message is None:
+    """Нажатие кнопки: убираем «часики» и передаём обработчику из таблицы CALLBACKS по префиксу callback_data."""
+    await query.answer()
+    if query.message is None:
         return
     kind, args = parse_callback(query.data)
-
-    if kind == "x":
-        await _delete(message)
-        return
-
-    if kind == "s":
-        await _on_settings(message, storage, args, getattr(query, "bot", None), getattr(query, "from_user", None))
-        return
-
-    if kind == "r":
-        period = args[0] if args else "week"
-        if period in {"day", "week", "month", "year", "all"}:
-            await do_records(message, storage, od, period, stratz, edit=True)  # меняем период на месте
-        return
-
-    if kind == "c":
-        period = args[0] if args else "week"
-        if period in PERIODS_KEYS:
-            await do_contest(message, storage, od, period, stratz, edit=True)  # меняем период на месте
-        return
-
-    if kind == "mx":  # «🎮 Весь матч» под оповещением: тот же разбор, что и /match <id>
-        try:
-            match_id = int(args[0])
-        except (IndexError, ValueError):
-            return
-        focus = storage.get_player(message.chat.id, args[1]) if len(args) > 1 else None
-        await do_match(message, storage, od, focus.display_name if focus else None, match_id, stratz)
-        return
-
-    if kind == "lk":  # кнопки под карточкой игрока не из пати: «➕ Добавить в пати»
-        if len(args) == 2 and args[0] == "add" and args[1].isdigit():
-            if storage.get_player_by_account_id(message.chat.id, int(args[1])) is not None:
-                await message.answer("Этот игрок уже в пати.", reply_markup=nav_menu())
-            else:
-                await do_add(message, storage, od, args[1], stratz, user=getattr(query, "from_user", None))
-        return
-
-    if kind in {"ml", "md", "mv"}:  # список матчей игрока, его матч и карточка — правят то же сообщение
-        try:
-            numbers = [int(a) for a in args[1:]]
-            if kind == "ml" and len(numbers) == 1:
-                await do_match_list(_InPlace(message), storage, args[0], numbers[0])
-            elif kind == "mv" and len(numbers) == 2:
-                await do_match_pick(_InPlace(message), storage, od, args[0], numbers[0], numbers[1], stratz)
-            elif kind == "md" and len(numbers) == 2:
-                await do_match_detail(_InPlace(message), storage, args[0], numbers[0], numbers[1])
-        except ValueError:
-            pass
-        return
-
-    if kind in {"tx", "mt"}:  # mt — прежний формат кнопки «Текстом» под матчем (сообщения уже в чатах)
-        await on_text_view(message, storage, od, args if kind == "tx" else ["match", *args], stratz)
-        return
-
-    if kind == "g":
-        period = args[0] if args else "week"
-        by_games = "n" in args[1:]
-        if period in {"day", "week", "month", "year", "all"}:
-            if getattr(message, "photo", None):
-                await edit_graph(message, storage, od, period, stratz, by_games)  # график меняется на месте
-            else:
-                await _delete(message)
-                await do_graph(message, storage, od, period, stratz, by_games)
-        return
-
-    # переход в другой раздел и смена периода правят то же сообщение на месте — чат не засоряется
-    if kind in {"m", "pp"}:
-        message = _InPlace(message)
-
-    if kind == "m":
-        action = args[0] if args else "menu"
-        if action in {"go", "status", "last"}:  # отвечают новым сообщением и зависят от того, кто нажал
-            raw, user = query.message, query.from_user
-            if action == "go":
-                await gather.start(raw, storage, user)
-            elif action == "status":
-                await do_status(raw, storage, od, stratz, query.bot, user)
-            elif await _has_players(raw, storage):
-                mine = next((p for p in storage.list_players(raw.chat.id) if p.tg_user_id == user.id), None)
-                await do_match(raw, storage, od, mine.display_name if mine else None, None, stratz)
-            return
-        if action == "menu":
-            await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
-        elif action == "c":
-            key = args[1] if len(args) > 1 else ""
-            if key in CATEGORIES:
-                await message.answer(f"{category_title(key)} — выберите действие:", reply_markup=category_menu(key))
-            else:
-                await message.answer("📋 Выберите раздел:", reply_markup=main_menu())
-        elif action == "season":
-            await do_season(message, storage, od, stratz)
-        elif action == "hall":
-            await message.answer(seasons.render_hall(storage.list_seasons(message.chat.id),
-                                                     storage.get_or_create_chat(message.chat.id).tz),
-                                 parse_mode="HTML", reply_markup=nav_menu())
-        elif action == "matchups":
-            if await _has_players(message, storage):
-                await do_matchups(message, storage, od, None, "all", stratz)
-        elif action == "records":
-            if await _has_players(message, storage):
-                await do_records(message, storage, od, "week", stratz)
-        elif action == "graph":
-            if await _has_players(message, storage):
-                await do_graph(message, storage, od, "week", stratz)
-        elif action == "achv":
-            if await _has_players(message, storage):
-                await do_contest(message, storage, od, "week", stratz)
-        elif action == "settings":
-            chat = storage.get_or_create_chat(message.chat.id)
-            await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
-        elif action == "help":
-            await message.answer(HELP_TEXT, reply_markup=nav_menu())
-        elif action == "terms":
-            await message.answer(TERMS, reply_markup=nav_menu())
-        elif action == "list":
-            await message.answer(
-                await _roster_text(storage, message.chat.id), parse_mode="HTML", reply_markup=list_actions()
-            )
-        elif action == "stats":
-            await do_stats(message, storage, od, stratz)
-        elif action == "today":
-            await do_stats(message, storage, od, stratz, today_only=True)
-        elif action in {"week", "month"}:
-            await do_period_stats(message, storage, od, action, stratz)
-        elif action == "compare":
-            await do_compare(message, storage, od, stratz)
-        elif action == "together":
-            await do_together(message, storage, od, stratz)
-        elif action == "match":
-            await _ask_match(message, storage)
-        elif action == "matchid":
-            await _prompt_matchid(message)
-        elif action == "find":
-            await _prompt_find(message)
-        elif action == "hero":
-            await _prompt_hero(message)
-        elif action == "add":
-            await _prompt_add(message)
-        elif action == "me":
-            if await _has_players(message, storage):
-                kick = [[InlineKeyboardButton(text="🚫 Отвязать меня", callback_data="pp:meoff:0")]]
-                await message.answer(
-                    "🙋 Кто вы из игроков? Привяжу ваш Telegram к нему — тогда тег участника покажет ваш MMR.",
-                    reply_markup=players_picker(storage.list_players(message.chat.id), "me", extra=kick),
-                )
-        elif action == "tags":
-            chat = storage.get_or_create_chat(message.chat.id)
-            await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
-        elif action in {"remove", "setmmr", "heroes", "roles", "player", "steam", "double"}:
-            if await _has_players(message, storage):
-                label = {"remove": "Кого удалить", "setmmr": "Выберите игрока, чтобы задать MMR", "heroes": "Выберите игрока для просмотра героев", "roles": "Выберите игрока для просмотра позиций", "player": "Выберите игрока для просмотра карточки", "steam": "Выберите игрока для просмотра Steam-профиля", "double": "Чей последний матч отметить дабл-дауном (×2)"}[action]
-                await _ask_player(message, storage, action, f"{label}:")
-        return
-
-    if kind == "pp" and len(args) == 2:
-        pick, account = args
-        if pick == "matches":
-            await do_match_list(message, storage, account, 0)
-        elif pick == "heroes":
-            await do_player_heroes(message, storage, od, account, "all", stratz)
-        elif pick == "roles":
-            await do_roles(message, storage, od, account, "all", stratz)
-        elif pick == "player":
-            await do_player_card(message, storage, od, account, stratz)
-        elif pick == "steam":
-            await do_steam(message, storage, od, account)
-        elif pick == "double":
-            player = storage.get_player(message.chat.id, account)
-            result = doubles.toggle(storage, message.chat.id, player, None, int(time.time())) if player else None
-            text = (doubles.describe(player.display_name, result) if result else
-                    (NOT_FOUND_TEXT if player is None else doubles.NO_MATCH))
-            await message.answer(text, parse_mode="HTML", reply_markup=nav_menu())
-        elif pick == "remove":
-            player = storage.get_player(message.chat.id, account)
-            if player is None:
-                await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
-            else:
-                await _confirm_remove(message, player)
-        elif pick in {"me", "meoff"}:
-            if message.chat.type == "private":
-                await message.answer("🙋 Работает в группе.", reply_markup=nav_menu())
-            elif pick == "meoff":
-                await _unlink_me(message, storage, query.bot, query.from_user)
-            else:
-                player = storage.get_player(message.chat.id, account)
-                if player is None:
-                    await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
-                else:
-                    await _link_me(message, storage, query.bot, query.from_user, player)
-        elif pick == "match":
-            player = None if account == "last" else storage.get_player(message.chat.id, account)
-            await do_match(message, storage, od, player.display_name if player else None, None, stratz)
-        elif pick == "rmyes":
-            player = storage.get_player(message.chat.id, account)
-            if player is None:
-                await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
-            elif await _may_remove(
-                message, storage, player, getattr(query, "from_user", None), getattr(query, "bot", None)
-            ):
-                storage.remove_player(message.chat.id, str(player.account_id))
-                await message.answer(f"🗑️ {player.display_name} удалён.", reply_markup=nav_menu())
-        elif pick == "setmmr":
-            player = storage.get_player(message.chat.id, account)
-            if player is None:
-                await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
-            else:
-                await _prompt_setmmr(message, player)
-        return
-
-    if kind == "mu" and len(args) == 2:
-        account, period = args
-        if period in {"day", "week", "month", "all"}:
-            await do_matchups(message, storage, od, None if account == "0" else account, period, stratz, edit=True)
-        return
-
-    if kind in {"hp", "rp"} and len(args) == 2:
-        account, period = args
-        if period not in {"day", "week", "month", "all"}:
-            return
-        action = do_player_heroes if kind == "hp" else do_roles
-        await action(message, storage, od, account, period, stratz, edit=True)
+    handler = CALLBACKS.get(kind)
+    if handler is not None:
+        await handler(_Press(query, storage, od, stratz, args))
 
 
 # --- разделы в своих модулях ------------------------------------------------
