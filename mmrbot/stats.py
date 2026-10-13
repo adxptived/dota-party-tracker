@@ -241,6 +241,7 @@ def recent_games(matches: list[dict], step: int, n: int = 6) -> list[dict]:
         "won": is_win(m["player_slot"], m["radiant_win"]), "kills": m.get("kills") or 0,
         "deaths": m.get("deaths") or 0, "assists": m.get("assists") or 0, "duration": m.get("duration"),
         "delta": match_mmr_delta(m, step), "double_down": bool(m.get("double_down")), "level": m.get("level"),
+        "plus_xp": m.get("plus_xp"),
     } for m in tail]
 
 
@@ -259,7 +260,7 @@ def last_game(matches: list[dict]) -> Optional[dict]:
         "kills": kills, "deaths": deaths, "assists": assists, "kda": (kills + assists) / max(deaths, 1),
         "won": is_win(match["player_slot"], match["radiant_win"]),
         "duration": match.get("duration"), "gpm": match.get("gpm"), "hero_damage": match.get("hero_damage"),
-        "level": match.get("level"),
+        "level": match.get("level"), "plus_xp": match.get("plus_xp"),
     }
 
 

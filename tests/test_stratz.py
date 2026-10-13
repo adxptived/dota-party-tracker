@@ -367,3 +367,12 @@ def test_full_match_carries_dota_plus_hero_xp():
     match = Stratz("k", session=session, min_interval=0).get_match(5)
     assert "dotaPlusHeroXp" in session.calls[0]["json"]["query"]
     assert [p["plus_xp"] for p in match["players"]] == [72050, None]
+
+
+def test_get_matches_carries_dota_plus_hero_xp():
+    match = _match()
+    match["players"][0]["dotaPlusHeroXp"] = 31050
+    session = FakeSession([{"data": {"m0": match, "m1": _match()}}])
+    result = Stratz("key", session=session, min_interval=0).get_matches(42, [100, 101])
+    assert "dotaPlusHeroXp" in session.calls[0]["json"]["query"]
+    assert result[100]["plus_xp"] == 31050 and result[101]["plus_xp"] is None

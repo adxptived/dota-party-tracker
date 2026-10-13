@@ -203,7 +203,7 @@ def _draw_heroes_row(img, draw, y: int, heroes: list, last: Optional[dict], icon
     x1, y1 = _section(img, draw, (rx, y, rx + RIGHT_W, y + h), "Последняя игра")
     if last:
         cards.paste(img, cards.hero_icon(icons.get(last["hero_id"]), last["hero_id"]), x1, y1 + 4)
-        cards.level_badge(img, draw, x1 + 6, y1 + 4 + ICON_H - 4, last.get("level"))
+        cards.hero_badges(img, draw, x1, y1 + 4, ICON_W, ICON_H, last.get("level"), last.get("plus_xp"))
         draw_text(draw, (x1 + ICON_W + 20, y1 + 18), clean(last["name"]), 24, FG, bold=True, anchor="lm",
                   max_w=RIGHT_W - ICON_W - 70, shrink=18)
         cards.chip(img, draw, x1 + ICON_W + 20, y1 + 52, "победа" if last.get("won") else "поражение",
@@ -244,7 +244,8 @@ def _draw_recent(img, draw, y: int, games: list, icons: dict, show_delta: bool =
         cx = left + col_w / 2
         cards.paste(img, cards.hero_icon(icons.get(game.get("hero_id")), game.get("hero_id"), icon_w, icon_h, 8),
                     left + 12, y0 + 12)
-        cards.level_badge(img, draw, left + 18, y0 + 12 + icon_h - 4, game.get("level"), r=12)
+        cards.hero_badges(img, draw, left + 12, y0 + 12, icon_w, icon_h, game.get("level"), game.get("plus_xp"),
+                          level_r=12, plus_size=40, overhang=8)
         line_y = y0 + 12 + icon_h + 22
         result = "ПОБЕДА" if won else "ПОРАЖЕНИЕ"
         delta = game.get("delta") if show_delta else None

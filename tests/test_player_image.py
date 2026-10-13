@@ -94,3 +94,14 @@ def test_hero_level_is_drawn_on_last_game_and_recent():
     both = _open(render_player_image(card)).convert("RGB")
     assert plain.tobytes() != last_only.tobytes()
     assert last_only.tobytes() != both.tobytes()
+
+
+def test_dota_plus_tier_is_drawn_on_last_game_and_recent():
+    plain = _open(render_player_image(_full())).convert("RGB")
+    card = _full()
+    card["last_game"]["plus_xp"] = 72050
+    last_only = _open(render_player_image(card)).convert("RGB")
+    card["recent"][0]["plus_xp"] = 31050
+    both = _open(render_player_image(card)).convert("RGB")
+    assert plain.tobytes() != last_only.tobytes()
+    assert last_only.tobytes() != both.tobytes()

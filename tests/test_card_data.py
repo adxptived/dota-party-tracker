@@ -216,3 +216,13 @@ def test_player_card_passes_hero_level_to_last_game_and_recent():
     recent = [{"hero_id": 12, "won": True, "kills": 1, "deaths": 2, "assists": 3, "level": 19}]
     card = cd.player_card(_full_summary(last_game=last, recent_games=recent))
     assert card["last_game"]["level"] == 24 and card["recent"][0]["level"] == 19
+
+
+def test_player_card_and_match_list_pass_dota_plus_xp():
+    last = {"hero_id": 12, "kills": 1, "deaths": 2, "assists": 3, "kda": 2.0, "won": True, "plus_xp": 31050}
+    recent = [{"hero_id": 12, "won": True, "kills": 1, "deaths": 2, "assists": 3, "plus_xp": 7350}]
+    card = cd.player_card(_full_summary(last_game=last, recent_games=recent))
+    assert card["last_game"]["plus_xp"] == 31050 and card["recent"][0]["plus_xp"] == 7350
+    match = {"match_id": 1, "start_time": 1000, "player_slot": 0, "radiant_win": True, "hero_id": 12,
+             "kills": 1, "deaths": 2, "assists": 3, "plus_xp": 18250}
+    assert cd.match_list_rows([match], 0, 25)[0]["plus_xp"] == 18250

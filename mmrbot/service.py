@@ -856,7 +856,7 @@ def _cached_as_match(view: dict) -> dict:
     player, row = view["player"], view["match"]
     me = {key: row.get(key) for key in (
         "hero_id", "kills", "deaths", "assists", "position", "lane", "imp", "gpm", "xpm", "net_worth",
-        "hero_damage", "tower_damage", "hero_healing", "last_hits", "denies", "level",
+        "hero_damage", "tower_damage", "hero_healing", "last_hits", "denies", "level", "plus_xp",
     )}
     me.update(account_id=player.account_id, name=player.display_name, is_radiant=row["player_slot"] < 128)
     return {"match_id": row["match_id"], "start_time": row.get("start_time"), "duration": row.get("duration"),

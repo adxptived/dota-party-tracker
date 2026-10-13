@@ -198,3 +198,28 @@ def test_match_builds_table_added_to_existing_database(tmp_path):
     assert "match_builds" not in _tables(path)
     Storage(path)
     assert {"account_id", "match_id", "build"} <= _columns(path, "match_builds")
+
+
+def test_plus_xp_column_added_and_recent_stratz_matches_requeued(tmp_path):
+    import time
+
+    path = str(tmp_path / "old.db")
+    migrations.migrate(path, [m for m in migrations.MIGRATIONS if m[0] <= 13], backup=False)
+    assert "plus_xp" not in _columns(path, "matches")
+    now = int(time.time())
+    conn = sqlite3.connect(path)
+    for match_id, age, done in ((1, 5, 1), (2, 200, 1), (3, 2, 0)):  # свежий, старый, и так в очереди
+        conn.execute(
+            "INSERT INTO matches (account_id, match_id, start_time, player_slot, radiant_win, stratz_done, stratz_tries) "
+            "VALUES (42, ?, ?, 0, 1, ?, 3)", (match_id, now - age * 86400, done))
+    conn.commit()
+    conn.close()
+
+    migrations.migrate(path, backup=False)
+    assert "plus_xp" in _columns(path, "matches")
+    conn = sqlite3.connect(path)
+    rows = {r[0]: r[1:] for r in conn.execute("SELECT match_id, stratz_done, stratz_tries FROM matches")}
+    conn.close()
+    assert rows[1] == (0, 0)  # свежий матч снова в очереди Stratz: там опыт героя в Dota Plus
+    assert rows[2] == (1, 3)  # старые не трогаем
+    assert rows[3] == (0, 3)

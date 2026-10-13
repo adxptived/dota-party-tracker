@@ -27,7 +27,7 @@ _PLAYER_FIELDS = """
       steamAccountId isRadiant partyId heroId
       position role lane imp
       goldPerMinute experiencePerMinute networth heroDamage towerDamage heroHealing
-      numLastHits numDenies level
+      numLastHits numDenies level dotaPlusHeroXp
       stats { wards { time } }
     }
 """
@@ -52,6 +52,7 @@ _FIELD_MAP = {
     "goldPerMinute": "gpm", "experiencePerMinute": "xpm", "networth": "net_worth",
     "heroDamage": "hero_damage", "towerDamage": "tower_damage", "heroHealing": "hero_healing",
     "numLastHits": "last_hits", "numDenies": "denies", "level": "level",
+    "dotaPlusHeroXp": "plus_xp",  # опыт героя в Dota Plus → тир на иконке героя
 }
 
 
@@ -264,7 +265,6 @@ class Stratz:
             }
             for src, out in _FIELD_MAP.items():
                 player[out] = row.get(src)
-            player["plus_xp"] = row.get("dotaPlusHeroXp")  # опыт героя в Dota Plus → значок тира на иконке
             purchases = _purchase_times(row.get("stats"))
             if purchases:
                 player["purchases"] = purchases

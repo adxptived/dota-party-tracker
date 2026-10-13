@@ -494,6 +494,14 @@ def plus_badge(img, draw, x: float, y: float, xp, size: int = PLUS_BADGE) -> Non
     draw_text(draw, (x + w / 2, y + h / 2), str(level), 17, BG, bold=True, anchor="mm", track=False)
 
 
+def hero_badges(img, draw, x: float, y: float, w: float, h: float, level, plus_xp, level_r: int = 14,
+                plus_size: int = PLUS_BADGE, overhang: int = 12) -> None:
+    """Значки на иконке героя с левым верхним углом (x, y) и размером w×h: уровень — кружок слева внизу,
+    тир Dota Plus — справа внизу, частью вне иконки (на `overhang` пикселей). Чего не знаем, того не рисуем."""
+    level_badge(img, draw, x + 6, y + h - 4, level, r=level_r)
+    plus_badge(img, draw, x + w - plus_size + overhang, y + h - plus_size + overhang // 2, plus_xp, plus_size)
+
+
 def paste(img, sprite, x: float, y: float) -> None:
     img.paste(sprite, (round(x), round(y)), sprite)
 

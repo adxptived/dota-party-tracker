@@ -253,9 +253,7 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
     mid = y + _base_h(p) / 2
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)
-    cards.level_badge(img, draw, PAD + 24 + 6, mid + ICON_H / 2 - 4, p.get("level"))
-    cards.plus_badge(img, draw, PAD + 24 + ICON_W - cards.PLUS_BADGE + 12, mid + ICON_H / 2 - cards.PLUS_BADGE + 6,
-                     p.get("plus_xp"))  # на правом нижнем углу иконки, частью вне её
+    cards.hero_badges(img, draw, PAD + 24, mid - ICON_H / 2, ICON_W, ICON_H, p.get("level"), p.get("plus_xp"))
     name_w = (NAME_W_BEAR if _has_bear(p) else NAME_W) if build else NAME_W_FREE
     name = clean(tracked.get(p.get("account_id")) or p.get("name")) or "Скрытый профиль"
     star = "★ " if mine else ""

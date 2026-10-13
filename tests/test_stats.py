@@ -486,3 +486,10 @@ def test_last_and_recent_games_carry_hero_level():
     m = {"match_id": 1, "start_time": 5, "player_slot": 0, "radiant_win": True, "hero_id": 1, "level": 23}
     assert stats.last_game([m])["level"] == 23
     assert stats.recent_games([m], 25)[0]["level"] == 23
+
+
+def test_last_and_recent_games_carry_dota_plus_xp():
+    from mmrbot import stats
+    m = {"match_id": 1, "start_time": 5, "player_slot": 0, "radiant_win": True, "hero_id": 1, "plus_xp": 31050}
+    assert stats.last_game([m])["plus_xp"] == 31050
+    assert stats.recent_games([m], 25)[0]["plus_xp"] == 31050

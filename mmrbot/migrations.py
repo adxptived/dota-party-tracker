@@ -485,6 +485,22 @@ def _m013_match_builds(conn: sqlite3.Connection) -> None:
     )
 
 
+# --- 14: опыт героя в Dota Plus ------------------------------------------------------------------------------------
+
+def _m014_plus_xp(conn: sqlite3.Connection) -> None:
+    """Опыт героя в Dota Plus по матчу (Stratz `dotaPlusHeroXp`) — по нему считается тир героя на иконках.
+
+    Раньше опыт запрашивался только для полного матча и нигде не сохранялся, поэтому в списках матчей, карточке
+    игрока и оповещениях тира не было. Матчи, которые Stratz уже отдавал без него, ставим в очередь повторно:
+    свежие за три месяца (как в 9-й миграции — запросы к Stratz ограничены).
+    """
+    conn.execute("ALTER TABLE matches ADD COLUMN plus_xp INTEGER")
+    conn.execute(
+        "UPDATE matches SET stratz_done = 0, stratz_tries = 0, stratz_next_ts = 0 "
+        "WHERE stratz_done = 1 AND start_time >= CAST(strftime('%s', 'now') AS INTEGER) - 90 * 86400"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -499,6 +515,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (11, _m011_gather),
     (12, _m012_notify_leaders),
     (13, _m013_match_builds),
+    (14, _m014_plus_xp),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

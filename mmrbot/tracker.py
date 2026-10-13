@@ -587,7 +587,8 @@ def detect_new_games(
                 "imp": match.get("imp"), "leaver_status": match.get("leaver_status"),
                 "rank_tier": player.last_rank_tier, "is_radiant": match["player_slot"] < 128,
                 "lane_result": match.get("lane_result"), "wards": match.get("wards"), "stacks": match.get("stacks"),
-                "hero_healing": match.get("hero_healing"),
+                "hero_healing": match.get("hero_healing"), "level": match.get("level"),
+                "plus_xp": match.get("plus_xp"),
             })
     matches_events = sorted(by_match.values(), key=lambda e: e["start_time"])
     for entry in matches_events:

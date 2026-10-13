@@ -209,3 +209,15 @@ def test_hero_level_is_drawn_on_alert_icon():
     event["rows"] = [dict(row, level=22)]
     leveled = Image.open(io.BytesIO(render_alert_image(event))).convert("RGB")
     assert plain.tobytes() != leveled.tobytes()
+
+
+def test_dota_plus_tier_is_drawn_on_alert_icon():
+    from PIL import Image
+    import io
+    from mmrbot.alert_image import render_alert_image
+    row = {"name": "Вася", "hero_id": 1, "won": True, "kills": 1, "deaths": 2, "assists": 3, "delta": 25}
+    event = {"match_id": 1, "rows": [row]}
+    plain = Image.open(io.BytesIO(render_alert_image(event))).convert("RGB")
+    event["rows"] = [dict(row, plus_xp=72050)]
+    plus = Image.open(io.BytesIO(render_alert_image(event))).convert("RGB")
+    assert plain.tobytes() != plus.tobytes()

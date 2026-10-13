@@ -402,3 +402,12 @@ def test_add_player_rejects_nick_differing_only_in_case(tmp_path):
         store.add_player(1, 11, "вася", None, 0, 0)
     assert store.nick_taken(1, "ВАСЯ") and not store.nick_taken(2, "Вася")
     store.add_player(2, 11, "вася", None, 0, 0)  # в другом чате можно
+
+
+def test_update_match_stratz_saves_plus_xp_and_keeps_known_value(store):
+    p = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(p.id, [match(1, 1100)])
+    store.update_match_stratz(p.id, 1, {"position": 1, "plus_xp": 31050})
+    assert store.get_matches(p.id)[0]["plus_xp"] == 31050
+    store.update_match_stratz(p.id, 1, {"position": 1, "plus_xp": None})  # пустой ответ не затирает известное
+    assert store.get_matches(p.id)[0]["plus_xp"] == 31050
