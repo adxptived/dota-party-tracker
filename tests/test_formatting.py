@@ -250,17 +250,19 @@ def test_render_player_card_has_no_repeats_or_low_value_lines():
     assert "Основная позиция" not in text                            # позиций от Stratz нет — строки нет
 
 
-def test_render_player_card_shows_skill_breakdown_and_role():
+def test_render_player_card_shows_recent_games_and_role_without_skill_profile():
     s = summary(
         role_style="кор (фарм)",
         skill={"gold_per_min": 0.45, "hero_damage_per_min": 0.78, "kills_per_min": 0.66, "hero_healing_per_min": 0.9},
+        recent_games=[{"hero_id": 1, "won": True, "kills": 9, "deaths": 1, "assists": 14, "delta": 25,
+                       "double_down": True, "start_time": 1_700_000_000},
+                      {"hero_id": 2, "won": False, "kills": 1, "deaths": 9, "assists": 2, "delta": -25,
+                       "start_time": None}],
     )
     text = render_player_card(s)
-    assert "Профиль навыков" in text
-    assert "Фарм" in text            # категория
-    assert "78%" in text             # урон-перцентиль
-    assert ("▰" in text) or ("▱" in text)  # бар
-    assert "игровая роль" in text.lower() and "кор" in text.lower()
+    assert "Профиль навыков" not in text and "▰" not in text  # убран, как и на картинке
+    assert "Последние игры" in text and "🟢 Anti-Mage 9/1/14 · +25 ×2 · 14.11" in text and "🔴 Axe 1/9/2 · -25" in text
+    assert "кор (фарм)" in text
 
 
 def test_render_player_card_with_standing_block():
@@ -503,12 +505,6 @@ def test_card_shows_unknown_party_and_mmr_drift_hint():
     text = render_player_card(summary(party_unknown=(3, 1), mmr_drift=True))
     assert "размер пати неизвестен" in text and "3 игры" in text
     assert "/setmmr" in text
-
-
-def test_skill_block_damage_group_uses_tower_damage_benchmark():
-    from mmrbot.formatting import _skill_block
-    text = _skill_block({"hero_damage_per_min": 0.5, "tower_damage": 0.9})
-    assert "Урон" in text and "70%" in text      # среднее героев и строений, а не только героев
 
 
 def test_leaderboard_explains_mmr_period_once_in_header():

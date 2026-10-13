@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import logging
 import time
 
@@ -784,20 +785,29 @@ async def do_match_list(message: Message, storage: Storage, account: str, offset
         await _delete(status)
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
-    board, account_id, offset, total = page
-    count = min(MATCHES_PAGE, max(total - offset, 0))
-    await _reply_image(message, board, match_list_buttons(account_id, offset, count, total), status)
+    board, account_id, offset, total, match_ids = page
+    await _reply_image(message, board, match_list_buttons(account_id, offset, match_ids, total), status)
 
 
-async def do_match_pick(message: Message, storage: Storage, od: OpenDota, account: str, offset: int, n: int,
+async def do_match_pick(message: Message, storage: Storage, od: OpenDota, account: str, offset: int, pick: int,
                         stratz=None) -> None:
-    """Цифра под списком матчей: матч с этим номером картинкой на месте, цифры остаются — можно переключаться."""
+    """Цифра под списком матчей: матч картинкой на месте, цифры остаются — можно переключаться.
+
+    pick — ID матча (так пишут кнопки); число до 10 — номер строки из кнопок старого формата.
+    """
     page = await asyncio.to_thread(player_page, storage, message.chat.id, account, offset)
-    if page is None or not 1 <= n <= len(page[1]):
+    if page is None:
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
     player, matches, offset, total = page
-    match_id = matches[n - 1]["match_id"]
+    ids = [m["match_id"] for m in matches]
+    if pick <= MATCHES_PAGE:  # старая кнопка: номер строки на странице
+        match_id = ids[pick - 1] if 1 <= pick <= len(ids) else None
+    else:  # матч игрока, даже если список с тех пор сдвинулся новыми играми
+        match_id = pick if pick in ids or storage.get_match(player.id, pick) is not None else None
+    if match_id is None:
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
     status = await _progress(message, WAIT, "upload_photo")
     try:
         board = await match_board(storage, od, message.chat.id, player.display_name, match_id, stratz)
@@ -806,8 +816,7 @@ async def do_match_pick(message: Message, storage: Storage, od: OpenDota, accoun
         await _delete(status)
         await message.answer(FAILED, reply_markup=nav_menu())
         return
-    markup = match_list_buttons(player.account_id, offset, len(matches), total, current=n, match_id=match_id)
-    await _reply_image(message, board, markup, status)
+    await _reply_image(message, board, match_list_buttons(player.account_id, offset, ids, total, current=match_id), status)
 
 
 async def do_match_detail(message: Message, storage: Storage, account: str, match_id: int, offset: int) -> None:
@@ -951,8 +960,34 @@ async def do_player_card(message: Message, storage: Storage, od: OpenDota, name:
     await _reply_image(message, board, markup, status)
 
 
-async def do_find(message: Message, storage: Storage, od: OpenDota, query: str, stratz=None) -> None:
-    """Поиск по ID или ссылке: матч — разбор картинкой, игрок (любой, не только из пати) — карточка картинкой."""
+FIND_COOLDOWN = 8.0  # сек между поисками одного человека: /find ходит в OpenDota, а лимит запросов общий
+_last_find: dict = {}
+
+
+def _find_wait(chat_id: int, user) -> float:
+    """Сколько секунд ещё ждать этому человеку до следующего поиска (0 — можно); заодно отмечает попытку."""
+    if user is None:
+        return 0.0
+    key, now = (chat_id, getattr(user, "id", None)), time.monotonic()
+    left = FIND_COOLDOWN - (now - _last_find.get(key, -FIND_COOLDOWN))
+    if left > 0:
+        return left
+    _last_find[key] = now
+    if len(_last_find) > 4096:  # старые отметки не копим
+        for old in [k for k, t in _last_find.items() if now - t > FIND_COOLDOWN]:
+            _last_find.pop(old, None)
+    return 0.0
+
+
+async def do_find(message: Message, storage: Storage, od: OpenDota, query: str, stratz=None, user=None) -> None:
+    """Поиск по ID или ссылке: матч — разбор картинкой, игрок (любой, не только из пати) — карточка картинкой.
+
+    Один человек ищет не чаще раза в FIND_COOLDOWN с (user — кто ищет; по умолчанию автор сообщения).
+    """
+    wait = _find_wait(message.chat.id, user or getattr(message, "from_user", None))
+    if wait:
+        await message.answer(f"⏳ Поиск — не чаще раза в {FIND_COOLDOWN:.0f} с. Попробуйте через {math.ceil(wait)} с.")
+        return
     status = await _progress(message, WAIT, "upload_photo")
     try:
         board = await lookup_board(storage, od, message.chat.id, query, stratz)

@@ -11,6 +11,7 @@ import logging
 import re
 import time
 import weakref
+from collections import OrderedDict
 from typing import Optional
 
 from mmrbot import avatars, hero_icons, item_icons, perf
@@ -1124,8 +1125,19 @@ async def season_end_board(
 
 # --- поиск по ID: матч или любой игрок ----------------------------------------------------------------
 
+LOOKUP_TTL = 600.0  # сек: повторный поиск того же игрока берётся из памяти — лимит OpenDota не тратится
+LOOKUP_CACHE_SIZE = 128
+_LOOKUPS: "OrderedDict[int, tuple[float, tuple]]" = OrderedDict()
+
+
 def _fetch_lookup(od, account_id: int) -> tuple[dict, list, list]:
-    """В потоке: профиль OpenDota, последние ранкед-матчи и их подробности (GPM, урон) — три запроса."""
+    """В потоке: профиль OpenDota, последние ранкед-матчи и их подробности (GPM, урон) — три запроса.
+
+    Ответ кэшируется на LOOKUP_TTL: повторные /find одного игрока (и «📝 Текстом» под карточкой) сети не трогают.
+    """
+    hit = _LOOKUPS.get(account_id)
+    if hit is not None and time.monotonic() - hit[0] < LOOKUP_TTL:
+        return hit[1]
     profile = od.get_profile(account_id) or {}
     matches = od.get_matches(account_id, limit=LOOKUP_GAMES)
     try:
@@ -1133,7 +1145,12 @@ def _fetch_lookup(od, account_id: int) -> tuple[dict, list, list]:
     except Exception:  # подробности — не главное: без них карточка просто без GPM и урона
         log.debug("OpenDota: нет /recentMatches игрока %s", account_id, exc_info=True)
         recent = []
-    return profile, matches or [], recent or []
+    result = (profile, matches or [], recent or [])
+    _LOOKUPS[account_id] = (time.monotonic(), result)
+    _LOOKUPS.move_to_end(account_id)
+    while len(_LOOKUPS) > LOOKUP_CACHE_SIZE:
+        _LOOKUPS.popitem(last=False)
+    return result
 
 
 async def player_lookup_board(
@@ -1225,10 +1242,10 @@ def _match_list_png(title, subtitle, rows, badge) -> bytes:
 async def match_list_board(
     storage: Storage, chat_id: int, account: str, offset: int, current: Optional[int] = None,
     image: Optional[bool] = None,
-) -> Optional[tuple[ImageBoard, int, int, int]]:
+) -> Optional[tuple[ImageBoard, int, int, int, list]]:
     """Страница матчей игрока картинкой (номер у строки = кнопка), текст — запасной вариант.
 
-    Возвращает (борд, account_id, смещение, всего); None — игрока нет. Только БД, без сети.
+    Возвращает (борд, account_id, смещение, всего, ID матчей страницы); None — игрока нет. Только БД, без сети.
     """
     page = await _build(player_page, storage, chat_id, account, offset)
     if page is None:
@@ -1244,4 +1261,4 @@ async def match_list_board(
                                             lambda: _match_list_png(f"Матчи · {player.display_name}", subtitle, rows, badge))
         if board.png is not None:
             board.caption = f"📜 <b>{html.escape(player.display_name)}</b> · матчи {offset + 1}–{offset + len(rows)} из {total}"
-    return board, player.account_id, offset, total
+    return board, player.account_id, offset, total, [m["match_id"] for m in matches]

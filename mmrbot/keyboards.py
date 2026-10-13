@@ -5,8 +5,8 @@
 `tx:<вид>:<аргументы>` — тот же отчёт текстом (кнопка «📝 Текстом» под любой карточкой-картинкой;
 старое `mt:<match_id>:<account_id|0>` = `tx:match:…` понимается для уже отправленных сообщений);
 `mx:<match_id>[:<account_id>]` — весь матч картинкой (кнопка под оповещением и под текстовой карточкой матча);
-`ml:<account_id>:<смещение>` — список матчей игрока картинкой, `mv:<account_id>:<смещение>:<номер>` — матч
-с этим номером на странице (картинкой, на месте), `md:<account_id>:<match_id>:<смещение>` — карточка его матча;
+`ml:<account_id>:<смещение>` — список матчей игрока картинкой, `mv:<account_id>:<смещение>:<match_id>` — матч
+со страницы (картинкой, на месте), `md:<account_id>:<match_id>:<смещение>` — карточка его матча;
 `lk:add:<account_id>` — добавить в пати игрока, найденного по ID.
 """
 from __future__ import annotations
@@ -273,17 +273,21 @@ def full_match_button(match_id: int, focus=None) -> InlineKeyboardButton:
     return InlineKeyboardButton(text="🎮 Весь матч", callback_data=f"mx:{match_id}" + (f":{focus}" if focus else ""))
 
 
-def match_list_buttons(account_id: int, offset: int, count: int, total: int, current: Optional[int] = None,
-                       match_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    """Под картинкой матчей игрока: цифры 1…N (`mv:<account_id>:<смещение>:<номер>`) открывают матч с этим номером
-    на месте; «◀️ ▶️» листают страницы (`ml:`). current/match_id — открыт матч: его цифра отмечена «•», рядом
-    «📝 Текстом», Dotabuff и «📋 Список»."""
-    numbers = [InlineKeyboardButton(text=f"• {n}" if n == current else str(n),
-                                    callback_data=f"mv:{account_id}:{offset}:{n}") for n in range(1, count + 1)]
+def match_list_buttons(account_id: int, offset: int, match_ids: list, total: int,
+                       current: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Под картинкой матчей игрока: цифры 1…N (`mv:<account_id>:<смещение>:<match_id>`) открывают матч на месте.
+
+    В кнопке — ID матча, а не номер строки: новая игра между показом списка и нажатием не сдвинет выбор на соседний
+    матч. «◀️ ▶️» листают страницы (`ml:`). current — ID открытого матча: его цифра отмечена «•», рядом «📝 Текстом»,
+    Dotabuff и «📋 Список».
+    """
+    numbers = [InlineKeyboardButton(text=f"• {n}" if match_id == current else str(n),
+                                    callback_data=f"mv:{account_id}:{offset}:{match_id}")
+               for n, match_id in enumerate(match_ids, start=1)]
     rows = [numbers[i:i + 5] for i in range(0, len(numbers), 5)]
-    if current is not None and match_id is not None:
-        rows.append([text_button("match", match_id, account_id),
-                     InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{match_id}"),
+    if current is not None:
+        rows.append([text_button("match", current, account_id),
+                     InlineKeyboardButton(text="🔗 Dotabuff", url=f"https://www.dotabuff.com/matches/{current}"),
                      InlineKeyboardButton(text="📋 Список", callback_data=f"ml:{account_id}:{offset}")])
     pager = []
     if offset > 0:
