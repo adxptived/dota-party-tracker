@@ -62,7 +62,8 @@ Telegram-бот для пати игроков Dota 2: следит за ран�
 | `*_image.py` | карточки-картинки: рейтинг, игрок, матч, оповещение, список матчей, герои, рекорды… | cards |
 | `service.py` | сборка отчёта: текст + картинка + подпись (`ImageBoard`), поиск по ID, кэш поиска | всё выше |
 | `keyboards.py` | inline-клавиатуры и схема callback_data | aiogram |
-| `bot.py` | тонкие хендлеры; кнопки — таблицами `CALLBACKS` / `MENU_ACTIONS` / `PICK_ACTIONS` | service |
+| `bot.py` | тонкие хендлеры команд и сборка отчётов в ответ | service |
+| `buttons.py` | кнопки: таблицы `CALLBACKS` / `MENU_ACTIONS` / `PICK_ACTIONS` (префикс → обработчик) | bot |
 | `scheduler.py` | новые игры, оповещения, сводки, справочники | tracker, service |
 | `config.py` | .env → настройки | python-dotenv |
 | `__main__.py` | сборка: polling + scheduler | всё выше |
