@@ -18,7 +18,7 @@ from mmrbot import commands as cmd
 from mmrbot import perf, seasons
 from mmrbot.boards import ImageBoard
 from mmrbot.access import DENIED, is_chat_admin, may_manage
-from mmrbot.formatting import match_button_label, render_match_card, render_match_list_title, render_mmr_set, render_player_list, render_settings, render_steam_profile, tz_label
+from mmrbot.formatting import render_match_card, render_mmr_set, render_player_list, render_settings, render_steam_profile, tz_label
 from mmrbot.health import log_network_error
 from mmrbot.heroes import find_hero, hero_name
 from mmrbot.ids import resolve_account_id
@@ -41,6 +41,8 @@ from mmrbot.service import (
     render_heroes_board,
     lookup_board,
     match_board,
+    match_list_board,
+    player_page,
     matchups_board,
     player_lookup_board,
     season_board,
@@ -775,19 +777,37 @@ async def do_match(message: Message, storage: Storage, od: OpenDota, name, match
 
 
 async def do_match_list(message: Message, storage: Storage, account: str, offset: int) -> None:
-    """Список матчей игрока (новые сверху, по MATCHES_PAGE) — кнопка на каждый открывает его статистику."""
-    player = storage.get_player(message.chat.id, account)
-    if player is None:
+    """Матчи игрока картинкой (новые сверху, по 10): у строки номер, кнопка с той же цифрой открывает матч."""
+    status = await _progress(message, WAIT, "upload_photo")
+    page = await match_list_board(storage, message.chat.id, account, offset)
+    if page is None:
+        await _delete(status)
         await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
         return
-    rows = sorted((m for m in storage.get_matches(player.id) if m.get("lobby_type") == 7),
-                  key=lambda m: m["start_time"], reverse=True)
-    offset = min(max(offset, 0), max((len(rows) - 1) // MATCHES_PAGE * MATCHES_PAGE, 0))
-    page = rows[offset:offset + MATCHES_PAGE]
-    tz = storage.get_or_create_chat(message.chat.id).tz
-    items = [(match_button_label(m, tz), m["match_id"]) for m in page]
-    await message.answer(render_match_list_title(player.display_name, len(rows), offset, len(page)),
-                         parse_mode="HTML", reply_markup=match_list_buttons(player.account_id, items, offset, len(rows)))
+    board, account_id, offset, total = page
+    count = min(MATCHES_PAGE, max(total - offset, 0))
+    await _reply_image(message, board, match_list_buttons(account_id, offset, count, total), status)
+
+
+async def do_match_pick(message: Message, storage: Storage, od: OpenDota, account: str, offset: int, n: int,
+                        stratz=None) -> None:
+    """Цифра под списком матчей: матч с этим номером картинкой на месте, цифры остаются — можно переключаться."""
+    page = await asyncio.to_thread(player_page, storage, message.chat.id, account, offset)
+    if page is None or not 1 <= n <= len(page[1]):
+        await message.answer(NOT_FOUND_TEXT, reply_markup=nav_menu())
+        return
+    player, matches, offset, total = page
+    match_id = matches[n - 1]["match_id"]
+    status = await _progress(message, WAIT, "upload_photo")
+    try:
+        board = await match_board(storage, od, message.chat.id, player.display_name, match_id, stratz)
+    except Exception:
+        log.exception("Ошибка сборки матча %s для чата %s", match_id, message.chat.id)
+        await _delete(status)
+        await message.answer(FAILED, reply_markup=nav_menu())
+        return
+    markup = match_list_buttons(player.account_id, offset, len(matches), total, current=n, match_id=match_id)
+    await _reply_image(message, board, markup, status)
 
 
 async def do_match_detail(message: Message, storage: Storage, account: str, match_id: int, offset: int) -> None:
@@ -1372,7 +1392,7 @@ async def cmd_settings(message: Message, storage: Storage) -> None:
     await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
 
 
-@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx", "ml", "md", "lk"})
+@router.callback_query(lambda c: bool(c.data) and c.data.split(":")[0] in {"m", "pp", "hp", "rp", "mu", "x", "s", "g", "r", "c", "mt", "tx", "mx", "ml", "md", "mv", "lk"})
 async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stratz=None) -> None:
     await query.answer()  # убрать «часики» на кнопке
     message = query.message
@@ -1417,11 +1437,13 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
                 await do_add(message, storage, od, args[1], stratz, user=getattr(query, "from_user", None))
         return
 
-    if kind in {"ml", "md"}:  # список матчей игрока и карточка его матча — правят то же сообщение
+    if kind in {"ml", "md", "mv"}:  # список матчей игрока, его матч и карточка — правят то же сообщение
         try:
             numbers = [int(a) for a in args[1:]]
             if kind == "ml" and len(numbers) == 1:
                 await do_match_list(_InPlace(message), storage, args[0], numbers[0])
+            elif kind == "mv" and len(numbers) == 2:
+                await do_match_pick(_InPlace(message), storage, od, args[0], numbers[0], numbers[1], stratz)
             elif kind == "md" and len(numbers) == 2:
                 await do_match_detail(_InPlace(message), storage, args[0], numbers[0], numbers[1])
         except ValueError:

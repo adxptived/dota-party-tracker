@@ -316,6 +316,15 @@ def refresh_heroes(client: OpenDotaClient) -> int:
     return update_heroes(client.get_heroes())
 
 
+def refresh_talents(client: OpenDotaClient) -> int:
+    """Подтянуть справочник талантов с OpenDota (таланты в матчах). Вернуть число новых талантов."""
+    from mmrbot import talents
+    added = talents.update_talents(talents.build_talents(*client.get_talent_constants()))
+    if added and talents.CACHE_PATH:
+        talents.save_talents(talents.CACHE_PATH)
+    return added
+
+
 def refresh_items(client: OpenDotaClient) -> int:
     """Подтянуть справочник предметов с OpenDota (для иконок билда). Вернуть число новых предметов."""
     from mmrbot import items
@@ -326,7 +335,7 @@ def refresh_items(client: OpenDotaClient) -> int:
 
 
 _ALERT_FIELDS = (
-    "items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time",
+    "items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents",
     "net_worth", "last_hits", "denies", "hero_healing", "tower_damage", "stacks",
 )
 
@@ -407,7 +416,7 @@ def _add_match_score(client: OpenDotaClient, event: dict) -> None:
 
 from mmrbot.items import item_slug  # noqa: E402
 
-BUILD_FIELDS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time")
+BUILD_FIELDS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents")
 
 
 def enrich_match_builds(client: OpenDotaClient, match: dict) -> None:
@@ -1409,7 +1418,7 @@ def build_together(storage: Storage, chat_id: int) -> dict:
     }
 
 
-_STORED_KEYS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time")
+_STORED_KEYS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents")
 
 
 def persist_builds(storage, match_id, rows: list) -> None:
@@ -1453,3 +1462,5 @@ def restore_builds(storage, match_id, rows: list) -> None:
         for key in ("shard_time", "scepter_time"):
             if row.get(key) is None and saved.get(key) is not None:
                 row[key] = saved[key]
+        if not row.get("talents") and saved.get("talents"):
+            row["talents"] = saved["talents"]

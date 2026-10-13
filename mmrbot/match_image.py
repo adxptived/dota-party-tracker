@@ -42,8 +42,9 @@ ITEMS_END = 878  # правее — K/D/A
 UNTIMED_HEAD = "БИЛД · времена после разбора матча"  # иконки шарда и скипетра — после предметов и нейтралки
 UPGRADE_SIZE = 26
 # центры колонок (x) и их заголовки
-COLUMNS = [("kda", 958, "K / D / A"), ("nw", 1090, "НЕТВОРС"), ("gpm", 1225, "GPM / XPM"),
-           ("dmg", 1360, "УРОН"), ("imp", 1480, "IMP")]
+COLUMNS = [("kda", 962, "K / D / A"), ("nw", 1078, "НЕТВОРС"), ("lh", 1178, "КРИПЫ"), ("gpm", 1283, "GPM / XPM"),
+           ("dmg", 1393, "УРОН"), ("imp", 1490, "IMP")]
+TALENTS_H = 34  # строка талантов под строкой игрока (если таланты известны)
 
 
 def _sorted_team(players: list[dict]) -> list[dict]:
@@ -68,8 +69,13 @@ def _has_bear(p: dict) -> bool:
     return bool(_ids(p.get("bear_items")))
 
 
+def _talents(p: dict) -> list:
+    """Выбранные таланты [[уровень, название]] без мусора."""
+    return [t for t in p.get("talents") or [] if isinstance(t, (list, tuple)) and len(t) == 2 and t[1]]
+
+
 def _row_h(p: dict) -> int:
-    return ROW_BEAR_H if _has_bear(p) else ROW_H
+    return (ROW_BEAR_H if _has_bear(p) else ROW_H) + (TALENTS_H if _talents(p) else 0)
 
 
 def _height(teams: list[list[dict]]) -> int:
@@ -204,7 +210,7 @@ def _draw_items(img, draw, top: float, items, times, neutral, item_icons: dict) 
 
 def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
     """Билд игрока между ником и K/D/A; Лон Друид — две линии (герой и медведь) с подписями."""
-    mid = y + _row_h(p) / 2
+    mid = y + _base_h(p) / 2
     bear = _has_bear(p)
     top = y + 12 if bear else mid - SLOT_H / 2 - 4
     _draw_items(img, draw, top, p.get("items"), p.get("item_times"), p.get("neutral_item"), item_icons)
@@ -225,6 +231,26 @@ def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:
             draw_text(draw, (TAGS_X + icon_w + 6, cy), when, 15, TIME_COLOR, anchor="lm", track=False)
 
 
+def _base_h(p: dict) -> int:
+    """Высота строки без талантов: по ней центруется всё, кроме строки талантов."""
+    return ROW_BEAR_H if _has_bear(p) else ROW_H
+
+
+def _draw_talents(draw, y: float, p: dict, base: str) -> None:
+    """Таланты строкой под игроком: «10 · +30 Shadowraze Stack Damage   15 · …» от начала ника до края."""
+    picks = _talents(p)[:4]
+    x0, x1 = PAD + 24, MATCH_WIDTH - PAD - 24
+    draw_text(draw, (x0, y), "ТАЛАНТЫ", 14, cards.mix(MUTED, base, 0.2), bold=True, anchor="lm")
+    x = x0 + cards.text_width("ТАЛАНТЫ", 14, True) + 18
+    col = (x1 - x) / 4
+    for level, name in picks:
+        draw_text(draw, (x, y), str(level), 15, GOLD, bold=True, anchor="lm", track=False)
+        lx = x + cards.text_width(str(level), 15, True, False) + 8
+        draw_text(draw, (lx, y), cards.clean(name), 15, cards.mix(FG, MUTED, 0.2), anchor="lm", max_w=x + col - 16 - lx,
+                  shrink=12, track=False)
+        x += col
+
+
 def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons: Optional[dict] = None,
               build: bool = False, top_nw: float = 0, best: Optional[dict] = None) -> None:
     best = best or {}
@@ -237,7 +263,9 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
         cards.stripe(img, PAD, y + 12, y + row_h - 12, TRACKED_MARK)
     else:
         cards.panel(img, box, PANEL, radius=12)
-    mid = y + row_h / 2
+    mid = y + _base_h(p) / 2
+    if _talents(p):
+        _draw_talents(draw, y + _base_h(p) + 16, p, TRACKED_PANEL if mine else PANEL)
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)
 
@@ -263,6 +291,11 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
                   cards.mix(GOLD, PANEL, 0.25), track=cards.mix(PANEL, "#ffffff", 0.08))
     else:
         draw_text(draw, (cols["nw"], mid), _k(net_worth), 26, GOLD, bold=True, anchor="mm")
+    hits = p.get("last_hits")
+    if _num(hits):  # крипы: добито / не отдано
+        draw_text(draw, (cols["lh"], mid), f"{hits:.0f}/{p.get('denies') or 0:.0f}", 22, FG, anchor="mm", track=False)
+    else:
+        draw_text(draw, (cols["lh"], mid), "—", 22, MUTED, anchor="mm")
     gpm, xpm = p.get("gpm"), p.get("xpm")
     econ = f"{gpm:.0f} / {xpm:.0f}" if gpm is not None and xpm is not None else (f"{gpm:.0f}" if gpm is not None else "—")
     # лучший в матче GPM и урон — жирным и ярче, остальные чуть приглушены: лидер столбца находится взглядом

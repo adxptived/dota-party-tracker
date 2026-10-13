@@ -33,6 +33,7 @@ CELLS_X = PAD + 24
 BUILD_H = 54  # линия билда под верхом строки (только если билд известен)
 TIME_H = 20  # + подписи времени покупки под иконками предметов
 CELLS_H = 66  # ряд подписанных ячеек: K/D/A, IMP, экономика, урон
+TALENTS_H = 70  # выбранные таланты сеткой 2×2 (если известны)
 ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
 UPGRADE_SIZE = 32
 CELL_MAX_W = 176
@@ -86,8 +87,13 @@ def _upgrade_times(row: dict) -> bool:
     return any(row.get(key) and clock(row.get(f"{key}_time")) for key in ("shard", "scepter"))
 
 
+def _talents(row: dict) -> list:
+    """Выбранные таланты [[уровень, название]] без мусора."""
+    return [t for t in row.get("talents") or [] if isinstance(t, (list, tuple)) and len(t) == 2 and t[1]]
+
+
 def _row_h(row: dict) -> int:
-    return TOP_H + _build_h(row) + CELLS_H
+    return TOP_H + _build_h(row) + (TALENTS_H if _talents(row) else 0) + CELLS_H
 
 
 @lru_cache(maxsize=512)
@@ -234,7 +240,24 @@ def _draw_row(
     img.paste(cards.mix(fill, "#ffffff", 0.07), (CELLS_X, sep, RIGHT, sep + 1))
     if _has_build(row):
         _draw_build(img, draw, y + TOP_H + 8 + ITEM_H / 2, row, item_icons or {})
-    _draw_cells(draw, y + TOP_H + _build_h(row) + CELLS_H / 2 - 2, row)
+    talents_h = TALENTS_H if _talents(row) else 0
+    if talents_h:
+        _draw_talents(img, draw, y + TOP_H + _build_h(row) + 4, row, fill)
+    _draw_cells(draw, y + TOP_H + _build_h(row) + talents_h + CELLS_H / 2 - 2, row)
+
+
+def _draw_talents(img, draw, top: float, row: dict, fill: str) -> None:
+    """Выбранные таланты сеткой 2×2 (10 и 15 — слева, 20 и 25 — справа): уровень золотой таблеткой и название."""
+    label_color = cards.mix(MUTED, PANEL, 0.2)
+    draw_text(draw, (CELLS_X, top + 16), "ТАЛАНТЫ", 16, label_color, bold=True, anchor="lm")
+    left = CELLS_X + KDA_CELL_W
+    col = (RIGHT - left) / 2
+    for i, (level, name) in enumerate(_talents(row)[:4]):
+        x, cy = left + (i // 2) * col, top + 16 + (i % 2) * 32
+        w = cards.chip(img, draw, x, cy, str(level), GOLD, size=15, pad=8, base=fill)
+        lx = x + w + 10
+        draw_text(draw, (lx, cy), clean(name), 18, cards.mix(FG, MUTED, 0.15), anchor="lm", max_w=x + col - 18 - lx,
+                  shrink=14, track=False)
 
 
 def _draw_mmr(img, draw, mid: float, row: dict, fill: str) -> float:
@@ -275,7 +298,7 @@ def _number(value) -> bool:
 def _strip_cells(row: dict) -> list:
     """Экономика и урон игрока ячейками с подписями; чего нет в данных — той ячейки нет.
 
-    Кор — нетворс, добито/не отдано, урон, здания; саппорт (P4/P5) — то, чем он полезен: варды, стаки, лечение,
+    Кор — нетворс, крипы (добито/не отдано), урон, здания; саппорт (P4/P5) — то, чем он полезен: варды, стаки, лечение,
     и лишь затем урон и нетворс. Не больше четырёх: вместе с K/D/A, IMP и GPM ряд занимает ширину строки.
     """
     def k(key: str, fmt=_k) -> Optional[str]:
@@ -290,7 +313,7 @@ def _strip_cells(row: dict) -> list:
             ("Лечение", k("hero_healing")), damage, net_worth,
         ]
         return [cell for cell in cells if cell[1]][:4]
-    return [net_worth, ("Добито", f"{hits}/{row.get('denies') or 0}" if _number(hits) else None), damage,
+    return [net_worth, ("Крипы", f"{hits}/{row.get('denies') or 0}" if _number(hits) else None), damage,
             ("Здания", k("tower_damage"))]
 
 
@@ -305,7 +328,7 @@ def _row_cells(row: dict) -> list:
     return cells + [cell for cell in _strip_cells(row) if cell[1]]
 
 
-KDA_CELL_W = 190
+KDA_CELL_W = 190  # ширина ячейки K/D/A (и подписи «ТАЛАНТЫ» над талантами)
 
 
 def _draw_cells(draw, mid: float, row: dict) -> None:

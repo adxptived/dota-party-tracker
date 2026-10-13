@@ -23,7 +23,8 @@ from mmrbot.daily_image import render_daily_image
 from mmrbot.card_data import (
     award_items, contest_caption, daily_caption, daily_card, contest_view, compare_caption, compare_rows, hero_caption, together_caption, together_card, weekly_awards, weekly_caption, weekly_records, weekly_tiles, record_tiles, records_caption, hero_detail_rows, hero_rows, heroes_caption, leader_caption, party_hero_rows,
     party_tiles, period_caption, period_rows, player_caption, player_card, record_items, role_rows, roles_caption,
-    summary_rows, LOOKUP_GAMES, lookup_caption, lookup_card, lookup_matches, lookup_text,
+    summary_rows, LOOKUP_GAMES, lookup_caption, lookup_card, lookup_matches, lookup_text, match_list_rows,
+    match_list_text,
 )
 from mmrbot.cards import ACCENT
 from mmrbot.compare_image import render_compare_image
@@ -62,6 +63,7 @@ from mmrbot.heroes import find_hero, hero_name
 from mmrbot.heroes_image import LIMIT as HEROES_LIMIT
 from mmrbot.heroes_image import render_hero_image, render_party_heroes_image, render_player_heroes_image
 from mmrbot.match_image import render_match_image
+from mmrbot.match_list_image import render_match_list_image
 from mmrbot.matchups_image import render_matchups_image
 from mmrbot.opendota import OpenDota, match_from_opendota
 from mmrbot.ranks import rank_label
@@ -1196,3 +1198,50 @@ async def lookup_board(
     if kind == "auto":
         board.text = f"По номеру {value} не нашлось ни игрока, ни матча (возможно, профиль скрыт или матч ещё не появился)."
     return board
+
+
+# --- матчи игрока страницей ----------------------------------------------------------------------------
+
+MATCH_PAGE = 10  # столько матчей на странице — по кнопке-цифре на каждый
+
+
+def player_page(storage: Storage, chat_id: int, account: str, offset: int) -> Optional[tuple]:
+    """(игрок, матчи страницы новыми сверху, смещение в границах, всего матчей); None — игрока нет в чате."""
+    player = storage.get_player(chat_id, account)
+    if player is None:
+        return None
+    rows = sorted((m for m in storage.get_matches(player.id) if m.get("lobby_type") == 7),
+                  key=lambda m: m["start_time"], reverse=True)
+    offset = min(max(offset, 0), max((len(rows) - 1) // MATCH_PAGE * MATCH_PAGE, 0))
+    return player, rows[offset:offset + MATCH_PAGE], offset, len(rows)
+
+
+def _match_list_png(title, subtitle, rows, badge) -> bytes:
+    loader = hero_icons.shared()
+    icons = loader.get_many(r["hero_id"] for r in rows) if loader is not None else {}
+    return render_match_list_image(title, subtitle, rows, icons, badge)
+
+
+async def match_list_board(
+    storage: Storage, chat_id: int, account: str, offset: int, current: Optional[int] = None,
+    image: Optional[bool] = None,
+) -> Optional[tuple[ImageBoard, int, int, int]]:
+    """Страница матчей игрока картинкой (номер у строки = кнопка), текст — запасной вариант.
+
+    Возвращает (борд, account_id, смещение, всего); None — игрока нет. Только БД, без сети.
+    """
+    page = await _build(player_page, storage, chat_id, account, offset)
+    if page is None:
+        return None
+    player, matches, offset, total = page
+    chat = storage.get_or_create_chat(chat_id)
+    rows = match_list_rows(matches, offset, chat.mmr_step, chat.tz, player.anchor_mmr is not None, current)
+    board = ImageBoard(match_list_text(player.display_name, rows, offset, total))
+    if want_image(storage, chat_id, image):
+        subtitle = f"матчи {offset + 1}–{offset + len(rows)} из {total} · нажмите номер, чтобы открыть" if total else None
+        badge = (f"СТР. {offset // MATCH_PAGE + 1}/{(total - 1) // MATCH_PAGE + 1}", ACCENT) if total else None
+        board.png = await asyncio.to_thread(build_png, "список матчей",
+                                            lambda: _match_list_png(f"Матчи · {player.display_name}", subtitle, rows, badge))
+        if board.png is not None:
+            board.caption = f"📜 <b>{html.escape(player.display_name)}</b> · матчи {offset + 1}–{offset + len(rows)} из {total}"
+    return board, player.account_id, offset, total

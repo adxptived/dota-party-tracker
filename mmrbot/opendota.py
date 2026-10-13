@@ -16,6 +16,7 @@ import requests
 from .health import ProviderHealth, ProviderUnavailable
 from .items import item_slug
 from .ranks import average_rank_tier
+from .talents import talent_picks
 
 BASE_URL = "https://api.opendota.com/api"
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
@@ -71,6 +72,7 @@ def _player_build(player: dict) -> dict:
         "scepter": bool(player.get("aghanims_scepter")) or "ultimate_scepter" in bought,
         "scepter_time": bought.get("ultimate_scepter"),
         "bought": bought,  # {предмет: время последней покупки} — для предметов медведя Лон Друида
+        "talents": talent_picks(player.get("ability_upgrades_arr")),  # [[уровень, название]] — выбранные таланты
     }
 
 
@@ -376,6 +378,11 @@ class OpenDota:
         """Справочник предметов /constants/item_ids: {"1": "blink", ...} (пусто при сбое формата)."""
         data = self._get("/constants/item_ids")
         return data if isinstance(data, dict) else {}
+
+    def get_talent_constants(self) -> tuple[dict, dict, dict]:
+        """Константы для справочника талантов: ability_ids, abilities (≈2 МБ), hero_abilities. Раз в сутки."""
+        parts = [self._get(f"/constants/{name}") for name in ("ability_ids", "abilities", "hero_abilities")]
+        return tuple(part if isinstance(part, dict) else {} for part in parts)
 
     def get_profile(self, account_id: int) -> dict:
         data = self._get(f"/players/{account_id}") or {}

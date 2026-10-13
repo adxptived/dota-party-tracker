@@ -1198,12 +1198,15 @@ class Storage:
             return
         keep = {k: build.get(k) for k in ("items", "item_times", "neutral_item", "shard", "shard_time",
                                            "scepter", "scepter_time")}
+        if build.get("talents"):  # выбранные таланты [[уровень, название]] — только если известны
+            keep["talents"] = build["talents"]
         with self._conn() as conn:
             row = conn.execute("SELECT build FROM match_builds WHERE account_id = ? AND match_id = ?",
                                (account_id, match_id)).fetchone()
             if row is not None:
                 try:
-                    if self._known_times(json.loads(row["build"])) >= self._known_times(keep):
+                    old = json.loads(row["build"])
+                    if self._known_times(old) >= self._known_times(keep) and (old.get("talents") or not keep.get("talents")):
                         return
                 except (ValueError, TypeError):
                     pass

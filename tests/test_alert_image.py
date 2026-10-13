@@ -136,7 +136,7 @@ def test_strip_stats_are_labelled_cells(drawn):
     row = _row("Вася", items=[1, 2], net_worth=18200, last_hits=312, denies=14, tower_damage=4200, rank_tier=55)
     render_alert_image(_event([row]), "UTC")
     texts = [t[0] for t in drawn]
-    for label, value in (("IMP", "+21"), ("GPM", "640"), ("НЕТВОРС", "18.2k"), ("ДОБИТО", "312/14"),
+    for label, value in (("IMP", "+21"), ("GPM", "640"), ("НЕТВОРС", "18.2k"), ("КРИПЫ", "312/14"),
                          ("УРОН", "31.2k"), ("ЗДАНИЯ", "4.2k")):
         assert texts[texts.index(label) + 1] == value
     assert "K / D / A" in texts
@@ -181,4 +181,15 @@ def test_support_strip_puts_vision_first_and_keeps_four_cells():
     assert [label for label, _ in _strip_cells(row)] == ["Варды", "Стаки", "Лечение", "Урон"]
     assert dict(_strip_cells(row))["Стаки"] == "0"                             # ноль стаков — тоже значение
     core = _row("Вася", net_worth=21400, last_hits=312, denies=14, tower_damage=4200, wards=3)
-    assert [label for label, _ in _strip_cells(core)] == ["Нетворс", "Добито", "Урон", "Здания"]
+    assert [label for label, _ in _strip_cells(core)] == ["Нетворс", "Крипы", "Урон", "Здания"]
+
+
+def test_talents_are_drawn_as_grid_and_add_height(drawn):
+    plain = _open(render_alert_image(_event(), "UTC"))
+    talents = [[10, "+30 Shadowraze Stack Damage"], [15, "+25 Movement Speed"], [20, "x"], [25, "Shadowraze Applies"]]
+    with_talents = _open(render_alert_image(_event([_row("A", talents=talents)]), "UTC"))
+    assert with_talents.height > plain.height
+    texts = [t[0] for t in drawn]
+    assert "ТАЛАНТЫ" in texts and "+30 Shadowraze Stack Damage" in texts and "Shadowraze Applies" in texts
+    junk = _open(render_alert_image(_event([_row("A", talents=[["x"], None, [10, ""]])]), "UTC"))
+    assert junk.height == plain.height  # мусор вместо талантов — строки нет

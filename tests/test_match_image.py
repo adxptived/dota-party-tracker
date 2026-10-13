@@ -176,3 +176,21 @@ def test_build_block_does_not_run_into_the_kda_column():
     assert upgrade_end <= mi.ITEMS_END
     kda_cx = next(cx for key, cx, _ in mi.COLUMNS if key == "kda")
     assert mi.ITEMS_END <= kda_cx - cards.text_width("29 / 29 / 29", 28, True) / 2
+
+
+def test_creeps_column_and_talents_line(drawn):
+    import io
+
+    from PIL import Image
+
+    from mmrbot.match_image import render_match_image
+    base = {"match_id": 1, "start_time": 1_700_000_000, "duration": 2400, "radiant_win": True, "players": [
+        {"account_id": 1, "is_radiant": True, "hero_id": 11, "kills": 1, "deaths": 2, "assists": 3, "last_hits": 295,
+         "denies": 4},
+        {"account_id": 2, "is_radiant": False, "hero_id": 1, "kills": 1, "deaths": 2, "assists": 3}]}
+    plain = Image.open(io.BytesIO(render_match_image(base, {})))
+    texts = [t[0] for t in drawn]
+    assert "КРИПЫ" in texts and "295/4" in texts
+    base["players"][0]["talents"] = [[10, "+30 Shadowraze Stack Damage"], [25, "Shadowraze Applies Attack Damage"]]
+    talented = Image.open(io.BytesIO(render_match_image(base, {})))
+    assert talented.height > plain.height and "Shadowraze Applies Attack Damage" in [t[0] for t in drawn]

@@ -105,6 +105,9 @@ def build() -> dict[str, bytes]:
     for i, p in enumerate(built["players"]):
         p.update(items=[1 + (i + k) % 9 for k in range(6)], item_times=[60 * (k * 6 + i) for k in range(6)],
                  neutral_item=10, shard=i % 2 == 0, scepter=i % 3 == 0, tower_damage=1200 * i)
+    for p in built["players"][:6]:
+        p.update(last_hits=120 + p["account_id"] * 31, denies=p["account_id"] * 2,
+                 talents=[[10, "+20 Damage"], [15, "+300 Health"], [20, "-12s Healing Ward Cooldown"], [25, "+1 Omnislash Jump"]])
     built["players"][2].update(bear_items=[1, 2, 3, 4], bear_item_times=[300, 900, 1500, 2000], bear_neutral=11)
     out["match_build.png"] = render_match_image(built, {1: "Вася", 7: "Петя"}, focus=7, tz="Europe/Moscow", icons={},
                                                 item_icons=items)
@@ -120,7 +123,9 @@ def build() -> dict[str, bytes]:
                       "delta": -25, "current_mmr": 4244, "gpm": 536, "hero_damage": 21100, "net_worth": 20400,
                       "last_hits": 295, "denies": 4, "tower_damage": 1800, "rank_tier": 63, "is_radiant": True,
                       "position": 2, "imp": -6, "items": [1, 2, 3, 4, 5, 6], "neutral_item": 10,
-                      "item_times": [457, 1948, 2380, 1509, 893, 1085]}]}
+                      "item_times": [457, 1948, 2380, 1509, 893, 1085],
+                      "talents": [[10, "+30 Shadowraze Stack Damage"], [15, "+2 Feast of Souls Souls Collected Per Hero"],
+                                  [20, "+25 Movement Speed"], [25, "Shadowraze Applies Attack Damage"]]}]}
     out["alert_solo.png"] = render_alert_image(solo, "Europe/Moscow", icons={11: fake_photo(3, 256)}, item_icons=items)
     for kind in ("win", "loss", "mixed"):
         out[f"alert_{kind}.png"] = render_alert_image(
@@ -154,6 +159,13 @@ def build() -> dict[str, bytes]:
         awards[1:], None, icons, avatars, "±MMR")
     out["stats_empty.png"] = render_stats_image("Рейтинг", None, None, [])
     out["player.png"] = render_player_image(sample_player(), icons, avatars)
+    from mmrbot.match_list_image import render_match_list_image
+    page = [{"n": i + 1, "hero_id": [12, 1, 26, 35, 11][i % 5], "name": ["Phantom Lancer", "Anti-Mage", "Lion", "Sniper",
+             "Shadow Fiend"][i % 5], "won": i % 3 != 1, "kills": 3 + i, "deaths": 2 + i % 4, "assists": 7 + i,
+             "delta": 25 if i % 3 != 1 else -25, "double_down": i == 4, "minutes": 30 + i * 2, "when": f"{12 - i // 3:02d}.10 21:{10 + i}",
+             "extra": "P1 · 612 GPM · 280 крипов", "current": i == 2} for i in range(10)]
+    out["match_list.png"] = render_match_list_image("Матчи · Вася", "матчи 1–10 из 56 · нажмите номер, чтобы открыть",
+                                                    page, icons, ("СТР. 1/6", ACCENT))
     long_card = sample_player()
     long_card.update(name="Оооочень длинный ник игрока из Steam", steam_name="steam_" + "x" * 40, rank_tier=80,
                      rank_text="Immortal #1234", mmr_text="≈12345", delta_note="за 1234 игры", streak=("L", 12))

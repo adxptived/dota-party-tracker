@@ -781,3 +781,47 @@ def lookup_text(card: dict) -> str:
 def lookup_caption(card: dict) -> str:
     """Подпись под картинкой карточки по ID: ник и ранг одной строкой."""
     return f"🔎 <b>{_esc(card['name'])}</b> · {html.escape(clean(card.get('rank_text')) or 'Без ранга')}"
+
+
+# --- матчи игрока страницей ------------------------------------------------------------------------
+
+def match_list_rows(matches: list, offset: int, step: int, tz: str = "UTC", show_delta: bool = True,
+                    current: Optional[int] = None) -> list[dict]:
+    """Матчи страницы (новые сверху) → строки картинки списка; номер строки (с 1) — подпись кнопки, которая его открывает.
+
+    current — номер открытого сейчас матча на странице (подсвечивается); show_delta — показывать ±MMR (MMR задан).
+    """
+    from mmrbot.stats import is_win, match_mmr_delta
+    rows = []
+    for i, m in enumerate(matches, start=1):
+        extra = []
+        if m.get("position"):
+            extra.append(f"P{m['position']}")
+        if m.get("gpm"):
+            extra.append(f"{round(m['gpm'])} GPM")
+        if m.get("last_hits") is not None:
+            extra.append(f"{m['last_hits']} крипов")
+        rows.append({
+            "n": i, "hero_id": m.get("hero_id"), "name": hero_name(m.get("hero_id")),
+            "won": is_win(m["player_slot"], m["radiant_win"]), "kills": m.get("kills") or 0,
+            "deaths": m.get("deaths") or 0, "assists": m.get("assists") or 0,
+            "delta": match_mmr_delta(m, step) if show_delta else None, "double_down": bool(m.get("double_down")),
+            "minutes": round(m["duration"] / 60) if m.get("duration") else None,
+            "when": fmt_local(m["start_time"], tz, "%d.%m %H:%M") if m.get("start_time") else None,
+            "extra": " · ".join(extra) or None, "current": current == i,
+        })
+    return rows
+
+
+def match_list_text(name: str, rows: list, offset: int, total: int) -> str:
+    """Та же страница текстом: «3. 🏆 Pudge 12/3/8 · +25 · 14.10 21:40» — номер совпадает с кнопкой."""
+    if not total:
+        return f"📜 <b>{_esc(name)}</b>: ранкед-матчей пока нет."
+    lines = [f"📜 <b>Матчи: {_esc(name)}</b> · {offset + 1}–{offset + len(rows)} из {total}",
+             "Нажмите номер матча — покажу его картинкой."]
+    for r in rows:
+        mark = "🏆" if r["won"] else "💀"
+        delta = f" · {signed(r['delta'])}" + (" ×2" if r["double_down"] else "") if r.get("delta") is not None else ""
+        lines.append(f"{r['n']}. {mark} {html.escape(r['name'])} {r['kills']}/{r['deaths']}/{r['assists']}{delta}"
+                     + (f" · {r['when']}" if r.get("when") else ""))
+    return "\n".join(lines)

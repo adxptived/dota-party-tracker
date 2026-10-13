@@ -193,3 +193,19 @@ def test_player_card_last_tile_is_position_then_role_then_duration():
     tile = cd.player_card(_full_summary(role_style="саппорт / роумер"))["tiles"][-1]
     assert (tile["label"], tile["value"]) == ("Роль", "Саппорт")
     assert cd.player_card(_full_summary())["tiles"][-1]["label"] == "Средняя игра"
+
+
+def test_match_list_rows_number_buttons_delta_and_extras():
+    matches = [
+        {"match_id": 2, "start_time": 1_700_000_000, "player_slot": 0, "radiant_win": True, "hero_id": 11, "kills": 10,
+         "deaths": 5, "assists": 12, "duration": 2468, "position": 2, "gpm": 536.4, "last_hits": 295, "double_down": 1},
+        {"match_id": 1, "start_time": 1_699_990_000, "player_slot": 128, "radiant_win": True, "hero_id": 1},
+    ]
+    rows = cd.match_list_rows(matches, 0, 25, "UTC", current=2)
+    assert [r["n"] for r in rows] == [1, 2] and rows[1]["current"] and not rows[0]["current"]
+    assert rows[0]["delta"] == 50 and rows[0]["double_down"] and rows[1]["delta"] == -25 and not rows[1]["won"]
+    assert rows[0]["extra"] == "P2 · 536 GPM · 295 крипов" and rows[0]["minutes"] == 41 and rows[1]["extra"] is None
+    assert cd.match_list_rows(matches, 0, 25, show_delta=False)[0]["delta"] is None
+    text = cd.match_list_text("<Вася>", rows, 0, 2)
+    assert "&lt;Вася&gt;" in text and "1. 🏆 Shadow Fiend 10/5/12 · +50 ×2" in text and "2. 💀" in text
+    assert "пока нет" in cd.match_list_text("Вася", [], 0, 0)
