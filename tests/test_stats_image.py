@@ -85,3 +85,19 @@ def test_streak_chip_next_to_name(drawn):
     texts = [t[0] for t in drawn]
     assert "▲ 4 подряд" in texts and "▼ 3 подряд" in texts
     assert sum("подряд" in t for t in texts) == 2
+
+
+def test_long_name_moves_streak_chip_to_rank_line(monkeypatch):
+    from mmrbot import cards
+    chips = []
+    real = cards.chip
+
+    def spy(img, draw, x, cy, text, *args, **kwargs):
+        chips.append((text, cy))
+        return real(img, draw, x, cy, text, *args, **kwargs)
+
+    monkeypatch.setattr(cards, "chip", spy)
+    render_stats_image("Рейтинг", None, None, [_row("Вася", streak=("W", 4)),
+                                               _row("Оооочень длинный ник игрока номер два", streak=("L", 5))])
+    (short_text, short_y), (long_text, long_y) = [c for c in chips if "подряд" in c[0]]
+    assert "4" in short_text and "5" in long_text and long_y > short_y + 100 - 40  # вторая строка: ниже середины

@@ -289,3 +289,24 @@ def test_stat_cells_draw_label_over_value_and_skip_empty(drawn):
     assert [t[0] for t in drawn] == ["GPM", "640", "IMP", "+21"]
     assert drawn[1][2] is True and drawn[3][1] == cards.WIN
     assert cards.stat_cells(canvas.draw, 40, 100, [], 110) == 40
+
+
+def test_draw_text_shrinks_before_ellipsis(monkeypatch):
+    from PIL import Image, ImageDraw
+
+    from mmrbot import cards
+    seen = []
+    real = cards._text_mask
+
+    def spy(text, size, bold, tracked):
+        seen.append((text, size))
+        return real(text, size, bold, tracked)
+
+    monkeypatch.setattr(cards, "_text_mask", spy)
+    draw = ImageDraw.Draw(Image.new("RGB", (400, 100)))
+    text = "Оооочень длинный ник"
+    width = cards.text_width(text, 30, True)
+    cards.draw_text(draw, (0, 0), text, 30, bold=True, max_w=width * 0.9)
+    assert seen[-1][0] == text and seen[-1][1] < 30  # целиком, но мельче
+    cards.draw_text(draw, (0, 0), text, 30, bold=True, max_w=width * 0.9, shrink=0)
+    assert seen[-1][0].endswith("…") and seen[-1][1] == 30  # shrink=0 — сразу многоточие

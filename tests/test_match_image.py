@@ -199,3 +199,16 @@ def test_creeps_column_and_talents_line(drawn):
     assert talented != render_match_image(dict(base, players=[dict(base["players"][0], talents=None),
                                                                base["players"][1]]), {})
     assert not any("Shadowraze" in t[0] for t in drawn)  # без подписей
+
+
+def test_header_is_banner_with_outcome_and_match_line(drawn):
+    from mmrbot.match_image import render_match_image
+    match = {"match_id": 77, "start_time": 1_700_000_000, "duration": 2280, "radiant_win": True, "players": [
+        {"account_id": 1, "is_radiant": True, "hero_id": 1, "kills": 3, "deaths": 1, "assists": 4},
+        {"account_id": 2, "is_radiant": False, "hero_id": 2, "kills": 1, "deaths": 3, "assists": 0}]}
+    render_match_image(match, {1: "Вася"}, focus=1, tz="UTC")
+    texts = [t[0] for t in drawn]
+    assert texts[0] == "ПОБЕДА" and texts[1].startswith("Матч 77  ·  ") and texts[1].endswith("38:00")
+    drawn.clear()
+    render_match_image(dict(match, radiant_win=None), {}, tz="UTC")
+    assert [t[0] for t in drawn][0] == "Матч 77"  # исход неизвестен — заголовком номер матча

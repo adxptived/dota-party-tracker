@@ -319,15 +319,15 @@ def render_mmr_chart(
         if until_ts is not None:  # после последней игры значение держится до «сейчас»
             for x_end, y_end, _, color in ends:
                 if to_x(until_ts) - x_end > (to_x(until_ts) - to_x(since_ts or until_ts)) * 0.04:  # короткий хвост — мусор
-                    ax.hlines(y_end, x_end, to_x(until_ts), color=color, linewidth=1.2, linestyles=":",
-                              alpha=0.7, zorder=3)
+                    ax.hlines(y_end, x_end, ax.get_xlim()[1], color=color, linewidth=1.2, linestyles=":",
+                              alpha=0.7, zorder=3)  # до края графика: выноска к подписи продолжает её без разрыва
     ax.set_ylim(y_lo, y_hi)
 
     # --- значения-«таблетки» справа от линий; сдвинутую подпись связываем с её линией выноской ---
     label_ys = _spread_labels([e[1] for e in ends], (y_hi - y_lo) * 0.085)
     for (_, y_end, total, color), y_label in zip(ends, label_ys):
         if abs(y_label - y_end) > (y_hi - y_lo) * 0.01:
-            ax.annotate("", (1.0, y_end), xycoords=("axes fraction", "data"), xytext=(1.012, y_label),
+            ax.annotate("", (1.0, y_end), xycoords=("axes fraction", "data"), xytext=(1.016, y_label),
                         textcoords=("axes fraction", "data"), annotation_clip=False, zorder=7,
                         arrowprops={"arrowstyle": "-", "color": color, "linewidth": 1, "alpha": 0.8})
         ax.annotate(
