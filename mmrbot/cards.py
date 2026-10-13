@@ -23,6 +23,7 @@ from typing import Optional, Sequence
 
 from mmrbot.charts import BG, FG, GRID, LOSS, MUTED, PALETTE, PANEL, WIDTH_PX, WIN
 from mmrbot.heroes import hero_name
+from mmrbot.plus_levels import plus_level, plus_tier
 
 # --- палитра и размеры ---------------------------------------------------------------------------
 PANEL_HI = "#1a2535"  # приподнятая плитка поверх PANEL
@@ -450,6 +451,47 @@ def level_badge(img, draw, cx: float, cy: float, level, r: int = 14) -> None:
     dot(img, cx, cy, r + 2, GOLD)
     dot(img, cx, cy, r, BG)
     draw_text(draw, (cx, cy), str(int(level)), 17 if level < 100 else 13, FG, bold=True, anchor="mm", track=False)
+
+
+PLUS_COLORS = {"Bronze": "#c27c45", "Silver": "#c9d3de", "Gold": "#f5b83d", "Platinum": "#5fd6d0",
+               "Master": "#b07cf0", "Grandmaster": "#ff5a4f"}
+
+
+PLUS_TIERS = ("Bronze", "Silver", "Gold", "Platinum", "Master", "Grandmaster")
+PLUS_BADGE = 46  # сторона значка тира Dota Plus на иконке героя
+
+
+@lru_cache(maxsize=16)
+def _plus_badge_icon(tier: str, size: int):
+    """Значок тира Dota Plus (mmrbot/assets/plus_badge_N.png, с Dota 2 Wiki) нужного размера; нет файла — None."""
+    import os
+    from PIL import Image
+    path = os.path.join(os.path.dirname(__file__), "assets", f"plus_badge_{PLUS_TIERS.index(tier) + 1}.png")
+    try:
+        return Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
+    except Exception:
+        return None
+
+
+def plus_badge(img, draw, x: float, y: float, xp, size: int = PLUS_BADGE) -> None:
+    """Значок тира героя в Dota Plus с уровнем по центру — в левом верхнем углу иконки; героя не качали — ничего.
+
+    Нет картинки значка — цветная плашка с уровнем."""
+    level = plus_level(xp)
+    tier = plus_tier(level)
+    if tier is None:
+        return
+    icon = _plus_badge_icon(tier, size)
+    if icon is not None:
+        paste(img, icon, x, y)
+        cx, cy, fsize = x + size / 2, y + size / 2 + 1, round(size * 0.42)
+        for dx, dy in ((-1, 1), (1, 1), (0, 2)):  # тёмная обводка: число читается на любом тире
+            draw_text(draw, (cx + dx, cy + dy), str(level), fsize, BG, bold=True, anchor="mm", track=False)
+        draw_text(draw, (cx, cy), str(level), fsize, "#ffffff", bold=True, anchor="mm", track=False)
+        return
+    w, h = (34 if level >= 10 else 28), 24
+    panel(img, (x, y, x + w, y + h), PLUS_COLORS[tier], radius=7)
+    draw_text(draw, (x + w / 2, y + h / 2), str(level), 17, BG, bold=True, anchor="mm", track=False)
 
 
 def paste(img, sprite, x: float, y: float) -> None:
