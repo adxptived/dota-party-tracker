@@ -34,7 +34,7 @@ CELLS_X = PAD + 24
 BUILD_H = 54  # линия билда под верхом строки (только если билд известен)
 TIME_H = 20  # + подписи времени покупки под иконками предметов
 CELLS_H = 66  # ряд подписанных ячеек: K/D/A, IMP, экономика, урон
-TALENTS_H = 136  # дерево талантов (если известно): 4 ступени, 25 наверху
+TREE_W, TREE_H = 120, 60  # дерево талантов графикой — справа в линии билда
 ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
 UPGRADE_SIZE = 32
 CELL_MAX_W = 176
@@ -70,7 +70,7 @@ def clock(seconds) -> str:
 
 
 def _has_build(row: dict) -> bool:
-    return bool(row.get("items") or row.get("neutral_item") or row.get("shard") or row.get("scepter"))
+    return bool(row.get("items") or row.get("neutral_item") or row.get("shard") or row.get("scepter") or _talents(row))
 
 
 def _times(row: dict) -> list:
@@ -94,7 +94,7 @@ def _talents(row: dict) -> list:
 
 
 def _row_h(row: dict) -> int:
-    return TOP_H + _build_h(row) + (TALENTS_H if _talents(row) else 0) + CELLS_H
+    return TOP_H + _build_h(row) + CELLS_H
 
 
 @lru_cache(maxsize=512)
@@ -241,17 +241,10 @@ def _draw_row(
     img.paste(cards.mix(fill, "#ffffff", 0.07), (CELLS_X, sep, RIGHT, sep + 1))
     if _has_build(row):
         _draw_build(img, draw, y + TOP_H + 8 + ITEM_H / 2, row, item_icons or {})
-    talents_h = TALENTS_H if _talents(row) else 0
-    if talents_h:
-        _draw_talents(img, draw, y + TOP_H + _build_h(row) + 4, row, fill)
-    _draw_cells(draw, y + TOP_H + _build_h(row) + talents_h + CELLS_H / 2 - 2, row)
-
-
-def _draw_talents(img, draw, top: float, row: dict, fill: str) -> None:
-    """Дерево талантов как в игре: подпись слева, дерево — на всю ширину ряда ячеек."""
-    label_color = cards.mix(MUTED, PANEL, 0.2)
-    draw_text(draw, (CELLS_X, top + TALENTS_H / 2 - 6), "ТАЛАНТЫ", 16, label_color, bold=True, anchor="lm")
-    cards.talent_tree(img, draw, (CELLS_X + KDA_CELL_W - 40, top, RIGHT, top + TALENTS_H - 12), _talents(row), fill)
+    if _talents(row):  # дерево талантов — справа в линии билда, по центру её высоты
+        mid = y + TOP_H + _build_h(row) / 2 + 2
+        cards.talent_tree(img, (RIGHT - TREE_W, mid - TREE_H / 2, RIGHT, mid + TREE_H / 2), _talents(row), fill)
+    _draw_cells(draw, y + TOP_H + _build_h(row) + CELLS_H / 2 - 2, row)
 
 
 def _draw_mmr(img, draw, mid: float, row: dict, fill: str) -> float:

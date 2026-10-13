@@ -194,6 +194,8 @@ def test_creeps_column_and_talents_line(drawn):
     base["players"][0]["talents"] = [{"level": 10, "left": "+30 Feast", "right": "+30 Shadowraze", "pick": "right"},
                                       {"level": 25, "left": "Shadowraze Applies Attack Damage", "right": "x",
                                        "pick": "left"}]
-    talented = Image.open(io.BytesIO(render_match_image(base, {})))
-    texts = [t[0] for t in drawn]
-    assert talented.height > plain.height and "◂ Shadowraze Applies Attack Damage" in texts and "▸ +30 Shadowraze" in texts
+    talented = render_match_image(base, {})
+    assert Image.open(io.BytesIO(talented)).size == plain.size  # дерево — значком на иконке героя
+    assert talented != render_match_image(dict(base, players=[dict(base["players"][0], talents=None),
+                                                               base["players"][1]]), {})
+    assert not any("Shadowraze" in t[0] for t in drawn)  # без подписей

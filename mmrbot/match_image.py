@@ -45,7 +45,7 @@ UPGRADE_SIZE = 26
 # центры колонок (x) и их заголовки
 COLUMNS = [("kda", 962, "K / D / A"), ("nw", 1078, "НЕТВОРС"), ("lh", 1178, "КРИПЫ"), ("gpm", 1283, "GPM / XPM"),
            ("dmg", 1393, "УРОН"), ("imp", 1490, "IMP")]
-TALENTS_H = 34  # строка талантов под строкой игрока (если таланты известны)
+TREE_BADGE_W, TREE_BADGE_H = 40, 34  # дерево талантов значком в правом нижнем углу иконки героя
 
 
 def _sorted_team(players: list[dict]) -> list[dict]:
@@ -76,7 +76,7 @@ def _talents(p: dict) -> list:
 
 
 def _row_h(p: dict) -> int:
-    return (ROW_BEAR_H if _has_bear(p) else ROW_H) + (TALENTS_H if _talents(p) else 0)
+    return ROW_BEAR_H if _has_bear(p) else ROW_H
 
 
 def _height(teams: list[list[dict]]) -> int:
@@ -237,25 +237,6 @@ def _base_h(p: dict) -> int:
     return ROW_BEAR_H if _has_bear(p) else ROW_H
 
 
-def _draw_talents(img, draw, y: float, p: dict, base: str) -> None:
-    """Таланты строкой под игроком: значок дерева (выбранные стороны золотом) и выбранные таланты по ступеням."""
-    rows = _talents(p)
-    x0, x1 = PAD + 24, MATCH_WIDTH - PAD - 24
-    draw_text(draw, (x0, y), "ТАЛАНТЫ", 14, cards.mix(MUTED, base, 0.2), bold=True, anchor="lm")
-    x = x0 + cards.text_width("ТАЛАНТЫ", 14, True) + 14
-    x += cards.talent_glyph(img, x, y, rows, base=base) + 18
-    col = (x1 - x) / 4
-    for row in rows:
-        name = row.get(row["pick"]) if row.get("pick") else None
-        if name:
-            draw_text(draw, (x, y), str(row["level"]), 15, GOLD, bold=True, anchor="lm", track=False)
-            lx = x + cards.text_width(str(row["level"]), 15, True, False) + 8
-            arrow = "◂ " if row["pick"] == "left" else "▸ "
-            draw_text(draw, (lx, y), arrow + cards.clean(name), 15, cards.mix(FG, MUTED, 0.2), anchor="lm",
-                      max_w=x + col - 16 - lx, shrink=12, track=False)
-        x += col
-
-
 def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons: Optional[dict] = None,
               build: bool = False, top_nw: float = 0, best: Optional[dict] = None) -> None:
     best = best or {}
@@ -269,10 +250,11 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
     else:
         cards.panel(img, box, PANEL, radius=12)
     mid = y + _base_h(p) / 2
-    if _talents(p):
-        _draw_talents(img, draw, y + _base_h(p) + 16, p, TRACKED_PANEL if mine else PANEL)
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)
+    if _talents(p):  # дерево талантов значком поверх правого нижнего угла иконки героя
+        bx, by = PAD + 24 + ICON_W - TREE_BADGE_W + 6, mid + ICON_H / 2 - TREE_BADGE_H + 6
+        cards.talent_tree(img, (bx, by, bx + TREE_BADGE_W, by + TREE_BADGE_H), _talents(p), PANEL, plate=True)
 
     name_w = (NAME_W_BEAR if _has_bear(p) else NAME_W) if build else NAME_W_FREE
     name = clean(tracked.get(p.get("account_id")) or p.get("name")) or "Скрытый профиль"
