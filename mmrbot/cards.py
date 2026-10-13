@@ -173,6 +173,9 @@ def _text_mask(text: str, size: int, bold: bool, tracked: bool):
     return mask, ascent, ascent + descent, total, pad
 
 
+SHRINK_TO = 0.8  # насколько можно ужать кегль длинной надписи, прежде чем резать её многоточием
+
+
 def fit_size(text: str, size: int, bold: bool, max_w: float, min_size: int) -> int:
     """Кегль, при котором текст влезает в max_w: уменьшаем шаг за шагом, но не мельче min_size."""
     while size > min_size and text_width(text, size, bold) > max_w:
@@ -182,8 +185,11 @@ def fit_size(text: str, size: int, bold: bool, max_w: float, min_size: int) -> i
 
 def draw_text(draw, xy, text: str, size: int, fill=FG, bold: bool = False, anchor: str = "la",
               max_w: Optional[float] = None, track: Optional[bool] = None, shrink: Optional[int] = None) -> None:
-    """Надпись. max_w — предел ширины: длинный текст обрезается многоточием; с shrink сначала уменьшается кегль
-    (не мельче shrink) — длинный ник или подпись видны целиком, а не обрываются на полуслове."""
+    """Надпись. max_w — предел ширины: длинный текст сначала уменьшается в кегле (не мельче shrink; по умолчанию —
+    до 80% кегля, но не мельче 13 px) и только потом обрезается многоточием: длинный ник или подпись видны целиком,
+    а не обрываются на полуслове. shrink=0 — не уменьшать, сразу обрезать."""
+    if max_w and shrink is None:
+        shrink = max(13, round(size * SHRINK_TO))
     if max_w and shrink and shrink < size:
         size = fit_size(text, size, bold, max_w, shrink)
     if max_w:

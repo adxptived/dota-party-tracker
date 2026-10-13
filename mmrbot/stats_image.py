@@ -104,12 +104,21 @@ def _draw_row(img, draw, y: int, place: int, row: dict, icons: dict, avatars: di
     if streak and streak[1] >= STREAK_MIN:
         chip = f"{'▲' if streak[0] == 'W' else '▼'} {streak[1]} подряд"
     name_max = NAME_MAX_W - (cards.text_width(chip, 16, True, False) + 24 + 12 if chip else 0)
+    # длинный ник не ужимаем ради серии: метка серии уезжает в строку ранга, ник получает всю ширину
+    low_chip = bool(chip) and cards.text_width(name, round(28 * cards.SHRINK_TO), True) > name_max
+    if low_chip:
+        name_max = NAME_MAX_W
     draw_text(draw, (NAME_X, mid - 17), name, 28, FG, bold=True, anchor="lm", max_w=name_max)
-    if chip:  # текущая серия — рядом с ником: кто на ходу, а кто в яме, видно без строки «Форма»
+    if chip and not low_chip:  # текущая серия — рядом с ником: кто на ходу, а кто в яме, видно без строки «Форма»
         cards.chip(img, draw, NAME_X + min(cards.text_width(name, 28, True), name_max) + 12, mid - 17, chip,
                    WIN if streak[0] == "W" else LOSS, size=16, pad=12, base=PANEL)
     cards.paste(img, cards.rank_badge(row.get("rank_tier"), 30), NAME_X, mid + 3)
-    draw_text(draw, (NAME_X + 40, mid + 18), clean(row.get("rank_text")), 20, MUTED, anchor="lm", max_w=NAME_MAX_W - 40)
+    rank_text = clean(row.get("rank_text"))
+    rank_max = NAME_MAX_W - 40 - (cards.text_width(chip, 14, True, False) + 20 + 12 if low_chip else 0)
+    draw_text(draw, (NAME_X + 40, mid + 18), rank_text, 20, MUTED, anchor="lm", max_w=rank_max)
+    if low_chip:
+        cards.chip(img, draw, NAME_X + 40 + min(cards.text_width(rank_text, 20), rank_max) + 12, mid + 18, chip,
+                   WIN if streak[0] == "W" else LOSS, size=14, pad=10, base=PANEL)
 
     cards.value_text(draw, (BIG_RIGHT, mid - 13), row.get("big"), 38, row.get("big_color") or FG)
     if row.get("sub"):

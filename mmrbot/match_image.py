@@ -26,7 +26,7 @@ from mmrbot.upgrade_icons import paste_upgrade
 MATCH_WIDTH = 1560
 TRACKED_PANEL, TRACKED_MARK = MINE_PANEL, GOLD  # строка своего игрока: светлее фон + золотая полоса
 
-HEAD_H = 132
+HEAD_H = 172
 TEAM_HEAD_H = 58
 ROW_H, ROW_GAP = 78, 6
 ROW_BEAR_H = 118  # у Лон Друида две строки предметов: свои и медведя
@@ -116,15 +116,26 @@ def render_match_image(match: dict, tracked: dict, focus=None, tz: str = "UTC",
     canvas = cards.Canvas(height, MATCH_WIDTH, accent=color or ACCENT)
     img, draw = canvas.img, canvas.draw
 
-    # --- шапка: слева матч и время, по центру счёт по убийствам, справа исход ---
-    draw_text(draw, (PAD, 26), f"Матч {match.get('match_id')}", 40, FG, bold=True)
+    # --- шапка-плашка, как у оповещения: слева исход крупно цветом, под ним матч и время; справа — счёт ---
+    banner = (PAD, PAD - 8, MATCH_WIDTH - PAD, HEAD_H - 18)
+    tone = color or ACCENT
+    cards.gradient_panel(img, banner, cards.mix(PANEL, tone, 0.3 if label else 0.12), cards.mix(PANEL, tone, 0.03),
+                         radius=20, outline=cards.mix(PANEL, tone, 0.4 if label else 0.2))
+    cards.stripe(img, PAD, banner[1] + 18, banner[3] - 18, tone)
+    mid = (banner[1] + banner[3]) / 2
+    score_cx = MATCH_WIDTH - PAD - 470
+    room = score_cx - 300 - (PAD + 32)
     when = fmt_local(match.get("start_time") or 0, tz, "%d.%m.%Y %H:%M")
-    sub = when + (f"  ·  {clock(match['duration'])}" if match.get("duration") else "")
-    draw_text(draw, (PAD, 82), sub, 22, MUTED)
+    sub = f"Матч {match.get('match_id')}  ·  {when}" + (f"  ·  {clock(match['duration'])}" if match.get("duration") else "")
     if label:
-        cards.pill(img, draw, MATCH_WIDTH - PAD, 62, label, BG, color, size=28, align="right", pad=24)
+        draw_text(draw, (PAD + 32, mid - 14), label, 50, cards.mix(color, "#ffffff", 0.12), bold=True, anchor="lm",
+                  max_w=room)
+        draw_text(draw, (PAD + 34, mid + 30), sub, 20, cards.mix(MUTED, "#ffffff", 0.25), anchor="lm", max_w=room)
+    else:
+        draw_text(draw, (PAD + 32, mid - 14), f"Матч {match.get('match_id')}", 40, FG, bold=True, anchor="lm", max_w=room)
+        draw_text(draw, (PAD + 34, mid + 26), sub.split("  ·  ", 1)[-1], 20, MUTED, anchor="lm", max_w=room)
     if len(teams) == 2:
-        _draw_score(draw, MATCH_WIDTH / 2, 62, *(sum(p.get("kills") or 0 for p in team) for _, team in teams),
+        _draw_score(draw, score_cx, mid - 6, *(sum(p.get("kills") or 0 for p in team) for _, team in teams),
                     gold=_team_gold([team for _, team in teams]))
     top_nw = max((p.get("net_worth") or 0 for p in players), default=0)
     best = {key: _best(players, key) for key in ("hero_damage", "gpm")}
