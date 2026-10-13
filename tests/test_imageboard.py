@@ -295,3 +295,22 @@ def test_player_card_failure_and_unknown_player(e2e, monkeypatch):
     nobody = e2e.FakeMessage()
     run(botmod.cmd_player(nobody, e2e.cmdobj("player", "несуществующий"), storage, od, sz))
     assert not nobody.photos and nobody.sent
+
+
+def test_heavy_png_is_sent_as_jpeg_light_one_stays_png():
+    import io
+    import os
+
+    from PIL import Image
+
+    from mmrbot.boards import HEAVY_PNG, lighten
+
+    def png(size):
+        buf = io.BytesIO()
+        Image.frombytes("RGB", (size, size), os.urandom(size * size * 3)).save(buf, "PNG")  # шум не сжимается
+        return buf.getvalue()
+
+    light, heavy = png(40), png(400)
+    assert len(heavy) > HEAVY_PNG and lighten(light) == light
+    assert lighten(heavy)[:3] == b"\xff\xd8\xff" and len(lighten(heavy)) < len(heavy)
+    assert lighten(b"PNG") == b"PNG" and build_png("тест", lambda: heavy)[:3] == b"\xff\xd8\xff"

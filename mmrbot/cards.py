@@ -33,6 +33,7 @@ SILVER = "#c9d3de"
 BRONZE = "#d9904f"
 BG_TOP = "#121a27"  # верх фона: к низу холста плавно уходит в BG
 ACCENT = PALETTE[0]
+ATTR_COLORS = {"s": "#d0473f", "a": "#38b56b", "i": "#3a8de0", "u": "#a97de0"}  # сила, ловкость, интеллект, универсал
 RADIANT, DIRE = "#5cc46a", "#e5553f"
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,30 @@ def _spare_font(size: int, bold: bool = False):
         return ImageFont.load_default(size)
 
 
+EMOJI_FONT = "NotoEmoji-SemiBold.ttf"  # одноцветные эмодзи (Noto Emoji, OFL): рисуются цветом текста
+
+
+@lru_cache(maxsize=96)
+def _emoji_font(size: int):
+    """Шрифт эмодзи того же кегля; нет файла — None (эмодзи тогда убирает clean)."""
+    from PIL import ImageFont
+    try:
+        return ImageFont.truetype(os.path.join(FONT_DIR, EMOJI_FONT), size, layout_engine=ImageFont.Layout.BASIC)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _emoji_covered() -> frozenset:
+    """Коды символов, которые есть в шрифте эмодзи (пусто — шрифта нет или fontTools недоступен)."""
+    try:
+        from fontTools.ttLib import TTFont
+        with TTFont(os.path.join(FONT_DIR, EMOJI_FONT), lazy=True) as ttf:
+            return frozenset(code for code in ttf.getBestCmap() if code > 0x2000)
+    except Exception:
+        return frozenset()
+
+
 @lru_cache(maxsize=1)
 def _covered() -> Optional[frozenset]:
     """Коды символов, которые есть в Inter (None — узнать не удалось, тогда всё рисуем основным шрифтом)."""
@@ -92,9 +117,11 @@ def _runs(text: str, size: int, bold: bool) -> list:
     if covered is None or text.isascii() or all(ord(ch) in covered for ch in text):
         return [(main, text)]
     spare = _spare_font(size, bold)
+    emoji = _emoji_covered()
     runs: list = []
     for ch in text:
-        fnt = main if ord(ch) in covered else spare
+        code = ord(ch)
+        fnt = main if code in covered else (_emoji_font(size) or spare) if code in emoji else spare
         if runs and runs[-1][0] is fnt:
             runs[-1][1] += ch
         else:
@@ -110,9 +137,17 @@ def _tracked(text: str, size: int) -> bool:
     return digits == 0 or (digits <= 3 and sum(ch.isalpha() for ch in text) >= 6)
 
 
+_JOINERS = {0x200D, 0xFE0E, 0xFE0F}  # склейка и выбор вида эмодзи: в одноцветном шрифте не нужны
+
+
 def clean(text) -> str:
-    """Убираем управляющие символы и эмодзи вне BMP — в шрифтах карточек их нет, рисовались бы квадраты."""
-    return "".join(ch for ch in str(text or "") if ch.isprintable() and ord(ch) <= 0xFFFF).strip()
+    """Убираем управляющие символы и то, чего нет ни в одном шрифте карточек (рисовалось бы квадратами).
+
+    Эмодзи из ников остаются — их рисует шрифт Noto Emoji; прочие символы вне BMP убираем.
+    """
+    emoji = _emoji_covered()
+    return "".join(ch for ch in str(text or "")
+                   if ch.isprintable() and ord(ch) not in _JOINERS and (ord(ch) <= 0xFFFF or ord(ch) in emoji)).strip()
 
 
 def fit(text: str, fnt, max_w: float) -> str:
@@ -173,6 +208,7 @@ def _text_mask(text: str, size: int, bold: bool, tracked: bool):
     return mask, ascent, ascent + descent, total, pad
 
 
+text_hook = None  # тесты вёрстки: функция (текст, рамка букв) вызывается на каждую надпись; в боте — None
 SHRINK_TO = 0.8  # насколько можно ужать кегль длинной надписи, прежде чем резать её многоточием
 
 
@@ -202,6 +238,11 @@ def draw_text(draw, xy, text: str, size: int, fill=FG, bold: bool = False, ancho
     v = anchor[1]
     top = xy[1] - (0 if v == "a" else line_h / 2 if v == "m" else line_h if v == "d" else ascent)
     draw.bitmap((round(x) - pad, round(top) - pad), mask, fill=fill)
+    if text_hook is not None:  # проверка вёрстки в тестах: где на холсте легли буквы этой надписи
+        ink = mask.getbbox()
+        if ink:
+            left, upper = round(x) - pad, round(top) - pad
+            text_hook(text, (left + ink[0], upper + ink[1], left + ink[2], upper + ink[3]))
 
 
 def signed(value, zero: str = "0") -> str:
@@ -435,11 +476,21 @@ def _hero_icon_cached(data: Optional[bytes], hero_id, w: int, h: int, radius: in
             icon = Image.open(io.BytesIO(data)).convert("RGBA").resize((w, h), Image.LANCZOS)
         except Exception:
             icon = None
-    if icon is None:
+    if icon is None:  # иконки нет (CDN недоступен): плашка цвета основного атрибута героя с инициалами
+        from mmrbot.heroes import hero_attr
+        tone = ATTR_COLORS.get(hero_attr(hero_id))
+        top, bottom = (mix(GRID, tone, 0.5), mix(GRID, tone, 0.14)) if tone else (GRID, GRID)
         icon = Image.new("RGBA", (w, h), GRID)
+        pen = ImageDraw.Draw(icon)
+        for y in range(h):  # мягкий вертикальный градиент сверху вниз
+            pen.line((0, y, w, y), fill=mix(top, bottom, y / max(h - 1, 1)))
         name = hero_name(hero_id) if hero_id else "?"
         initials = "".join(word[0] for word in name.replace("-", " ").split()[:2]).upper() or "?"
-        ImageDraw.Draw(icon).text((w / 2, h / 2), initials, font=font(max(12, h * 5 // 12), True), fill=MUTED, anchor="mm")
+        pen.text((w / 2, h / 2), initials, font=font(max(12, h * 5 // 12), True),
+                 fill=mix(tone, "#ffffff", 0.6) if tone else MUTED, anchor="mm")
+        if tone:  # значок атрибута в углу, как в игре
+            r = max(3, h // 10)
+            pen.ellipse((w - 3 * r, h - 3 * r, w - r, h - r), fill=tone)
     icon.putalpha(_rr_mask(w, h, radius))
     return icon
 
@@ -466,7 +517,7 @@ def _avatar_cached(data: Optional[bytes], label: str, size: int):
         seed = int(hashlib.md5(label.encode("utf-8")).hexdigest()[:6], 16)
         base = PALETTE[seed % len(PALETTE)]
         face = Image.new("RGBA", (size, size), mix(base, BG, 0.45))
-        letter = (clean(label) or "?")[0].upper()
+        letter = next((ch for ch in clean(label) if ch.isalnum()), "?").upper()  # первая буква: эмодзи и знаки пропускаем
         ImageDraw.Draw(face).text((size / 2, size / 2), letter, font=font(max(12, size * 9 // 20), True),
                                   fill=mix(base, FG, 0.55), anchor="mm")
     face.putalpha(_circle_mask(size))

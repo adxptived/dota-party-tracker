@@ -336,6 +336,8 @@ def update_heroes(data) -> int:
             continue
         added += hid not in HERO_NAMES
         HERO_NAMES[hid] = name
+        if hero.get("primary_attr") in _ATTR_CODES:
+            HERO_ATTRS[hid] = _ATTR_CODES[hero["primary_attr"]]
         internal = hero.get("name")
         if isinstance(internal, str) and internal.startswith(_SLUG_PREFIX):
             HERO_SLUGS[hid] = internal[len(_SLUG_PREFIX):]
@@ -372,3 +374,20 @@ def hero_name(hero_id) -> str:
     if not hero_id:
         return "?"
     return HERO_NAMES.get(hero_id, f"hero {hero_id}")
+
+
+# Основной атрибут героя (сила / ловкость / интеллект / универсал) — цвет заглушки иконки, пока CDN недоступен.
+# Сид из констант OpenDota; новых героев и смену атрибута подтягивает update_heroes (primary_attr из /heroes).
+_ATTR_SEED = {
+    "s": (2, 7, 14, 18, 19, 23, 28, 29, 42, 49, 51, 54, 57, 59, 60, 69, 71, 73, 77, 81, 83, 84, 85, 96, 98, 99, 100, 103, 104, 107, 108, 110, 129, 135, 137, 155),
+    "a": (1, 4, 6, 8, 9, 10, 11, 12, 15, 20, 32, 35, 41, 44, 46, 47, 48, 56, 61, 62, 63, 67, 70, 72, 80, 82, 89, 93, 94, 95, 106, 109, 114, 123, 145),
+    "i": (5, 13, 17, 22, 25, 26, 27, 30, 31, 34, 36, 37, 39, 45, 52, 55, 58, 64, 66, 68, 74, 75, 76, 79, 86, 87, 90, 101, 111, 112, 119, 121, 131, 138),
+    "u": (3, 16, 21, 33, 38, 40, 43, 50, 53, 65, 78, 88, 91, 92, 97, 102, 105, 113, 120, 126, 128, 136),
+}
+HERO_ATTRS: dict[int, str] = {hid: attr for attr, ids in _ATTR_SEED.items() for hid in ids}
+_ATTR_CODES = {"str": "s", "agi": "a", "int": "i", "all": "u"}
+
+
+def hero_attr(hero_id) -> str:
+    """Основной атрибут: "s" | "a" | "i" | "u"; неизвестен — пустая строка."""
+    return HERO_ATTRS.get(hero_id, "") if isinstance(hero_id, int) else ""

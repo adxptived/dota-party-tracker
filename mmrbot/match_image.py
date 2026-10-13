@@ -306,7 +306,7 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
     draw_text(draw, (cols["dmg"], mid - (11 if tower else 0)), _k(p.get("hero_damage")), 24, FG if top else calm,
               bold=top, anchor="mm")
     if tower:  # урон по зданиям — вторым рядом: в колонке нет места для двух чисел в строку
-        draw_text(draw, (cols["dmg"], mid + 15), f"{_k(tower)} здания", 17, MUTED, anchor="mm")
+        draw_text(draw, (cols["dmg"], mid + 15), f"{_k(tower)} здания", 17, MUTED, anchor="mm", max_w=96)
     imp = p.get("imp")
     if imp is None or round(imp) == 0:
         draw_text(draw, (cols["imp"], mid), cards.signed(imp), 24, MUTED, bold=True, anchor="mm")
