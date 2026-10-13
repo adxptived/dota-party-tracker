@@ -106,3 +106,29 @@ def mmr_rank_mismatch(current_mmr: Optional[int], rank_tier: Optional[int]) -> b
     if current_mmr < low - MMR_DRIFT_TOLERANCE:
         return True
     return high is not None and current_mmr > high + MMR_DRIFT_TOLERANCE
+
+
+STEP_MIN, STEP_MAX = 10, 60  # разумные шаги ±MMR за игру; вне их подсказка была бы шумом
+STEP_MIN_NET = 10  # подсказываем шаг, только если баланс побед и поражений набрался хотя бы такой
+
+
+def suggest_step(start_mmr: Optional[int], corrections: int, earned: int, step: int,
+                 rank_tier: Optional[int]) -> Optional[int]:
+    """Шаг ±MMR за игру, при котором оценка совпала бы с серединой медали (кратно 5). None — подсказывать нечего:
+    MMR не задан, медали нет, игр мало или шаг вышел бы за STEP_MIN…STEP_MAX, или совпадает с текущим.
+
+    earned — заработанное игрой при текущем шаге step (дабл-дауны уже учтены), corrections — правки /setmmr.
+    """
+    span = rank_mmr_range(rank_tier)
+    if start_mmr is None or span is None or not step:
+        return None
+    net = earned / step  # баланс побед и поражений в «шагах»
+    if abs(net) < STEP_MIN_NET:
+        return None
+    low, high = span
+    target = (low + high) / 2 if high is not None else low
+    raw = (target - start_mmr - corrections) / net
+    fit = int(round(raw / 5) * 5)
+    if not STEP_MIN <= fit <= STEP_MAX or fit == step:
+        return None
+    return fit

@@ -93,3 +93,17 @@ def test_storage_keeps_talents_and_upgrades_old_build(tmp_path):
     store.save_build(7, 100, build)
     store.save_build(7, 100, dict(build, talents=tree))  # те же времена, но появились таланты
     assert store.get_build(7, 100)["talents"] == tree
+
+
+def test_sides_match_the_game_for_shadow_fiend():
+    """Сверено с таблицей талантов Liquipedia: на 10 уровне слева «+30 Feast of Souls attack speed»,
+    справа «+30 Shadowraze stack damage»; в константах OpenDota ступень начинается с правого."""
+    ids = {"1": "special_bonus_unique_nevermore_7", "2": "special_bonus_unique_nevermore_4"}
+    names = {"special_bonus_unique_nevermore_7": {"dname": "+30 Shadowraze Stack Damage"},
+             "special_bonus_unique_nevermore_4": {"dname": "+30 Feast of Souls Attack Speed"}}
+    hero = {"npc_dota_hero_nevermore": {"talents": [
+        {"name": "special_bonus_unique_nevermore_7", "level": 1}, {"name": "special_bonus_unique_nevermore_4", "level": 1},
+        *({"name": f"x{i}", "level": i // 2 + 2} for i in range(6))]}}
+    built = talents.build_talents(ids, names, hero)
+    assert built["trees"]["npc_dota_hero_nevermore"][0] == ["+30 Shadowraze Stack Damage", "+30 Feast of Souls Attack Speed"]
+    assert built["talents"][2] == ["npc_dota_hero_nevermore", 1, "left"]

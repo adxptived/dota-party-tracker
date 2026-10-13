@@ -47,6 +47,7 @@ def render_stats_image(
     title: str, subtitle: Optional[str], badge: Optional[tuple[str, str]], rows: list, tiles: Optional[list] = None,
     records: Optional[list] = None, awards: Optional[list] = None, note: Optional[str] = None,
     icons: Optional[dict] = None, avatars: Optional[dict] = None, big_label: str = "MMR",
+    spotlight: Optional[dict] = None,
 ) -> bytes:
     """Рейтинг → PNG-байты. icons: {hero_id: байты}; avatars: {url: байты}; отсутствующие рисуются заглушками.
 
@@ -55,7 +56,8 @@ def render_stats_image(
     """
     icons, avatars = icons or {}, avatars or {}
     tiles, records, awards = tiles or [], records or [], awards or []
-    canvas = cards.Canvas(400 + len(rows) * (ROW_H + ROW_GAP) + 240 + len(records) * 40 + len(awards) * 60 + 80)
+    canvas = cards.Canvas(400 + len(rows) * (ROW_H + ROW_GAP) + 240 + len(records) * 40 + len(awards) * 60 + 80
+                          + (SPOT_H + 20 if spotlight else 0))
     img, draw = canvas.img, canvas.draw
 
     y = cards.header(img, draw, title, subtitle, badge)
@@ -72,6 +74,9 @@ def render_stats_image(
         _draw_row(img, draw, y, place, row, icons, avatars)
         y += ROW_H + ROW_GAP
 
+    if spotlight:
+        y += 14
+        y = _draw_spotlight(img, draw, y, spotlight, icons, avatars)
     if tiles:
         y += 14
         y = _draw_tiles(img, draw, y, tiles)
@@ -84,6 +89,49 @@ def render_stats_image(
     if note:
         y = cards.footer(draw, y, note)
     return canvas.png(y)
+
+
+SPOT_H = 156
+
+
+def _draw_spotlight(img, draw, y: int, spot: dict, icons: dict, avatars: dict) -> int:
+    """Плашка «Игрок недели»: аватар в золотом кольце, ник, ±MMR и результат; справа — лучшая игра и любимый герой."""
+    box = (PAD, y, WIDTH - PAD, y + SPOT_H)
+    cards.gradient_panel(img, box, cards.mix(PANEL, GOLD, 0.24), PANEL, radius=20, outline=cards.mix(PANEL, GOLD, 0.4))
+    mid = y + SPOT_H / 2
+    name = cards.clean(spot.get("name")) or "Игрок"
+    ring = cards.avatar(avatars.get(spot.get("avatar")), name, 104, ring=GOLD, ring_w=4)
+    cards.paste(img, ring, PAD + 26, mid - ring.size[1] / 2)
+    x = PAD + 26 + ring.size[0] + 24
+    right_blocks = [b for b in (spot.get("game"), spot.get("hero")) if b]
+    block_w = 250
+    text_room = WIDTH - PAD - 24 - len(right_blocks) * (block_w + 16) - x - 16
+    draw_text(draw, (x, mid - 44), cards.clean(spot.get("title")).upper(), 18, GOLD, bold=True, anchor="lm")
+    draw_text(draw, (x, mid - 8), name, 38, FG, bold=True, anchor="lm", max_w=text_room - 150)
+    big_x = x + min(cards.text_width(name, 38, True), text_room - 150) + 18
+    draw_text(draw, (big_x, mid - 8), spot.get("big") or "", 34, WIN, bold=True, anchor="lm", track=False)
+    draw_text(draw, (x, mid + 32), cards.clean(spot.get("line")), 20, cards.mix(MUTED, "#ffffff", 0.2), anchor="lm",
+              max_w=text_room)
+    bx = WIDTH - PAD - 24 - len(right_blocks) * (block_w + 16) + 16
+    for label, block in (("Лучшая игра", spot.get("game")), ("Любимый герой", spot.get("hero"))):
+        if not block:
+            continue
+        inner = (bx, y + 16, bx + block_w, y + SPOT_H - 16)
+        cards.panel(img, inner, cards.mix(PANEL, BG, 0.35), radius=14)
+        draw_text(draw, (bx + 14, y + 36), label.upper(), 15, MUTED, bold=True, anchor="lm")
+        icon_w, icon_h = 96, 54
+        cards.paste(img, cards.hero_icon(icons.get(block.get("hero_id")), block.get("hero_id"), icon_w, icon_h, 7),
+                    bx + 14, y + 54)
+        tx = bx + 14 + icon_w + 12
+        if "kills" in block:
+            cards.kda(draw, tx, y + 81, block["kills"], block["deaths"], block["assists"], 24, align="left")
+        else:
+            draw_text(draw, (tx, y + 68), cards.clean(block.get("name")), 19, FG, bold=True, anchor="lm",
+                      max_w=bx + block_w - 12 - tx)
+            draw_text(draw, (tx, y + 94), cards.clean(block.get("line")), 16, MUTED, anchor="lm",
+                      max_w=bx + block_w - 12 - tx)
+        bx += block_w + 16
+    return y + SPOT_H
 
 
 def _draw_row(img, draw, y: int, place: int, row: dict, icons: dict, avatars: dict) -> None:

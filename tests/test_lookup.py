@@ -53,6 +53,8 @@ def _od_match(match_id):
 
 @pytest.fixture
 def store(tmp_path):
+    from mmrbot import service
+    service._LOOKUPS.clear()  # кэш поиска общий на процесс — каждый тест начинает с чистого
     storage = Storage(str(tmp_path / "l.db"))
     storage.get_or_create_chat(1)
     return storage
@@ -104,7 +106,7 @@ def test_lookup_card_shows_winrate_not_mmr_and_honest_partial_counts():
     matches = cd.lookup_matches([_raw(i, win=i < 6) for i in range(10)],
                                 [{"match_id": 9_000_000_000 + i, "gold_per_min": 600} for i in range(3)])
     card = cd.lookup_card(STRANGER, {"personaname": "genocide in hell", "rank_tier": 71}, matches, "UTC")
-    assert card["name"] == "genocide in hell" and card["rank_text"] == "Divine 1"
+    assert card["name"] == "genocide in hell" and card["rank_text"] == "Divine 1 · ≈4620–4774"  # MMR по медали
     assert card["mmr_text"] == "60%" and "10 игр" in card["headline_note"] and card["mmr_delta"] is None
     assert "не в пати" in card["subtitle"] and str(STRANGER) in card["subtitle"]
     tiles = {t["label"]: t for t in card["tiles"]}
@@ -159,3 +161,39 @@ def test_nothing_found_is_a_clear_message(store):
     assert board.kind is None and "ни игрока, ни матча" in board.text
     bad = asyncio.run(lookup_board(store, FakeOD(), 1, "привет"))
     assert bad.kind is None and "ID матча" in bad.text
+
+
+def test_repeated_lookup_is_served_from_cache(store):
+    od = FakeOD(players={STRANGER: {"personaname": "genocide in hell", "rank_tier": 63}})
+    asyncio.run(lookup_board(store, od, 1, str(STRANGER), image=False))
+    first = len(od.calls)
+    again = asyncio.run(lookup_board(store, od, 1, f"dotabuff.com/players/{STRANGER}", image=False))
+    assert again.kind == "player" and len(od.calls) == first  # второй поиск — без запросов к OpenDota
+
+
+def test_find_cooldown_per_person(monkeypatch):
+    pytest.importorskip("aiogram.filters")
+    from types import SimpleNamespace
+
+    import mmrbot.bot as botmod
+    clock = [1000.0]
+    monkeypatch.setattr(botmod.time, "monotonic", lambda: clock[0])
+    botmod._last_find.clear()
+    vasya, petya = SimpleNamespace(id=1), SimpleNamespace(id=2)
+    assert botmod._find_wait(5, vasya) == 0 and botmod._find_wait(5, petya) == 0
+    clock[0] += 3
+    assert botmod._find_wait(5, vasya) == pytest.approx(botmod.FIND_COOLDOWN - 3)
+    assert botmod._find_wait(6, vasya) == 0  # другой чат — свой счётчик
+    clock[0] += botmod.FIND_COOLDOWN
+    assert botmod._find_wait(5, vasya) == 0 and botmod._find_wait(5, None) == 0
+
+
+def test_medal_mmr_text():
+    assert cd.medal_mmr_text(71) == " · ≈4620–4774" and cd.medal_mmr_text(80) == " · ≈5620+"
+    assert cd.medal_mmr_text(None) == "" and cd.medal_mmr_text(0) == ""
+
+
+def test_lookup_card_numbers_recent_games_for_buttons(store):
+    od = FakeOD(players={STRANGER: {"personaname": "x", "rank_tier": 63}})
+    board = asyncio.run(lookup_board(store, od, 1, str(STRANGER)))
+    assert board.match_ids == [9_000_000_000 + i for i in range(6)]  # новые первыми, как на картинке

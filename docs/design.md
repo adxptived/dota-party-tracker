@@ -44,31 +44,39 @@ Telegram-бот для пати игроков Dota 2: следит за ран�
 
 ## Компоненты (маленькие, тестируемые изолированно)
 
+Актуально на 2026-10-13. Чистые модули (без сети и БД) тестируются напрямую; сеть — только в клиентах.
+
 | Модуль | Ответственность | Зависит от |
 |---|---|---|
-| `ids.py` | ссылка/ID → 32-битный account_id | — (чистый) |
-| `ranks.py` | `rank_tier` → медаль (+ Immortal #N) | — (чистый) |
-| `stats.py` | win/loss, KDA, агрегаты, оценка MMR | — (чистый) |
-| `opendota.py` | HTTP-клиент: профиль, ранкед-матчи; троттлинг+ретраи | requests |
-| `storage.py` | SQLite-репозиторий | sqlite3 |
-| `tracker.py` | обновить игрока, собрать сводку/лидерборд | storage, opendota, stats |
-| `formatting.py` | рендер сообщения (RU, Telegram-разметка) | ranks, stats |
-| `bot.py` | хендлеры aiogram (команды) | tracker, storage, formatting |
-| `scheduler.py` | ежедневный дайджест по чатам | tracker, formatting |
+| `ids.py` | ссылка/ID → 32-битный account_id (Dotabuff, OpenDota, Stratz, Steam, SteamID64) | — (чистый) |
+| `commands.py` | разбор аргументов команд, в том числе запроса `/find` (`parse_lookup`) и ссылок на матч | — (чистый) |
+| `ranks.py` | `rank_tier` → медаль, примерный MMR медали, подсказка шага ±MMR (`suggest_step`) | — (чистый) |
+| `stats.py` | win/loss, KDA, агрегаты, оценка MMR, последние игры | — (чистый) |
+| `heroes.py`, `items.py`, `talents.py` | справочники героев (имя, атрибут), предметов, талантов; кэш на диске | — (чистые) |
+| `opendota.py`, `stratz.py`, `steam.py` | HTTP-клиенты; троттлинг, ретраи, предохранитель (`health.py`) | requests |
+| `storage.py`, `migrations.py` | SQLite-репозиторий, нумерованные миграции | sqlite3 |
+| `tracker.py` | обновить игрока, сводки, лидерборд, итоги недели (с «игроком недели») | storage, клиенты, stats |
+| `formatting.py` | текстовые отчёты (HTML) | ranks, stats |
+| `card_data.py` | данные → описания строк/плиток/карточек для картинок | formatting |
+| `cards.py` | кирпичики картинок: шрифты (Inter, Noto Emoji), панели, K/D/A, дерево талантов, ужатие текста | Pillow |
+| `*_image.py` | карточки-картинки: рейтинг, игрок, матч, оповещение, список матчей, герои, рекорды… | cards |
+| `service.py` | сборка отчёта: текст + картинка + подпись (`ImageBoard`), поиск по ID, кэш поиска | всё выше |
+| `keyboards.py` | inline-клавиатуры и схема callback_data | aiogram |
+| `bot.py` | тонкие хендлеры команд и сборка отчётов в ответ | service |
+| `buttons.py` | кнопки: таблицы `CALLBACKS` / `MENU_ACTIONS` / `PICK_ACTIONS` (префикс → обработчик) | bot |
+| `scheduler.py` | новые игры, оповещения, сводки, справочники | tracker, service |
 | `config.py` | .env → настройки | python-dotenv |
 | `__main__.py` | сборка: polling + scheduler | всё выше |
 
 ## Команды
 
-- `/add <ссылка|id> [Имя] [стартовый_MMR]` — добавить аккаунт в лидерборд чата.
-- `/list` — участники чата.
-- `/remove <Имя>` — убрать.
-- `/setmmr <Имя> <MMR>` — переякорить MMR (ручная коррекция).
-- `/setstep <шаг>` — шаг MMR для чата (по умолчанию 25).
-- `/stats` — полный лидерборд с даты старта.
-- `/today` — активность за сутки.
-- `/settime <час>` — час дайджеста (МСК).
-- `/start`, `/help` — справка.
+Полный список с описаниями — в README. Основное:
+
+- `/add <ссылка|id> [Имя] [стартовый_MMR]`, `/list`, `/remove`, `/setmmr`, `/setstep`, `/settime`, `/settings`.
+- `/stats`, `/today`, `/compare`, `/together`, `/records`, `/graph`, `/achievements`, `/season`, `/hall`.
+- `/player <имя|ID|ссылка>` — карточка (игрок не из пати — по OpenDota), под ней цифры последних игр.
+- `/match [id|ссылка] [имя]`, `/last [имя]` — разбор матча; «📜 Матчи» — список картинкой с кнопками-цифрами.
+- `/find <ID|ссылка>` — матч или любой игрок по ID (кэш 10 мин, не чаще раза в 8 с на человека).
 
 ## Логика OpenDota
 

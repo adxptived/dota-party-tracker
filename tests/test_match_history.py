@@ -20,27 +20,30 @@ def test_player_actions_has_matches_button():
     assert "pp:matches:42" in {b.callback_data for b in _flat(player_actions(42))}
 
 
-def test_match_list_buttons_are_numbers_and_paging():
-    markup = match_list_buttons(ACC, offset=0, count=10, total=25)
+IDS = [9100000000 + i for i in range(10)]
+
+
+def test_match_list_buttons_are_numbers_with_match_ids_and_paging():
+    markup = match_list_buttons(ACC, 0, IDS, total=25)
     first = _flat(markup)
     data = [b.callback_data for b in first]
     assert [b.text for b in first[:10]] == [str(n) for n in range(1, 11)]
-    assert data[:10] == [f"mv:{ACC}:0:{n}" for n in range(1, 11)]
+    assert data[:10] == [f"mv:{ACC}:0:{mid}" for mid in IDS]  # в кнопке ID матча, а не номер строки
     assert [len(row) for row in markup.inline_keyboard[:2]] == [5, 5]  # цифры — по пять в ряд
     assert f"ml:{ACC}:10" in data and not any(d == f"ml:{ACC}:-10" for d in data)  # назад с первой страницы нет
-    mid = {b.callback_data for b in _flat(match_list_buttons(ACC, offset=10, count=10, total=25))}
+    mid = {b.callback_data for b in _flat(match_list_buttons(ACC, 10, IDS, total=25))}
     assert {f"ml:{ACC}:0", f"ml:{ACC}:20"} <= mid
-    last = {b.callback_data for b in _flat(match_list_buttons(ACC, offset=20, count=5, total=25))}
-    assert f"ml:{ACC}:10" in last and f"ml:{ACC}:30" not in last and f"mv:{ACC}:20:6" not in last
+    last = {b.callback_data for b in _flat(match_list_buttons(ACC, 20, IDS[:5], total=25))}
+    assert f"ml:{ACC}:10" in last and f"ml:{ACC}:30" not in last
     assert all(len((d or "").encode()) <= 64 for d in data)
 
 
 def test_open_match_is_marked_and_has_list_text_and_dotabuff():
-    buttons = _flat(match_list_buttons(ACC, offset=10, count=10, total=25, current=3, match_id=9100000007))
+    buttons = _flat(match_list_buttons(ACC, 10, IDS, total=25, current=IDS[2]))
     assert buttons[2].text == "• 3" and buttons[0].text == "1"
     data = {b.callback_data for b in buttons}
-    assert f"ml:{ACC}:10" in data and f"tx:match:9100000007:{ACC}" in data
-    assert any(b.url == "https://www.dotabuff.com/matches/9100000007" for b in buttons)
+    assert f"ml:{ACC}:10" in data and f"tx:match:{IDS[2]}:{ACC}" in data
+    assert any(b.url == f"https://www.dotabuff.com/matches/{IDS[2]}" for b in buttons)
 
 
 def test_match_card_buttons_full_match_dotabuff_back():
@@ -87,21 +90,36 @@ def test_matches_button_shows_picture_list_and_numbers_open_matches(e2e, tmp_pat
     (caption, kw), = cb.message.photos
     assert "shinoame" in caption and "1–7 из 7" in caption
     data = [b.callback_data for b in _flat(kw["reply_markup"])]
-    assert data[:7] == [f"mv:{e2e.ACC}:0:{n}" for n in range(1, 8)]
+    assert data[:7] == [f"mv:{e2e.ACC}:0:{mid}" for mid in range(9100000007, 9100000000, -1)]
 
-    cb = e2e.FakeCallback(f"mv:{e2e.ACC}:0:1")  # «1» — самый свежий матч
+    cb = e2e.FakeCallback(f"mv:{e2e.ACC}:0:9100000007")  # «1» — самый свежий матч
     run(botmod.on_callback(cb, storage, od, sz))
     (_, kw), = cb.message.photos
     buttons = _flat(kw["reply_markup"])
     assert buttons[0].text == "• 1" and sz.full_requests == [9100000007]
     assert f"ml:{e2e.ACC}:0" in {b.callback_data for b in buttons}
 
-    cb = e2e.FakeCallback(f"mv:{e2e.ACC}:0:3")  # переключились на третий
+    cb = e2e.FakeCallback(f"mv:{e2e.ACC}:0:3")  # кнопка старого формата: третий на странице
     run(botmod.on_callback(cb, storage, od, sz))
     assert sz.full_requests == [9100000007, 9100000005]
-    cb = e2e.FakeCallback(f"mv:{e2e.ACC}:0:9")  # такого номера на странице нет
-    run(botmod.on_callback(cb, storage, od, sz))
+    for junk in ("9", "9999999999"):  # нет такого номера на странице / чужой матч
+        run(botmod.on_callback(e2e.FakeCallback(f"mv:{e2e.ACC}:0:{junk}"), storage, od, sz))
     assert sz.full_requests == [9100000007, 9100000005]
+
+
+def test_new_game_does_not_shift_the_pressed_match(e2e, tmp_path):
+    """Список показан, затем сыграна новая игра: кнопка «3» всё равно открывает тот матч, что был третьим."""
+    import mmrbot.bot as botmod
+    storage, od, sz = _env(e2e, tmp_path)
+    cb = e2e.FakeCallback(f"pp:matches:{e2e.ACC}")
+    run(botmod.on_callback(cb, storage, od, sz))
+    third = [b.callback_data for b in _flat(cb.message.photos[0][1]["reply_markup"])][2]
+    player = storage.get_player(100, "shinoame")
+    storage.add_matches(player.id, [{"match_id": 9100000099, "start_time": e2e.NOW, "player_slot": 0,
+                                     "radiant_win": True, "lobby_type": 7, "kills": 1, "deaths": 1, "assists": 1,
+                                     "hero_id": 1, "duration": 1800}])
+    run(botmod.on_callback(e2e.FakeCallback(third), storage, od, sz))
+    assert sz.full_requests == [9100000005]
 
 
 def test_old_match_card_buttons_still_work(e2e, tmp_path):
@@ -203,3 +221,19 @@ def test_match_list_image_renders_rows_and_empty_page(drawn):
     numbers = [texts[i - 1] for i, t in enumerate(texts) if t == "Shadow Fiend"]  # номер рисуется перед героем
     assert numbers == [str(n) for n in range(1, 11)]
     assert "12.10 21:50  ·  40 мин  ·  295 крипов" in texts
+
+
+def test_open_match_has_neighbour_buttons_instead_of_pages():
+    buttons = _flat(match_list_buttons(ACC, 10, IDS, total=25, current=IDS[2]))
+    data = {b.text: b.callback_data for b in buttons}
+    assert data["◀️ Новее"] == f"mv:{ACC}:10:{IDS[1]}" and data["Старше ▶️"] == f"mv:{ACC}:10:{IDS[3]}"
+    edge = {b.text for b in _flat(match_list_buttons(ACC, 0, IDS, total=25, current=IDS[0]))}
+    assert "◀️ Новее" not in edge and "Старше ▶️" in edge
+
+
+def test_recent_games_buttons_under_player_and_lookup_cards():
+    from mmrbot.keyboards import lookup_buttons
+    row = player_actions(ACC, [91, None, 93]).inline_keyboard[0]
+    assert [(b.text, b.callback_data) for b in row] == [("1", f"mx:91:{ACC}"), ("3", f"mx:93:{ACC}")]
+    assert player_actions(ACC).inline_keyboard[0][0].text == "🦸 Герои"  # без матчей — как раньше
+    assert lookup_buttons(ACC, [91]).inline_keyboard[0][0].callback_data == f"mx:91:{ACC}"

@@ -56,7 +56,7 @@ async def build_results(storage: Storage, user_id: int, query: str, upload: Opti
     results = []
     for chat_id, player in visible_players(storage, user_id, query):
         board = await service.player_board(
-            storage, None, chat_id, player.display_name, image=upload is not None, refresh=False
+            storage, None, chat_id, player.display_name, image=upload is not None, refresh=False, numbered=False
         )
         if board is None:
             continue

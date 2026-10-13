@@ -175,6 +175,13 @@ def _position_tile(s) -> dict:
     return {"label": "Средняя игра", "value": f"{s.avg_duration_min:.0f} мин" if s.avg_duration_min else "—", "sub": None}
 
 
+def step_hint(s) -> str:
+    """« или шаг ±30 (/setstep 30)» — если по истории игрока медали лучше соответствовал бы другой шаг."""
+    from mmrbot.ranks import suggest_step
+    fit = suggest_step(s.anchor_mmr, s.mmr_corrections, s.mmr_delta, s.mmr_step, s.rank_tier)
+    return f" или шаг ±{fit} (/setstep {fit})" if fit else ""
+
+
 def _partial(known: Optional[int], games: int) -> Optional[str]:
     """«по 40 из 56» — показатель известен не по всем играм; иначе подписи нет."""
     return f"по {known} из {games}" if known is not None and 0 < known < games else None
@@ -198,7 +205,8 @@ def _facts(s) -> list[tuple]:
 def recent_items(games: list, tz: str = "UTC") -> list[dict]:
     """Последние игры для ленты на карточке: герой, исход, K/D/A, ±MMR, длительность и дата."""
     from mmrbot.heroes import hero_name
-    return [{"hero_id": g.get("hero_id"), "name": hero_name(g.get("hero_id")), "won": bool(g.get("won")),
+    return [{"match_id": g.get("match_id"), "hero_id": g.get("hero_id"), "name": hero_name(g.get("hero_id")),
+             "won": bool(g.get("won")),
              "kills": g.get("kills") or 0, "deaths": g.get("deaths") or 0, "assists": g.get("assists") or 0,
              "delta": g.get("delta"), "double_down": bool(g.get("double_down")),
              "minutes": round(g["duration"] / 60) if g.get("duration") else None,
@@ -227,7 +235,8 @@ def player_card(s, standing: Optional[dict] = None, series: Optional[list] = Non
         "warnings": [], "note": note,
     }
     if s.mmr_drift:
-        card["warnings"].append(f"Оценка MMR расходится с медалью {s.rank} — обновите стартовый: /setmmr")
+        card["warnings"].append(f"Оценка MMR расходится с медалью {s.rank} — обновите стартовый: /setmmr"
+                                + step_hint(s))
     if s.history_closed:
         card["warnings"].append("История матчей закрыта у OpenDota — игры могли не загрузиться, цифры неполные.")
     if not games:
@@ -393,6 +402,26 @@ def weekly_tiles(report: dict) -> list[dict]:
         tiles.append({"label": "Вместе", "value": plural_games(shared["games"]),
                       "sub": f"{shared['wins']}–{shared['losses']}", "color": None})
     return tiles[:4]
+
+
+def weekly_spotlight(report: dict, info: Optional[dict] = None) -> Optional[dict]:
+    """«Игрок недели» для отдельной плашки: ник, аватар, ранг, ±MMR, результат, лучшая игра и любимый герой."""
+    mvp = report.get("mvp")
+    if not mvp:
+        return None
+    extra = (info or {}).get(mvp["name"], {})
+    spot = {"title": "Игрок недели", "name": mvp["name"], "avatar": extra.get("avatar"),
+            "rank_tier": extra.get("rank_tier"), "big": signed(mvp["delta"]), "big_note": "MMR за неделю",
+            "line": f"{mvp['wins']}–{mvp['losses']} · {plural_games(mvp['games'])} · KDA {mvp['kda']:.2f}"}
+    game = mvp.get("best_game")
+    if game:
+        spot["game"] = {"hero_id": game.get("hero_id"), "kills": game["kills"], "deaths": game["deaths"],
+                        "assists": game["assists"]}
+    hero = mvp.get("hero")
+    if hero:
+        spot["hero"] = {"hero_id": hero["hero_id"], "name": hero_name(hero["hero_id"]),
+                        "line": f"{plural_games(hero['games'])} · {round(hero['winrate'] * 100)}%"}
+    return spot
 
 
 def weekly_records(report: dict) -> list[dict]:
@@ -647,6 +676,16 @@ def contest_caption(period: str, table: list[dict], noms: list[dict]) -> str:
 
 # --- карточка любого игрока по ID (поиск) ----------------------------------------------------------
 
+def medal_mmr_text(rank_tier) -> str:
+    """« · ≈4620–4774» — примерный MMR по медали (у игрока не из пати своей оценки нет); без медали — пусто."""
+    from mmrbot.ranks import rank_mmr_range
+    span = rank_mmr_range(rank_tier)
+    if span is None:
+        return ""
+    low, high = span
+    return f" · ≈{low}+" if high is None else f" · ≈{low}–{high}"
+
+
 LOOKUP_GAMES = 100  # сколько последних ранкед-игр берём у OpenDota для карточки игрока не из пати
 
 
@@ -691,7 +730,8 @@ def lookup_card(account_id: int, profile: dict, matches: list[dict], tz: str = "
     subtitle = f"ID {account_id}" + (f"  ·  в пати: {clean(tracked_name)}" if tracked_name else "  ·  не в пати")
     card: dict = {
         "name": name, "subtitle": subtitle, "avatar": profile.get("avatarfull"), "rank_tier": profile.get("rank_tier"),
-        "rank_text": rank_label(profile.get("rank_tier"), profile.get("leaderboard_rank")),
+        "rank_text": rank_label(profile.get("rank_tier"), profile.get("leaderboard_rank"))
+                     + medal_mmr_text(profile.get("rank_tier")),
         "mmr_text": f"{agg.winrate * 100:.0f}%" if games else "—",
         "headline_note": f"винрейт за {plural_games(games)}" if games else "ранкед-игр не видно",
         "mmr_delta": None, "perf": None, "warnings": [], "note": "OpenDota · последние ранкед-игры, без оценки MMR",

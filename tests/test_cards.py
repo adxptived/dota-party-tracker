@@ -102,7 +102,8 @@ def test_canvas_png_has_telegram_width_and_is_cropped_to_content():
 
 
 def test_clean_drops_emoji_and_control_chars_and_fit_truncates():
-    assert cards.clean("Вася 😀\x00") == "Вася"
+    assert cards.clean("Вася 😀\x00") == "Вася 😀"  # эмодзи рисует Noto Emoji
+    assert cards.clean("a\U000E0001b\u200d") == "ab"  # прочее вне BMP и склейки убираем
     assert cards.clean(None) == ""
     fnt = cards.font(24)
     short = cards.fit("x" * 200, fnt, 100)
@@ -310,3 +311,36 @@ def test_draw_text_shrinks_before_ellipsis(monkeypatch):
     assert seen[-1][0] == text and seen[-1][1] < 30  # целиком, но мельче
     cards.draw_text(draw, (0, 0), text, 30, bold=True, max_w=width * 0.9, shrink=0)
     assert seen[-1][0].endswith("…") and seen[-1][1] == 30  # shrink=0 — сразу многоточие
+
+
+def test_hero_placeholder_is_tinted_by_primary_attribute():
+    from mmrbot import heroes
+    assert heroes.hero_attr(2) == "s" and heroes.hero_attr(1) == "a" and heroes.hero_attr(5) == "i"
+    assert heroes.hero_attr(None) == "" and heroes.hero_attr(99999) == ""
+    axe, am, unknown = (cards.hero_icon(None, hid).convert("RGB") for hid in (2, 1, 99999))
+    r, g, _ = axe.getpixel((10, 5))
+    assert r > g  # сила — красноватая
+    r, g, _ = am.getpixel((10, 5))
+    assert g > r  # ловкость — зеленоватая
+    assert unknown.getpixel((10, 5)) == cards._rgb(cards.GRID)  # атрибут неизвестен — нейтральная плашка
+
+
+def test_update_heroes_keeps_primary_attribute():
+    from mmrbot import heroes
+    saved = dict(heroes.HERO_ATTRS)
+    try:
+        heroes.update_heroes([{"id": 9998, "localized_name": "Новый", "primary_attr": "int"}])
+        assert heroes.hero_attr(9998) == "i"
+    finally:
+        heroes.HERO_ATTRS.clear()
+        heroes.HERO_ATTRS.update(saved)
+        heroes.HERO_NAMES.pop(9998, None)
+
+
+def test_emoji_in_nick_is_drawn_and_avatar_letter_skips_it():
+    from PIL import ImageDraw
+    img = cards.Canvas(100, 400).img
+    cards.draw_text(ImageDraw.Draw(img), (10, 50), "🔥 Вася", 30, anchor="lm")  # не падает, эмодзи — шрифтом Noto
+    runs = cards._runs("🔥 Вася", 30, False)
+    assert any("🔥" in part for _, part in runs) and len({id(fnt) for fnt, _ in runs}) == 2
+    assert cards.avatar(None, "🔥 Вася", 64) is not None

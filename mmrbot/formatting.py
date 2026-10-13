@@ -343,33 +343,6 @@ def render_heroes(summaries: list[PlayerSummary]) -> str:
 
 # --- карточка игрока ----------------------------------------------------
 
-SKILL_GROUPS = [
-    ("Фарм", ["gold_per_min", "last_hits_per_min", "xp_per_min"]),
-    ("Урон", ["hero_damage_per_min", "tower_damage"]),
-    ("Участие в боях", ["kills_per_min", "assists_per_min"]),
-    ("Поддержка", ["hero_healing_per_min"]),
-]
-
-
-def _bar(pct: float, width: int = 10) -> str:
-    filled = max(0, min(width, round(pct * width)))
-    return "▰" * filled + "▱" * (width - filled)
-
-
-def _skill_block(skill: dict) -> Optional[str]:
-    """Объективный профиль скилла: перцентиль по категориям (50% = средний игрок)."""
-    if not skill:
-        return None
-    lines = ["🧠 <b>Профиль навыков</b> <i>(мировой перцентиль; 50% — средний уровень)</i>"]
-    for label, metrics in SKILL_GROUPS:
-        pcts = [skill[m] for m in metrics if m in skill]
-        if not pcts:
-            continue
-        avg = sum(pcts) / len(pcts)
-        lines.append(f"   {label}  {_bar(avg)} {avg * 100:.0f}%")
-    return "\n".join(lines) if len(lines) > 1 else None
-
-
 def _k(value) -> str:
     """Компактно: 13656 → 13.7k, 428 → 428."""
     if value is None:
@@ -479,7 +452,9 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str
     if mmr_log_line(s, tz):
         lines.append(mmr_log_line(s, tz))
     if s.mmr_drift:
-        lines.append(f"<i>⚠️ Оценка MMR расходится с медалью {_esc(s.rank)} — обновите стартовый: /setmmr</i>")
+        from mmrbot.card_data import step_hint
+        lines.append(f"<i>⚠️ Оценка MMR расходится с медалью {_esc(s.rank)} — обновите стартовый: /setmmr"
+                     f"{step_hint(s)}</i>")
     lines.append(f"{s.wins_total}–{s.losses_total} ({s.winrate * 100:.0f}%)   последние игры: {_form_icons(s.recent_form)}")
 
     # Бой + экономика (всё за окно).
@@ -501,10 +476,15 @@ def render_player_card(s: PlayerSummary, standing: Optional[str] = None, tz: str
         lines.append(f"🧭 Основная позиция: {POSITION_NAMES.get(pos, f'Pos {pos}')} ({pos_games} из {plural_games(known)})")
     if s.role_style:
         lines.append(f"🎭 Игровая роль: {s.role_style}")
-    skill_block = _skill_block(s.skill)
-    if skill_block:
+    if s.recent_games:  # последние игры вместо «профиля навыков» — то же, что лента на картинке
         lines.append("")
-        lines.append(skill_block)
+        lines.append("🕘 <b>Последние игры</b> <i>(новые сверху)</i>")
+        for g in s.recent_games:
+            delta = f" · {format_delta(g['delta'])}" + (" ×2" if g.get("double_down") else "") \
+                if s.anchor_mmr is not None and g.get("delta") is not None else ""
+            when = f" · {fmt_local(g['start_time'], tz, '%d.%m')}" if g.get("start_time") else ""
+            lines.append(f"   {'🟢' if g['won'] else '🔴'} {_esc(hero_name(g.get('hero_id')))} "
+                         f"{g['kills']}/{g['deaths']}/{g['assists']}{delta}{when}")
 
     lines.append("")
 

@@ -209,3 +209,24 @@ def test_match_list_rows_number_buttons_delta_and_extras():
     text = cd.match_list_text("<Вася>", rows, 0, 2)
     assert "&lt;Вася&gt;" in text and "1. 🏆 Shadow Fiend 10/5/12 · +50 ×2" in text and "2. 💀" in text
     assert "пока нет" in cd.match_list_text("Вася", [], 0, 0)
+
+
+def test_weekly_spotlight_from_report():
+    report = {"mvp": {"name": "Вася", "delta": 175, "wins": 11, "losses": 4, "games": 15, "kda": 4.2,
+                      "best_game": {"hero_id": 12, "kills": 20, "deaths": 2, "assists": 10, "kda": 15.0},
+                      "hero": {"hero_id": 1, "games": 6, "wins": 5, "winrate": 5 / 6}}}
+    spot = cd.weekly_spotlight(report, {"Вася": {"avatar": "u", "rank_tier": 55}})
+    assert spot["big"] == "+175" and spot["avatar"] == "u" and spot["line"] == "11–4 · 15 игр · KDA 4.20"
+    assert spot["game"]["kills"] == 20 and spot["hero"]["line"] == "6 игр · 83%"
+    assert cd.weekly_spotlight({"mvp": None}) is None
+
+
+def test_player_of_period_needs_games_and_growth():
+    from mmrbot.tracker import player_of_period
+    m = {"start_time": 1, "player_slot": 0, "radiant_win": True, "hero_id": 1, "kills": 9, "deaths": 1, "assists": 9}
+    rows = [{"name": "А", "games": 3, "wins": 3, "losses": 0, "delta": 75, "kda": 3.0},
+            {"name": "Б", "games": 2, "wins": 2, "losses": 0, "delta": 150, "kda": 9.0},  # мало игр
+            {"name": "В", "games": 5, "wins": 2, "losses": 3, "delta": -25, "kda": 1.0}]
+    mvp = player_of_period(rows, [("А", [m] * 3), ("Б", [m] * 2)])
+    assert mvp["name"] == "А" and mvp["best_game"]["kills"] == 9 and mvp["hero"]["hero_id"] == 1
+    assert player_of_period([dict(rows[2])], []) is None

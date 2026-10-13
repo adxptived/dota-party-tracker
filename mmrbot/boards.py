@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ class ImageBoard:
     text: str
     png: Optional[bytes] = None
     caption: Optional[str] = None
+    match_ids: list = field(default_factory=list)  # пронумерованные на картинке матчи — их открывают кнопки-цифры
 
 
 @dataclass
@@ -50,10 +51,32 @@ class MatchupsBoard(ImageBoard):
     account_id: int = 0
 
 
-def build_png(label: str, render: Callable[[], bytes]) -> Optional[bytes]:
-    """Нарисовать картинку; любая ошибка рендера → None (отчёт уйдёт текстом), а не падение команды."""
+HEAVY_PNG = 150 * 1024  # PNG тяжелее — отправляем JPEG: грузится быстрее, а Telegram всё равно пережимает фото
+
+
+def lighten(data: bytes) -> bytes:
+    """Тяжёлый PNG → JPEG того же вида (качество как у картинки матча); лёгкий или не PNG — как есть."""
+    if len(data) <= HEAVY_PNG or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return data
     try:
-        return render()
+        import io
+
+        from PIL import Image
+
+        from mmrbot.cards import to_jpeg
+        return to_jpeg(Image.open(io.BytesIO(data)).convert("RGB"))
+    except Exception:
+        log.warning("Не удалось облегчить картинку — отправляем PNG", exc_info=True)
+        return data
+
+
+def build_png(label: str, render: Callable[[], bytes]) -> Optional[bytes]:
+    """Нарисовать картинку; любая ошибка рендера → None (отчёт уйдёт текстом), а не падение команды.
+
+    Тяжёлый PNG (больше HEAVY_PNG) уходит JPEG-ом — см. lighten.
+    """
+    try:
+        return lighten(render())
     except Exception:
         log.exception("Не удалось нарисовать %s — отвечаем текстом", label)
         return None
