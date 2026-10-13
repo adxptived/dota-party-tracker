@@ -363,3 +363,24 @@ def test_daily_best_build_gets_times_from_stratz_and_is_kept_in_db(tmp_path):
     again = {"best_game": {"match": {"match_id": 5, "hero_id": 1, "account_id": 42}}}  # API недоступны — берём из БД
     asyncio.run(service._attach_best_build(None, again, None, store))
     assert again["best_game"]["build"]["item_times"] == [300, 600]
+
+
+def test_daily_best_game_carries_hero_level_and_dota_plus_xp(store):
+    _seed(store)
+    report = build_daily_report(store, 100, NOW)
+    assert cd.daily_card(report, {})["best_game"]["plus_xp"] is None
+    report["best_game"]["match"].update(level=25, plus_xp=31050)
+    best = cd.daily_card(report, {})["best_game"]
+    assert best["level"] == 25 and best["plus_xp"] == 31050
+
+
+def test_dota_plus_tier_and_level_are_drawn_on_best_game(store):
+    from mmrbot.daily_image import render_daily_image
+    _seed(store)
+    report = build_daily_report(store, 100, NOW)
+    plain = _png(render_daily_image(cd.daily_card(report, {})))
+    report["best_game"]["match"]["level"] = 25
+    leveled = _png(render_daily_image(cd.daily_card(report, {})))
+    report["best_game"]["match"]["plus_xp"] = 72050
+    plus = _png(render_daily_image(cd.daily_card(report, {})))
+    assert plain.tobytes() != leveled.tobytes() and leveled.tobytes() != plus.tobytes()

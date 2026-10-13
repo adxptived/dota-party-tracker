@@ -59,3 +59,19 @@ def test_records_caption_handles_empty_and_filled():
     data = compute_records([("Вася", [{"match_id": 1, "start_time": 1, "hero_id": 5, "kills": 12, "gpm": 600, "player_slot": 0, "radiant_win": True}])])
     caption = cd.records_caption(data, "month")
     assert "за месяц" in caption and "Вася" in caption and "12 убийств" in caption
+
+
+def test_record_tiles_carry_hero_level_and_dota_plus_xp():
+    match = {"match_id": 1, "start_time": 1_760_000_000, "hero_id": 5, "gpm": 812, "kills": 3, "deaths": 1, "assists": 4,
+             "duration": 2400, "player_slot": 0, "radiant_win": True, "level": 25, "plus_xp": 31050}
+    tiles = cd.record_tiles(compute_records([("Вася", [match])]), "UTC")
+    assert tiles and all(t["level"] == 25 and t["plus_xp"] == 31050 for t in tiles)
+
+
+def test_dota_plus_tier_is_drawn_on_record_tile():
+    plain = _open(render_records_image("за неделю", [_tile()])).convert("RGB")
+    plus = _open(render_records_image("за неделю", [_tile(plus_xp=72050)])).convert("RGB")
+    zero = _open(render_records_image("за неделю", [_tile(plus_xp=0)])).convert("RGB")
+    leveled = _open(render_records_image("за неделю", [_tile(level=25)])).convert("RGB")
+    assert plain.tobytes() != plus.tobytes() and plain.tobytes() != leveled.tobytes()
+    assert plain.tobytes() == zero.tobytes()  # героя не качали — значка нет

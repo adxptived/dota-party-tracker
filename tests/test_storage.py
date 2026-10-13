@@ -411,3 +411,15 @@ def test_update_match_stratz_saves_plus_xp_and_keeps_known_value(store):
     assert store.get_matches(p.id)[0]["plus_xp"] == 31050
     store.update_match_stratz(p.id, 1, {"position": 1, "plus_xp": None})  # пустой ответ не затирает известное
     assert store.get_matches(p.id)[0]["plus_xp"] == 31050
+
+
+def test_get_plus_xp_returns_known_values_for_the_match_players(store):
+    a = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    b = store.add_player(100, 43, "Петя", 5000, 1000, 1000)
+    c = store.add_player(100, 44, "Коля", 5000, 1000, 1000)
+    for player in (a, b, c):
+        store.add_matches(player.id, [match(1, 1100)])
+    store.update_match_stratz(a.id, 1, {"plus_xp": 31050})
+    store.update_match_stratz(b.id, 1, {"plus_xp": None})  # у Stratz опыта не было — в ответе нет
+    assert store.get_plus_xp(1, [42, 43, 44]) == {42: 31050}
+    assert store.get_plus_xp(1, []) == {} and store.get_plus_xp(2, [42]) == {}

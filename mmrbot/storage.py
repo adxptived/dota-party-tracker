@@ -776,6 +776,19 @@ class Storage:
             ).fetchall()
         return {r["match_id"]: (r["player_slot"] < 128, r["hero_id"]) for r in rows}
 
+    def get_plus_xp(self, match_id: int, account_ids: list[int]) -> dict[int, int]:
+        """{account_id: опыт героя в Dota Plus} по матчу — только у тех аккаунтов, где он известен."""
+        if not account_ids:
+            return {}
+        marks = ",".join("?" * len(account_ids))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT account_id, plus_xp FROM matches WHERE match_id = ? AND plus_xp IS NOT NULL "
+                f"AND account_id IN ({marks})",
+                [match_id, *account_ids],
+            ).fetchall()
+        return {r["account_id"]: r["plus_xp"] for r in rows}
+
     def get_match_slot(self, player_id: int, match_id: int) -> Optional[int]:
         with self._conn() as conn:
             row = conn.execute(

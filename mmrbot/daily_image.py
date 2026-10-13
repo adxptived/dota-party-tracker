@@ -91,6 +91,7 @@ def _draw_best_game(img, draw, y: int, best: dict, icons: dict, item_icons: dict
 
     hero_id = best.get("hero_id")
     cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id, 160, 90, 10), PAD + 28, y + 62)
+    cards.hero_badges(img, draw, PAD + 28, y + 62, 160, 90, best.get("level"), best.get("plus_xp"))
     tx = PAD + 28 + 160 + 24
     draw_text(draw, (tx, y + 80), clean(best.get("player")), 32, FG, bold=True, anchor="lm", max_w=330)
     draw_text(draw, (tx, y + 112), clean(hero_name(hero_id)), 22, MUTED, anchor="lm", max_w=330)

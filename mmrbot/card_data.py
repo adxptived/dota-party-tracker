@@ -350,6 +350,7 @@ def hero_caption(hero: str, period: str, entries: list) -> str:
 def record_tiles(data: dict, tz: str = "UTC") -> list[dict]:
     """Рекорды периода (`records.compute_records`) → плитки: показатель, значение, игрок, герой, дата матча."""
     return [{"label": r["title"], "value": r["text"], "player": r["player"], "hero_id": r["match"].get("hero_id"),
+             "level": r["match"].get("level"), "plus_xp": r["match"].get("plus_xp"),
              "date": fmt_local(r["match"]["start_time"], tz, "%d.%m.%y"), "anti": bool(r.get("anti"))}
             for r in data.get("records") or []]
 
@@ -513,6 +514,7 @@ def _daily_best_game(report: dict) -> Optional[dict]:
     match = best["match"]
     return {
         "player": clean(best["player"]), "hero_id": match.get("hero_id"), "match_id": match.get("match_id"),
+        "level": match.get("level"), "plus_xp": match.get("plus_xp"),
         "won": bool(best.get("won")), "start_time": match.get("start_time"),
         "kills": best["kills"], "deaths": best["deaths"], "assists": best["assists"], "kda": f"{best['kda']:.1f}",
         "stats": [{"label": label, "value": value} for label, value in best_game_stats(match)],

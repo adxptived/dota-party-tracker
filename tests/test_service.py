@@ -114,3 +114,18 @@ def test_match_by_id_has_no_outage_note(tmp_path):
     store = _store_with_player(tmp_path)
     board = asyncio.run(service.match_board(store, _OD(down=True), 100, "Вася", 1, image=False))
     assert "недоступен" not in board.text
+
+
+def test_fill_plus_xp_takes_missing_tier_of_own_players_from_the_database(tmp_path):
+    from mmrbot.service import fill_plus_xp
+    from mmrbot.storage import Storage
+    store = Storage(str(tmp_path / "t.db"))
+    me = store.add_player(100, 42, "Вася", 5000, 1000, 1000)
+    store.add_matches(me.id, [{"match_id": 7, "start_time": 1100, "player_slot": 0, "radiant_win": True,
+                               "lobby_type": 7, "kills": 1, "deaths": 2, "assists": 3, "hero_id": 1}])
+    store.update_match_stratz(me.id, 7, {"plus_xp": 31050})
+    match = {"match_id": 7, "players": [{"account_id": 42, "hero_id": 1}, {"account_id": None, "hero_id": 2},
+                                        {"account_id": 99, "hero_id": 3, "plus_xp": 600}]}
+    fill_plus_xp(store, match)
+    assert [p.get("plus_xp") for p in match["players"]] == [31050, None, 600]  # чужое известное не затираем
+    fill_plus_xp(store, {"match_id": 7, "players": []})  # пустой матч — без ошибок

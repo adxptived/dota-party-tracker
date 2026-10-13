@@ -863,6 +863,18 @@ def _cached_as_match(view: dict) -> dict:
             "radiant_win": bool(row["radiant_win"]), "players": [me]}
 
 
+def fill_plus_xp(storage, match: dict) -> None:
+    """Опыт героя в Dota Plus игрокам матча, у которых его нет (матч из OpenDota или кэш без него), — из базы бота.
+
+    Известное в матче не затираем; у чужих игроков в базе ничего нет — они остаются без тира."""
+    players = match.get("players") or []
+    missing = [p["account_id"] for p in players if p.get("account_id") and p.get("plus_xp") is None]
+    known = storage.get_plus_xp(match.get("match_id"), missing) if missing and storage is not None else {}
+    for player in players:
+        if player.get("plus_xp") is None and player.get("account_id") in known:
+            player["plus_xp"] = known[player["account_id"]]
+
+
 def _warm_match(od, match_id: int) -> None:
     """В потоке: прогреть кэш матча OpenDota (билды игроков для картинки) — пока идёт запрос к Stratz."""
     if provider_down(od):
@@ -950,6 +962,7 @@ async def match_board(
         cached = await _build(build_match_view, storage, chat_id, name, match_id)
     tz = storage.get_or_create_chat(chat_id).tz
     if full is not None:
+        fill_plus_xp(storage, full)  # матч из OpenDota (или кэш без опыта героя): тир своих игроков — из базы
         if focus is None:
             focus = next((p["account_id"] for p in full["players"] if p["account_id"] in tracked), None)
         board = MatchBoard(render_full_match(full, tracked, focus, tz), match_id=match_id, focus=focus)

@@ -55,6 +55,7 @@ def _draw_tile(img, draw, x0: float, y0: float, rec: dict, icons: dict) -> None:
     mid = y0 + TILE_H / 2
     hero_id = rec.get("hero_id")
     cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id), x0 + 20, mid - ICON_H / 2)
+    cards.hero_badges(img, draw, x0 + 20, mid - ICON_H / 2, ICON_W, ICON_H, rec.get("level"), rec.get("plus_xp"))
     tx = x0 + 20 + ICON_W + 20
     room = TILE_W - (tx - x0) - 18
     draw_text(draw, (tx, y0 + 28), clean(rec.get("label")), 19, MUTED, anchor="lm", max_w=room)
