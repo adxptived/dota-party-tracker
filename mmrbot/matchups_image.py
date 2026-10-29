@@ -10,7 +10,7 @@ from typing import Optional
 from mmrbot import cards
 from mmrbot.cards import ACCENT, FG, LOSS, MUTED, PAD, PANEL, WIDTH, WIN, clean, draw_text
 
-GAP = 16
+GAP = cards.GAP
 COL_W = (WIDTH - 2 * PAD - GAP) // 2
 ROW_H = 62
 HEAD_H = 58
@@ -26,7 +26,7 @@ HINTS = {"hard": "против них", "easy": "против них", "bad_alli
 
 
 def _block(img, draw, x: int, y: int, title: str, hint: str, color: str, rows: list, icons: dict, height: int) -> None:
-    cards.panel(img, (x, y, x + COL_W, y + height), PANEL, radius=18)
+    cards.panel(img, (x, y, x + COL_W, y + height), PANEL, radius=cards.R_CARD)
     cards.stripe(img, x, y + 14, y + HEAD_H - 14, color)
     draw_text(draw, (x + 24, y + HEAD_H / 2), title, 18, FG, bold=True, anchor="lm")
     draw_text(draw, (x + COL_W - 22, y + HEAD_H / 2), hint, 18, MUTED, anchor="rm")
@@ -40,7 +40,7 @@ def _block(img, draw, x: int, y: int, title: str, hint: str, color: str, rows: l
         cards.paste(img, cards.hero_icon(icons.get(row["hero_id"]), row["hero_id"], ICON_W, ICON_H, 8), x + 22, mid - ICON_H / 2)
         right = x + COL_W - 22
         pct = f"{round(row['winrate'] * 100)}%"
-        draw_text(draw, (right, mid), pct, 26, WIN if row["winrate"] >= 0.5 else LOSS, bold=True, anchor="rm")
+        draw_text(draw, (right, mid), pct, 26, cards.winrate_color(row["winrate"]), bold=True, anchor="rm")
         score_x = right - 86
         draw_text(draw, (score_x, mid), f"{row['wins']}–{row['losses']}", 22, MUTED, anchor="rm")
         name_x = x + 22 + ICON_W + 16

@@ -15,10 +15,10 @@ from typing import Optional
 
 from mmrbot import cards
 from mmrbot.cards import (
-    ACCENT, BG, FG, GOLD, LOSS, MUTED, PAD, PANEL, PANEL_HI, PLACE_COLORS, WIDTH, WIN, clean, draw_text,
+    FG, GOLD, LOSS, MUTED, PAD, PANEL, PANEL_HI, WIDTH, WIN, clean, draw_text,
 )
 
-ROW_H, ROW_GAP = 96, 8
+ROW_H, ROW_GAP = 96, cards.ROW_GAP
 HEAD_ROW_H = 36
 AVATAR = 64
 NAME_X = PAD + 78 + AVATAR + 16
@@ -31,16 +31,7 @@ HERO_W, HERO_H = 80, 45
 HERO_X = WIDTH - PAD - 24 - HERO_W
 FORM_MAX = 10
 STREAK_MIN = 3  # серия короче — не событие, метку у ника не ставим
-TILE_GAP = 16
-
-
-def _place(img, draw, cx: float, cy: float, place: int) -> None:
-    """Место: у призёров — цветной жетон (золото/серебро/бронза), у остальных — просто номер."""
-    color = PLACE_COLORS.get(place)
-    if color:
-        cards.dot(img, cx, cy, 21, color)
-        cards.dot(img, cx, cy, 17, cards.mix(color, "#ffffff", 0.22))
-    draw_text(draw, (cx, cy), str(place), 24, BG if color else MUTED, bold=True, anchor="mm")
+TILE_GAP = cards.GAP
 
 
 def render_stats_image(
@@ -89,12 +80,12 @@ def render_stats_image(
 def _draw_row(img, draw, y: int, place: int, row: dict, icons: dict, avatars: dict) -> None:
     box = (PAD, y, WIDTH - PAD, y + ROW_H)
     if place == 1:  # лидер: золотой отсвет слева и полоса
-        cards.gradient_panel(img, box, cards.mix(PANEL, GOLD, 0.2), PANEL, radius=16, outline=cards.mix(PANEL, GOLD, 0.3))
-        cards.stripe(img, PAD, y + 14, y + ROW_H - 14, GOLD)
+        cards.gradient_panel(img, box, cards.mix(PANEL, GOLD, 0.2), PANEL, radius=cards.R_CARD, outline=cards.mix(PANEL, GOLD, 0.3))
+        cards.edge_stripe(img, PAD, y, y + ROW_H, GOLD)
     else:
-        cards.panel(img, box, PANEL, radius=16)
+        cards.panel(img, box, PANEL, radius=cards.R_CARD)
     mid = y + ROW_H / 2
-    _place(img, draw, PAD + 44, mid, place)
+    cards.place_badge(img, draw, PAD + 44, mid, place)
 
     name = clean(row.get("name")) or "Игрок"
     cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, AVATAR), PAD + 78, mid - AVATAR / 2)
@@ -154,7 +145,7 @@ def _draw_records(img, draw, y: int, records: list, icons: dict) -> int:
     for i, rec in enumerate(records):
         x0 = PAD + (i % per_row) * (w + TILE_GAP)
         y0 = y + (i // per_row) * (96 + TILE_GAP)
-        cards.panel(img, (x0, y0, x0 + w, y0 + 96), PANEL, radius=16)
+        cards.panel(img, (x0, y0, x0 + w, y0 + 96), PANEL, radius=cards.R_CARD)
         hero_id = rec.get("hero_id")
         cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id, 96, 54, 8), x0 + 16, y0 + 21)
         tx = x0 + 128
@@ -178,14 +169,13 @@ def _medal(img, cx: float, cy: float, r: int = 22) -> None:
 def _draw_awards(img, draw, y: int, awards: list, title: str = "НАГРАДЫ") -> int:
     """Награды: подпись блока и плитки «за что — кому — подробность» (до 3 в ряд, как рекорды)."""
     awards = awards[:6]
-    draw_text(draw, (PAD + 6, y + 12), title, 20, ACCENT, bold=True, anchor="lm")
-    y += 34
+    y = cards.section(draw, y, title)
     per_row = min(3, len(awards)) or 1
     w = (WIDTH - 2 * PAD - TILE_GAP * (per_row - 1)) / per_row
     for i, award in enumerate(awards):
         x0 = PAD + (i % per_row) * (w + TILE_GAP)
         y0 = y + (i // per_row) * (AWARD_H + TILE_GAP)
-        cards.panel(img, (x0, y0, x0 + w, y0 + AWARD_H), PANEL, radius=16)
+        cards.panel(img, (x0, y0, x0 + w, y0 + AWARD_H), PANEL, radius=cards.R_CARD)
         _medal(img, x0 + 44, y0 + AWARD_H / 2)
         tx, room = x0 + 84, w - 84 - 18
         draw_text(draw, (tx, y0 + 24), clean(award.get("title")), 18, MUTED, anchor="lm", max_w=room)

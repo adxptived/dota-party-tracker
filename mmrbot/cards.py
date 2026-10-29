@@ -6,7 +6,7 @@ K/D/A, форма, полоска винрейта, спарклайн, плит
 картинка показывается втрое мельче), победа — зелёный, поражение — красный, свои игроки — золото.
 Рисуем на Pillow. Шрифт — Inter из assets/fonts (подмножество с кириллицей и табличными цифрами: столбцы чисел
 стоят ровно); крупные жирные надписи — Inter Display. Символы, которых в Inter нет (редкие знаки в никах),
-рисуются запасным DejaVu из matplotlib. Скруглённые фигуры и круги сглажены (маска рисуется в крупном масштабе
+рисуются запасным DejaVu из matplotlib. Скругления — по единому правилу (R_CARD, R_TILE, R_SM, corner), кругов нет; фигуры сглажены (маска рисуется в крупном масштабе
 и ужимается). Панели — с тонкой светлой кромкой, фон — с мягким свечением акцентного цвета сверху (см. Canvas).
 Скорость: ширины строк и маски подписей с разрядкой кэшируются, свечение — готовая полоса из кэша.
 Здесь нет ни сети, ни БД — иконки и аватары приходят готовыми байтами; нет данных или файл битый — заглушка.
@@ -39,6 +39,18 @@ log = logging.getLogger(__name__)
 
 WIDTH = WIDTH_PX
 PAD = 32
+
+# Скругления — одно правило на все карточки: кругов нет, всё — скруглённые прямоугольники.
+# Полоски (винрейт, заполнение, форма, акцентная черта) — исключение: это линии, у них торцы скруглены целиком.
+R_CARD = 16  # панели-карточки и баннеры
+R_TILE = 12  # плитки и строки внутри панели
+R_SM = 8  # метки, таблетки, мелкие плашки
+
+
+def corner(side: float) -> int:
+    """Радиус скругления квадратного элемента (иконка, аватар, значок, номер места) по его меньшей стороне:
+    так аватар 64 px и иконка героя рядом скруглены одинаково, а крупный аватар — пропорционально."""
+    return max(4, round(side / 7))
 
 # Цвет медали по номеру (1 Herald … 8 Immortal) — как «градиент» рангов в игре.
 MEDAL_COLORS = {1: "#9aa5b1", 2: "#c98a4b", 3: "#e0c04f", 4: "#4fbf80", 5: "#4f8df0", 6: "#9a74e6", 7: "#4fd0e0", 8: "#ff6a3d"}
@@ -318,11 +330,6 @@ def _rr_mask(w: int, h: int, r: int):
     return big.resize((w, h), Image.LANCZOS)
 
 
-@lru_cache(maxsize=64)
-def _circle_mask(d: int):
-    return _rr_mask(d, d, d // 2)
-
-
 RIM_MIN = 44  # панели не меньше этого размера получают светлую кромку (мелкие таблетки и полоски — нет)
 RIM = 0.07  # насколько кромка светлее заливки
 
@@ -355,7 +362,7 @@ def _rim(img, x0: int, y0: int, w: int, h: int, r: int, color: str) -> None:
     img.paste(color, (x1 - r, y1 - r), br)
 
 
-def panel(img, box, fill: str = PANEL, radius: int = 16, outline: Optional[str] = None) -> None:
+def panel(img, box, fill: str = PANEL, radius: int = R_CARD, outline: Optional[str] = None) -> None:
     """Скруглённая панель со сглаженными углами; outline — рамка в 1 px.
 
     Без outline панель крупнее RIM_MIN получает едва заметную светлую кромку — она отделяет панель от фона
@@ -381,7 +388,7 @@ def _gradient_strip(w: int, left: str, right: str):
     return strip
 
 
-def gradient_panel(img, box, left: str, right: str, radius: int = 16, outline: Optional[str] = None) -> None:
+def gradient_panel(img, box, left: str, right: str, radius: int = R_CARD, outline: Optional[str] = None) -> None:
     """Скруглённая панель с горизонтальным градиентом left → right; outline — рамка в 1 px."""
     from PIL import Image
     x0, y0, x1, y1 = (round(v) for v in box)
@@ -395,8 +402,9 @@ def gradient_panel(img, box, left: str, right: str, radius: int = 16, outline: O
 
 
 def dot(img, cx: float, cy: float, r: float, fill: str) -> None:
+    """Метка-плашка (номер места, легенда, узел) — скруглённый квадрат стороной 2r с центром в (cx, cy)."""
     d = max(2, round(r * 2))
-    img.paste(fill, (round(cx - d / 2), round(cy - d / 2)), _circle_mask(d))
+    img.paste(fill, (round(cx - d / 2), round(cy - d / 2)), _rr_mask(d, d, min(corner(d), d // 2)))
 
 
 def pill(img, draw, x: float, cy: float, text: str, fg: str = BG, bg: str = GOLD, size: int = 20,
@@ -406,7 +414,7 @@ def pill(img, draw, x: float, cy: float, text: str, fg: str = BG, bg: str = GOLD
     h = size + 16
     w = round(text_width(text, size, bold, track=False) + pad * 2)
     left = x if align == "left" else x - w if align == "right" else x - w / 2
-    panel(img, (left, cy - h / 2, left + w, cy + h / 2), bg, radius=h // 2)
+    panel(img, (left, cy - h / 2, left + w, cy + h / 2), bg, radius=R_SM)
     draw_text(draw, (left + w / 2, cy), text, size, fg, bold, anchor="mm", track=False)
     return w
 
@@ -414,6 +422,14 @@ def pill(img, draw, x: float, cy: float, text: str, fg: str = BG, bg: str = GOLD
 def stripe(img, x: float, y0: float, y1: float, color: str, width: int = 6) -> None:
     """Акцентная вертикальная полоса у левого края строки."""
     panel(img, (x, y0, x + width, y1), color, radius=width // 2)
+
+
+STRIPE_INSET = R_CARD - 2  # полоска у края панели не заходит на скругление угла
+
+
+def edge_stripe(img, x: float, y0: float, y1: float, color: str) -> None:
+    """Акцентная полоса по левому краю панели (y0–y1 — верх и низ панели): с одинаковым отступом сверху и снизу."""
+    stripe(img, x, y0 + STRIPE_INSET, y1 - STRIPE_INSET, color)
 
 
 # --- иконки героев и аватары ---------------------------------------------------------------------
@@ -439,18 +455,28 @@ def _hero_icon_cached(data: Optional[bytes], hero_id, w: int, h: int, radius: in
     return icon
 
 
-def hero_icon(data: Optional[bytes], hero_id, w: int = ICON_W, h: int = ICON_H, radius: int = 8):
+def hero_icon(data: Optional[bytes], hero_id, w: int = ICON_W, h: int = ICON_H, radius: Optional[int] = None):
     """Иконка героя со скруглением; нет/битая — серая плашка с инициалами. Результат кэшируется (уже уменьшенной)."""
-    return _hero_icon_cached(data, hero_id, w, h, radius)
+    return _hero_icon_cached(data, hero_id, w, h, corner(min(w, h)) if radius is None else radius)
+
+
+def number_plate(img, draw, cx: float, cy: float, text: str, border: str, h: int = 32) -> float:
+    """Плашка с числом (уровень героя, уровень Dota Plus): тёмная заливка, кайма цвета border, жирная белая цифра.
+    Одна на все значки, чтобы цифры везде были одного шрифта. Ширина подстраивается под текст. Возвращает ширину."""
+    size = round(h * 0.53)
+    w = max(h, round(text_width(text, size, True, track=False) + h * 0.5))
+    x0, y0 = cx - w / 2, cy - h / 2
+    panel(img, (x0, y0, x0 + w, y0 + h), border, radius=corner(h))
+    panel(img, (x0 + 2, y0 + 2, x0 + w - 2, y0 + h - 2), BG, radius=max(corner(h) - 2, 2))
+    draw_text(draw, (cx, cy), text, size, FG, bold=True, anchor="mm", track=False)
+    return w
 
 
 def level_badge(img, draw, cx: float, cy: float, level, r: int = 14) -> None:
-    """Уровень героя кружком (как в игре): тёмный круг с золотой каймой и числом; не число — ничего не рисуем."""
+    """Уровень героя плашкой с золотой каймой; не число — ничего не рисуем."""
     if isinstance(level, bool) or not isinstance(level, (int, float)) or level <= 0:
         return
-    dot(img, cx, cy, r + 2, GOLD)
-    dot(img, cx, cy, r, BG)
-    draw_text(draw, (cx, cy), str(int(level)), 17 if level < 100 else 13, FG, bold=True, anchor="mm", track=False)
+    number_plate(img, draw, cx, cy, str(int(level)), GOLD, h=(r + 2) * 2)
 
 
 PLUS_COLORS = {"Bronze": "#c27c45", "Silver": "#c9d3de", "Gold": "#f5b83d", "Platinum": "#5fd6d0",
@@ -473,10 +499,9 @@ def _plus_badge_icon(tier: str, size: int):
         return None
 
 
-def plus_badge(img, draw, x: float, y: float, xp, size: int = PLUS_BADGE) -> None:
-    """Значок тира героя в Dota Plus с уровнем по центру — в левом верхнем углу иконки; героя не качали — ничего.
-
-    Нет картинки значка — цветная плашка с уровнем."""
+def plus_badge(img, draw, x: float, y: float, xp, size: int = PLUS_BADGE, plate_h: int = 24) -> None:
+    """Значок тира героя в Dota Plus (левый верхний угол — (x, y)) и под ним, внахлёст, плашка уровня — такая же,
+    как у уровня героя, только с каймой цвета тира: число не сливается с картинкой значка. Героя не качали — ничего."""
     level = plus_level(xp)
     tier = plus_tier(level)
     if tier is None:
@@ -484,22 +509,16 @@ def plus_badge(img, draw, x: float, y: float, xp, size: int = PLUS_BADGE) -> Non
     icon = _plus_badge_icon(tier, size)
     if icon is not None:
         paste(img, icon, x, y)
-        cx, cy, fsize = x + size / 2, y + size / 2 + 1, round(size * 0.42)
-        for dx, dy in ((-1, 1), (1, 1), (0, 2)):  # тёмная обводка: число читается на любом тире
-            draw_text(draw, (cx + dx, cy + dy), str(level), fsize, BG, bold=True, anchor="mm", track=False)
-        draw_text(draw, (cx, cy), str(level), fsize, "#ffffff", bold=True, anchor="mm", track=False)
-        return
-    w, h = (34 if level >= 10 else 28), 24
-    panel(img, (x, y, x + w, y + h), PLUS_COLORS[tier], radius=7)
-    draw_text(draw, (x + w / 2, y + h / 2), str(level), 17, BG, bold=True, anchor="mm", track=False)
+    number_plate(img, draw, x + size / 2, y + size - plate_h * 0.2, str(level), PLUS_COLORS[tier], h=plate_h)
 
 
 def hero_badges(img, draw, x: float, y: float, w: float, h: float, level, plus_xp, level_r: int = 14,
                 plus_size: int = PLUS_BADGE, overhang: int = 12) -> None:
-    """Значки на иконке героя с левым верхним углом (x, y) и размером w×h: уровень — кружок слева внизу,
+    """Значки на иконке героя с левым верхним углом (x, y) и размером w×h: уровень — плашка слева внизу,
     тир Dota Plus — справа внизу, частью вне иконки (на `overhang` пикселей). Чего не знаем, того не рисуем."""
     level_badge(img, draw, x + 6, y + h - 4, level, r=level_r)
-    plus_badge(img, draw, x + w - plus_size + overhang, y + h - plus_size + overhang // 2, plus_xp, plus_size)
+    plus_badge(img, draw, x + w - plus_size + overhang, y + h - plus_size + overhang // 2 - 6, plus_xp, plus_size,
+               plate_h=level_r * 2 - 4)
 
 
 def paste(img, sprite, x: float, y: float) -> None:
@@ -522,20 +541,21 @@ def _avatar_cached(data: Optional[bytes], label: str, size: int):
         letter = (clean(label) or "?")[0].upper()
         ImageDraw.Draw(face).text((size / 2, size / 2), letter, font=font(max(12, size * 9 // 20), True),
                                   fill=mix(base, FG, 0.55), anchor="mm")
-    face.putalpha(_circle_mask(size))
+    face.putalpha(_rr_mask(size, size, corner(size)))
     return face
 
 
 def avatar(data: Optional[bytes], label: str, size: int = 64, ring: Optional[str] = None, ring_w: int = 3):
-    """Круглый аватар; нет картинки — кружок с инициалом (цвет зависит от ника). ring — цветное кольцо вокруг."""
+    """Аватар — скруглённый квадрат (как иконки героев); нет картинки — плашка с инициалом (цвет зависит от ника).
+    ring — цветная рамка вокруг."""
     from PIL import Image
     face = _avatar_cached(data, label or "?", size)
     if not ring:
         return face
-    total = size + ring_w * 2
+    total, r = size + ring_w * 2, corner(size)
     out = Image.new("RGBA", (total, total), (0, 0, 0, 0))
-    out.paste(ring, (0, 0), _circle_mask(total))
-    out.paste(Image.new("RGBA", (size + 2, size + 2), BG), (ring_w - 1, ring_w - 1), _circle_mask(size + 2))
+    out.paste(ring, (0, 0), _rr_mask(total, total, r + ring_w))
+    out.paste(Image.new("RGBA", (size + 2, size + 2), BG), (ring_w - 1, ring_w - 1), _rr_mask(size + 2, size + 2, r + 1))
     out.paste(face, (ring_w, ring_w), face)
     return out
 
@@ -673,6 +693,12 @@ def form_dots(img, x: float, cy: float, results: Sequence[Optional[bool]], r: in
     return max(len(results) * step - gap, 0)
 
 
+def winrate_color(winrate: float) -> str:
+    """Цвет отдельно стоящего винрейта (без полоски рядом): заметно выше половины — зелёный, ниже — красный,
+    около 50% — обычный текст."""
+    return WIN if winrate >= 0.55 else LOSS if winrate < 0.45 else FG
+
+
 def winrate_bar(img, box, wins: int, losses: int, radius: Optional[int] = None) -> None:
     """Полоска винрейта: зелёная доля побед, после зазора — приглушённый красный; нет игр — серая."""
     x0, y0, x1, y1 = (round(v) for v in box)
@@ -743,7 +769,7 @@ def tile(img, draw, box, label: str, value: str, sub: Optional[str] = None, colo
          fill: str = PANEL_HI) -> None:
     """Плитка показателя: мелкая подпись сверху, крупное значение, необязательная строка под ним."""
     x0, y0, x1, y1 = box
-    panel(img, box, fill, radius=16)
+    panel(img, box, fill, radius=R_TILE)
     inner = x1 - x0 - 40
     draw_text(draw, (x0 + 20, y0 + 16), clean(label), 18, MUTED, anchor="la", max_w=inner, shrink=15)
     value_mid = (y0 + 42 + (y1 - 40 if sub else y1 - 14)) / 2  # между подписью и нижней строкой
@@ -781,7 +807,7 @@ def chip(img, draw, x: float, cy: float, text: str, color: str = ACCENT, size: i
     h = size + 20
     w = round(text_width(text, size, True, track=False) + pad * 2)
     left = x if align == "left" else x - w if align == "right" else x - w / 2
-    panel(img, (left, cy - h / 2, left + w, cy + h / 2), mix(base, color, 0.16), radius=h // 2, outline=mix(base, color, 0.45))
+    panel(img, (left, cy - h / 2, left + w, cy + h / 2), mix(base, color, 0.16), radius=R_SM, outline=mix(base, color, 0.45))
     draw_text(draw, (left + w / 2, cy), text, size, mix(color, "#ffffff", 0.25), bold=True, anchor="mm", track=False)
     return w
 
@@ -802,6 +828,27 @@ def header(img, draw, title: str, subtitle: Optional[str] = None, badge: Optiona
     if subtitle:
         draw_text(draw, (PAD, y + 56), clean(subtitle), 22, MUTED, max_w=WIDTH - 2 * PAD)
     return y + (54 + 36 if subtitle else 54) + 18
+
+
+GAP = 16  # между блоками карточки
+ROW_GAP = 8  # между строками списка
+SECTION_H = 34  # высота подписи раздела
+PLACE_BADGE = 40  # сторона значка места
+
+
+def section(draw, y: float, title: str, color: str = MUTED) -> float:
+    """Подпись раздела над блоком («НАГРАДЫ», «НОМИНАЦИИ») — одна на все карточки. Возвращает y под ней."""
+    draw_text(draw, (PAD + 6, y + 14), clean(title), 18, color, bold=True, anchor="lm")
+    return y + SECTION_H
+
+
+def place_badge(img, draw, cx: float, cy: float, place: int, size: int = PLACE_BADGE) -> None:
+    """Значок места: у призёров — заливка цветом медали и тёмная цифра, у остальных — нейтральная плашка той же
+    формы, так что колонка мест ровная при любом месте."""
+    color = PLACE_COLORS.get(place)
+    dot(img, cx, cy, size / 2, color or mix(PANEL, FG, 0.14))
+    draw_text(draw, (cx, cy), str(place), round(size * 0.55), BG if color else mix(MUTED, FG, 0.4), bold=True, anchor="mm",
+              track=False)
 
 
 def footer(draw, y: int, text: str) -> int:

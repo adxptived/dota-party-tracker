@@ -10,10 +10,10 @@ from typing import Optional
 
 from mmrbot import cards
 from mmrbot.cards import (
-    ACCENT, FG, GOLD, ICON_H, ICON_W, LOSS, MUTED, PAD, PANEL, WIDTH, WIN, clean, draw_text, signed,
+    ACCENT, FG, GOLD, ICON_H, ICON_W, MUTED, PAD, PANEL, WIDTH, clean, draw_text, signed,
 )
 
-ROW_H, ROW_GAP = 84, 6
+ROW_H, ROW_GAP = 84, cards.ROW_GAP
 HEAD_ROW_H = 34
 LIMIT = 10
 COL_WL, COL_BAR_W = 600, 200
@@ -55,11 +55,11 @@ def render_player_heroes_image(
     if rows:
         y = _heads(draw, y, "ГЕРОЙ", PAD + 60)
         for place, row in enumerate(rows[:LIMIT], start=1):
-            cards.panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), PANEL, radius=16)
+            cards.panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), PANEL, radius=cards.R_CARD)
             if place == 1:
-                cards.stripe(img, PAD, y, y + ROW_H, GOLD)
+                cards.edge_stripe(img, PAD, y, y + ROW_H, GOLD)
             mid = y + ROW_H / 2
-            draw_text(draw, (PAD + 30, mid), str(place), 24, cards.PLACE_COLORS.get(place, MUTED), bold=True, anchor="mm")
+            cards.place_badge(img, draw, PAD + 30, mid, place, 36)
             cards.paste(img, cards.hero_icon(icons.get(row["hero_id"]), row["hero_id"]), PAD + 60, mid - ICON_H / 2)
             tx = PAD + 60 + ICON_W + 20
             draw_text(draw, (tx, mid - 14), clean(row["name"]), 26, FG, bold=True, anchor="lm", max_w=COL_WL - tx - 20)
@@ -70,7 +70,7 @@ def render_player_heroes_image(
             draw_text(draw, (PAD + 10, y + 16), f"и ещё {extra_heroes} героев — полный список текстом", 20, MUTED, anchor="lm")
             y += 40
     elif not roles:
-        cards.panel(img, (PAD, y, WIDTH - PAD, y + 110), PANEL, radius=18)
+        cards.panel(img, (PAD, y, WIDTH - PAD, y + 110), PANEL, radius=cards.R_CARD)
         draw_text(draw, (PAD + 28, y + 55), "За указанный период игр нет.", 28, MUTED, anchor="lm")
         y += 126
     if hidden_note:
@@ -78,25 +78,28 @@ def render_player_heroes_image(
         y += 44
 
     if roles:
-        y += 12
-        y = _draw_roles(img, draw, y, roles)
+        y = _draw_roles(img, draw, y + cards.GAP - ROW_GAP if rows else y, roles, titled=bool(rows))
     if note:
         y = cards.footer(draw, y, note)
     return canvas.png(y)
 
 
-def _draw_roles(img, draw, y: int, roles: list) -> int:
-    h = 62 + len(roles) * 64 + 8
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + h), PANEL, radius=20)
-    draw_text(draw, (PAD + 24, y + 30), "ПОЗИЦИИ", 18, MUTED, bold=True, anchor="lm")
+def _draw_roles(img, draw, y: int, roles: list, titled: bool = True) -> int:
+    """Панель позиций. titled=False — без подписи «ПОЗИЦИИ» (карточка и так называется «Позиции · …»)."""
+    head = 62 if titled else 14
+    h = head + len(roles) * 64 + 8
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + h), PANEL, radius=cards.R_CARD)
+    if titled:
+        draw_text(draw, (PAD + 24, y + 30), "ПОЗИЦИИ", 18, MUTED, bold=True, anchor="lm")
     top = max((r["games"] for r in roles), default=1) or 1
     for i, role in enumerate(roles):
-        cy = y + 62 + i * 64 + 26
+        cy = y + head + i * 64 + 26
         draw_text(draw, (PAD + 24, cy), f"P{role['position']}", 26, GOLD, bold=True, anchor="lm")
         draw_text(draw, (PAD + 90, cy), clean(role["label"]), 22, FG, anchor="lm", max_w=230)
         cards.bar(img, (PAD + 330, cy - 9, PAD + 630, cy + 9), role["games"] / top, ACCENT)
         draw_text(draw, (PAD + 652, cy), f"{role['games']} игр", 22, MUTED, anchor="lm")
-        draw_text(draw, (COL_KDA - 20, cy), f"{round(role['winrate'] * 100)}%", 26, FG, bold=True, anchor="rm")
+        draw_text(draw, (COL_KDA - 20, cy), f"{round(role['winrate'] * 100)}%", 26, cards.winrate_color(role["winrate"]),
+                  bold=True, anchor="rm")
         draw_text(draw, (COL_KDA + 10, cy), f"KDA {role['kda']:.1f}", 22, MUTED, anchor="lm")
     return y + h + 8
 
@@ -119,7 +122,7 @@ def render_party_heroes_image(rows: list, icons: Optional[dict] = None, avatars:
     img, draw = canvas.img, canvas.draw
     y = cards.header(img, draw, "Любимые герои", "топ-3 по числу игр с начала отслеживания")
     for row in rows:
-        cards.panel(img, (PAD, y, WIDTH - PAD, y + PARTY_ROW_H), PANEL, radius=16)
+        cards.panel(img, (PAD, y, WIDTH - PAD, y + PARTY_ROW_H), PANEL, radius=cards.R_CARD)
         mid = y + PARTY_ROW_H / 2
         name = clean(row.get("name")) or "Игрок"
         cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, 64), PAD + 24, mid - 32)
@@ -135,7 +138,7 @@ def render_party_heroes_image(rows: list, icons: Optional[dict] = None, avatars:
             draw_text(draw, (tx, mid - 18), clean(hero["name"]), 20, FG, bold=True, anchor="lm", max_w=room)
             draw_text(draw, (tx, mid + 10), f"{hero['games']} игр", 19, MUTED, anchor="lm")
             wr = hero["winrate"]
-            draw_text(draw, (tx, mid + 34), f"{round(wr * 100)}%", 20, WIN if wr >= 0.55 else LOSS if wr < 0.45 else FG,
+            draw_text(draw, (tx, mid + 34), f"{round(wr * 100)}%", 20, cards.winrate_color(wr),
                       bold=True, anchor="lm")
         y += PARTY_ROW_H + ROW_GAP
     if not rows:
@@ -154,7 +157,7 @@ TIMING_H = 150
 def _draw_timings(img, draw, y: int, timings: list, item_icons: dict) -> int:
     """Панель «Ключевые предметы»: иконка, средний тайминг покупки и число игр, по которым он посчитан."""
     from mmrbot.alert_image import _item_icon, clock
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + TIMING_H), PANEL, radius=18)
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + TIMING_H), PANEL, radius=cards.R_CARD)
     draw_text(draw, (PAD + 28, y + 30), "КЛЮЧЕВЫЕ ПРЕДМЕТЫ  ·  СРЕДНИЙ ТАЙМИНГ ПОКУПКИ", 20, MUTED, bold=True, anchor="lm")
     cell = (WIDTH - 2 * PAD - 56) / 6
     for i, row in enumerate(timings[:6]):
@@ -182,17 +185,17 @@ def render_hero_image(
     cards.chip(img, draw, WIDTH - PAD, PAD + 30, period_label.upper(), ACCENT, size=22, align="right", pad=18)
     y = PAD + big_h + 28
     if not rows:
-        cards.panel(img, (PAD, y, WIDTH - PAD, y + 110), PANEL, radius=18)
+        cards.panel(img, (PAD, y, WIDTH - PAD, y + 110), PANEL, radius=cards.R_CARD)
         draw_text(draw, (PAD + 28, y + 55), "На этом герое участники пати не играли.", 26, MUTED, anchor="lm")
         y += 126
     else:
         y = _heads(draw, y, "ИГРОК", PAD + 60)
     for place, row in enumerate(rows, start=1):
-        cards.panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), PANEL, radius=16)
+        cards.panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), PANEL, radius=cards.R_CARD)
         if place == 1:
-            cards.stripe(img, PAD, y, y + ROW_H, GOLD)
+            cards.edge_stripe(img, PAD, y, y + ROW_H, GOLD)
         mid = y + ROW_H / 2
-        draw_text(draw, (PAD + 30, mid), str(place), 24, cards.PLACE_COLORS.get(place, MUTED), bold=True, anchor="mm")
+        cards.place_badge(img, draw, PAD + 30, mid, place, 36)
         name = clean(row.get("name")) or "Игрок"
         cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, 60), PAD + 60, mid - 30)
         draw_text(draw, (PAD + 60 + 60 + 18, mid - 14), name, 26, FG, bold=True, anchor="lm", max_w=COL_WL - 190)

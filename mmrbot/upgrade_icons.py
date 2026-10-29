@@ -14,7 +14,7 @@ FILES = {"shard": "shard.png", "scepter": "scepter.png"}
 
 
 @lru_cache(maxsize=16)
-def upgrade_icon(key: str, size: int, radius: int = 6):
+def upgrade_icon(key: str, size: int, radius: Optional[int] = None):
     """RGBA-иконка «shard»/«scepter» size×size со скруглением или None."""
     name = FILES.get(key)
     if not name:
@@ -23,7 +23,7 @@ def upgrade_icon(key: str, size: int, radius: int = 6):
         from PIL import Image
         from mmrbot import cards
         icon = Image.open(os.path.join(ASSETS, name)).convert("RGBA").resize((size, size), Image.LANCZOS)
-        icon.putalpha(cards._rr_mask(size, size, radius))
+        icon.putalpha(cards._rr_mask(size, size, cards.corner(size) if radius is None else radius))
         return icon
     except Exception:
         return None

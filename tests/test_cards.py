@@ -160,7 +160,26 @@ def test_hero_icon_falls_back_for_missing_and_broken_data():
     assert good.getpixel((0, 0))[3] < 255  # углы скруглены
 
 
-def test_avatar_is_circular_with_initial_fallback_and_ring():
+def test_corner_scales_with_side_and_matches_hero_icon():
+    assert cards.corner(cards.ICON_H) == cards.corner(64)  # аватар рядом с иконкой героя скруглён так же
+    assert cards.corner(128) > cards.corner(64) > cards.corner(32) >= 4
+
+
+def test_round_elements_are_rounded_squares_not_circles():
+    # у круга диаметра 64 точка (8, 8) снаружи; у скруглённого квадрата — внутри
+    plain = cards.avatar(None, "Вася", 64)
+    assert plain.getpixel((8, 8))[3] == 255
+    ringed = cards.avatar(None, "Вася", 64, ring=cards.GOLD, ring_w=3)
+    assert ringed.getpixel((6, 6))[3] == 255
+    img = Image.new("RGB", (100, 100), "#000000")
+    cards.dot(img, 50, 50, 32, "#ff0000")
+    assert img.getpixel((24, 24)) == (255, 0, 0)
+    empty, canvas = cards.Canvas(200), cards.Canvas(200)
+    cards.level_badge(canvas.img, canvas.draw, 50, 50, 16, r=14)  # значок 32×32 с углом в (34, 34)
+    assert canvas.img.getpixel((37, 37)) != empty.img.getpixel((37, 37))
+
+
+def test_avatar_is_rounded_with_initial_fallback_and_ring():
     plain = cards.avatar(None, "Вася", 64)
     assert plain.size == (64, 64) and plain.getpixel((0, 0))[3] == 0 and plain.getpixel((32, 32))[3] == 255
     assert cards.avatar(_icon_bytes(), "Вася", 64).getpixel((32, 32))[:3] == (200, 50, 50)
@@ -289,3 +308,50 @@ def test_stat_cells_draw_label_over_value_and_skip_empty(drawn):
     assert [t[0] for t in drawn] == ["GPM", "640", "IMP", "+21"]
     assert drawn[1][2] is True and drawn[3][1] == cards.WIN
     assert cards.stat_cells(canvas.draw, 40, 100, [], 110) == 40
+
+
+def test_place_badge_same_shape_for_every_place():
+    def badge(place):
+        canvas = cards.Canvas(100, width=100)
+        cards.place_badge(canvas.img, canvas.draw, 50, 50, place)
+        return canvas.img
+    gold, fourth, empty = badge(1), badge(4), cards.Canvas(100, width=100).img
+    assert gold.getpixel((50 - cards.PLACE_BADGE // 2 + 3, 50)) == tuple(int(cards.GOLD[i:i + 2], 16) for i in (1, 3, 5))
+    # у мест вне призов — такая же плашка (нейтральная), а не голая цифра
+    edge = (50 - cards.PLACE_BADGE // 2 + 3, 50)
+    assert fourth.getpixel(edge) != empty.getpixel(edge)
+
+
+def test_section_label_returns_y_below_and_draws_text():
+    canvas, empty = cards.Canvas(100, width=400), cards.Canvas(100, width=400)
+    y = cards.section(canvas.draw, 10, "НАГРАДЫ")
+    assert y == 10 + cards.SECTION_H
+    assert canvas.img.tobytes() != empty.img.tobytes()
+
+
+def test_edge_stripe_stays_inside_rounded_corner():
+    canvas, empty = cards.Canvas(200, width=300), cards.Canvas(200, width=300)
+    cards.edge_stripe(canvas.img, 20, 20, 120, cards.GOLD)
+    assert canvas.img.getpixel((22, 22)) == empty.img.getpixel((22, 22))  # у угла панели пусто
+    assert canvas.img.getpixel((22, 70)) != empty.img.getpixel((22, 70))  # посередине — полоска
+
+
+def test_winrate_color_has_neutral_band():
+    assert cards.winrate_color(0.6) == cards.WIN
+    assert cards.winrate_color(0.4) == cards.LOSS
+    assert cards.winrate_color(0.5) == cards.FG
+
+
+def test_hero_level_and_plus_level_share_one_number_plate(monkeypatch):
+    calls = []
+    real = cards.number_plate
+
+    def spy(img, draw, cx, cy, text, border, **kw):
+        calls.append((text, border))
+        return real(img, draw, cx, cy, text, border, **kw)
+
+    monkeypatch.setattr(cards, "number_plate", spy)
+    canvas = cards.Canvas(200, width=300)
+    cards.hero_badges(canvas.img, canvas.draw, 40, 40, cards.ICON_W, cards.ICON_H, 16, 19364)  # 16 уровень Gold
+    assert ("16", cards.GOLD) in calls  # уровень героя
+    assert ("16", cards.PLUS_COLORS["Gold"]) in calls  # уровень Dota Plus — та же плашка, кайма цвета тира

@@ -12,7 +12,7 @@ from typing import Optional
 from mmrbot import cards
 from mmrbot.cards import ACCENT, BG, FG, GOLD, ICON_H, ICON_W, LOSS, MUTED, PAD, PANEL, WIDTH, WIN, clean, draw_text, signed
 
-ROW_H, GAP = 84, 8
+ROW_H, GAP = 84, cards.ROW_GAP
 NUM_D = 46  # кружок с номером: он же подпись кнопки
 KDA_X = 770
 RIGHT = WIDTH - PAD - 24
@@ -26,7 +26,7 @@ def render_match_list_image(title: str, subtitle: Optional[str], rows: list, ico
     img, draw = canvas.img, canvas.draw
     y = cards.header(img, draw, title, subtitle, badge)
     if not rows:
-        cards.panel(img, (PAD, y, WIDTH - PAD, y + 100), PANEL, radius=18)
+        cards.panel(img, (PAD, y, WIDTH - PAD, y + 100), PANEL, radius=cards.R_CARD)
         draw_text(draw, (PAD + 28, y + 50), "Ранкед-матчей пока нет.", 26, MUTED, anchor="lm")
         y += 116
     for row in rows:
@@ -42,9 +42,9 @@ def _draw_row(img, draw, y: int, row: dict, icons: dict) -> None:
     color = WIN if won else LOSS
     current = bool(row.get("current"))
     fill = cards.mix(PANEL, ACCENT, 0.12) if current else PANEL
-    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), cards.mix(fill, color, 0.12), fill, radius=16,
+    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), cards.mix(fill, color, 0.12), fill, radius=cards.R_CARD,
                          outline=cards.mix(fill, ACCENT, 0.6) if current else None)
-    cards.stripe(img, PAD, y + 14, y + ROW_H - 14, color)
+    cards.edge_stripe(img, PAD, y, y + ROW_H, color)
     mid = y + ROW_H / 2
 
     cx = PAD + 26 + NUM_D / 2

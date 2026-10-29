@@ -20,7 +20,7 @@ LABEL_W = 230
 CELL_H = 88
 AVATAR = 48
 TILE_H = 112
-GAP = 14
+GAP = cards.GAP
 
 
 def _shown(players: list, pairs: list) -> list[int]:
@@ -54,7 +54,7 @@ def render_together_image(
 
     games = summary.get("games", 0)
     if not games:
-        cards.panel(img, (PAD, y, WIDTH - PAD, y + 130), PANEL, radius=18)
+        cards.panel(img, (PAD, y, WIDTH - PAD, y + 130), PANEL, radius=cards.R_CARD)
         draw_text(draw, (PAD + 28, y + 45), "Совместные ранкед-игры не обнаружены.", 28, FG, bold=True, anchor="lm")
         draw_text(draw, (PAD + 28, y + 90), "Возможно, данные ещё загружаются. После первой общей игры появятся винрейт и лучшая пара.",
                   21, MUTED, anchor="lm", max_w=WIDTH - 2 * PAD - 56)
@@ -109,13 +109,13 @@ def _draw_matrix(img, draw, y: int, shown: list, players: list, pairs: list, ava
             cx = x0 + cell_w / 2
             pair = by_pair.get((ridx, cidx)) if ridx != cidx else None
             if ridx == cidx:  # игрок с самим собой: пустая тёмная ячейка — диагональ не спорит с цифрами
-                cards.panel(img, box, cards.mix(cards.BG, PANEL, 0.35), radius=12, outline=cards.mix(cards.BG, PANEL, 0.6))
+                cards.panel(img, box, cards.mix(cards.BG, PANEL, 0.35), radius=cards.R_TILE, outline=cards.mix(cards.BG, PANEL, 0.6))
             elif pair and pair["games"]:
-                cards.panel(img, box, _heat(pair["wins"] / pair["games"]), radius=12)
+                cards.panel(img, box, _heat(pair["wins"] / pair["games"]), radius=cards.R_TILE)
                 draw_text(draw, (cx, mid - 12), str(pair["games"]), 30, FG, bold=True, anchor="mm")
                 draw_text(draw, (cx, mid + 22), f"{round(pair['wins'] * 100 / pair['games'])}%", 20, FG, anchor="mm")
             else:
-                cards.panel(img, box, PANEL, radius=12)
+                cards.panel(img, box, PANEL, radius=cards.R_TILE)
                 draw_text(draw, (cx, mid), "—", 24, MUTED, anchor="mm")
         y += CELL_H
     return y + 8

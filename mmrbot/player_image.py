@@ -19,7 +19,7 @@ from mmrbot.formatting import plural_games
 
 HEADER_H = 190
 TILE_H = 112
-GAP = 16
+GAP = cards.GAP
 LEFT_W = 760
 RIGHT_W = WIDTH - 2 * PAD - LEFT_W - GAP
 HERO_ROW_H = 84
@@ -29,7 +29,7 @@ RECENT_H = 292
 
 def _section(img, draw, box, title: str) -> tuple[int, int]:
     """Панель с заголовком раздела; возвращает (x0, y0) левого верхнего угла содержимого."""
-    cards.panel(img, box, PANEL, radius=20)
+    cards.panel(img, box, PANEL, radius=cards.R_CARD)
     draw_text(draw, (box[0] + 24, box[1] + 28), title.upper(), 18, MUTED, bold=True, anchor="lm")
     return box[0] + 24, box[1] + 56
 
@@ -84,7 +84,7 @@ def _draw_warnings(img, draw, y: int, warnings: list) -> int:
     line_h = 32
     h = 24 + len(warnings) * line_h
     fill = cards.mix(PANEL, GOLD, 0.09)
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + h), fill, radius=16, outline=cards.mix(PANEL, GOLD, 0.3))
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + h), fill, radius=cards.R_CARD, outline=cards.mix(PANEL, GOLD, 0.3))
     cards.dot(img, PAD + 36, y + h / 2, 14, cards.mix(PANEL, GOLD, 0.85))
     draw_text(draw, (PAD + 36, y + h / 2), "!", 20, BG, bold=True, anchor="mm")
     for i, text in enumerate(warnings):
@@ -94,7 +94,7 @@ def _draw_warnings(img, draw, y: int, warnings: list) -> int:
 
 
 def _draw_header(img, draw, y: int, card: dict, avatars: dict, tone: str = GOLD) -> int:
-    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + HEADER_H), cards.mix(PANEL, tone, 0.26), PANEL, radius=22,
+    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + HEADER_H), cards.mix(PANEL, tone, 0.26), PANEL, radius=cards.R_CARD,
                          outline=cards.mix(PANEL, tone, 0.3))
     name = clean(card.get("name")) or "Игрок"
     ring = cards.avatar(avatars.get(card.get("avatar")), name, 128, ring=tone, ring_w=4)
@@ -240,7 +240,7 @@ def _draw_recent(img, draw, y: int, games: list, icons: dict, show_delta: bool =
         color = WIN if won else LOSS
         fill = cards.mix(PANEL, color, 0.07)
         bottom = y + h - 18
-        cards.panel(img, (left, y0, left + col_w, bottom), fill, radius=14, outline=cards.mix(fill, color, 0.3))
+        cards.panel(img, (left, y0, left + col_w, bottom), fill, radius=cards.R_TILE, outline=cards.mix(fill, color, 0.3))
         cx = left + col_w / 2
         cards.paste(img, cards.hero_icon(icons.get(game.get("hero_id")), game.get("hero_id"), icon_w, icon_h, 8),
                     left + 12, y0 + 12)
@@ -266,7 +266,7 @@ def _draw_recent(img, draw, y: int, games: list, icons: dict, show_delta: bool =
 
 def _draw_footer_row(img, draw, y: int, card: dict) -> int:
     h = 76
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + h), PANEL, radius=18)
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + h), PANEL, radius=cards.R_CARD)
     x = PAD + 24
     if card.get("lobby_rank"):
         cards.paste(img, cards.rank_badge(card["lobby_rank"], 44), x, y + (h - 44) / 2)

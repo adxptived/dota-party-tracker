@@ -11,7 +11,7 @@ from typing import Optional
 from mmrbot import cards
 from mmrbot.cards import ACCENT, FG, GOLD, ICON_H, ICON_W, LOSS, MUTED, PAD, PANEL, WIDTH, clean, draw_text
 
-TILE_H, GAP = 128, 14
+TILE_H, GAP = 128, cards.GAP
 PER_ROW = 2
 LIMIT = 12
 TILE_W = (WIDTH - 2 * PAD - GAP * (PER_ROW - 1)) / PER_ROW
@@ -30,7 +30,7 @@ def render_records_image(
     y = cards.header(img, draw, "Рекорды пати", "лучшая отдельная игра по каждому показателю", (period_label.upper(), ACCENT))
 
     if not records:
-        cards.panel(img, (PAD, y, WIDTH - PAD, y + 110), PANEL, radius=18)
+        cards.panel(img, (PAD, y, WIDTH - PAD, y + 110), PANEL, radius=cards.R_CARD)
         draw_text(draw, (PAD + 28, y + 55), "За период нет данных — нужны сыгранные игры.", 26, MUTED, anchor="lm",
                   max_w=WIDTH - 2 * PAD - 56)
         y += 126
@@ -49,9 +49,9 @@ def render_records_image(
 
 def _draw_tile(img, draw, x0: float, y0: float, rec: dict, icons: dict) -> None:
     anti = bool(rec.get("anti"))
-    cards.panel(img, (x0, y0, x0 + TILE_W, y0 + TILE_H), cards.mix(PANEL, LOSS, 0.08) if anti else PANEL, radius=16)
+    cards.panel(img, (x0, y0, x0 + TILE_W, y0 + TILE_H), cards.mix(PANEL, LOSS, 0.08) if anti else PANEL, radius=cards.R_CARD)
     if anti:
-        cards.stripe(img, x0, y0, y0 + TILE_H, LOSS)
+        cards.edge_stripe(img, x0, y0, y0 + TILE_H, LOSS)
     mid = y0 + TILE_H / 2
     hero_id = rec.get("hero_id")
     cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id), x0 + 20, mid - ICON_H / 2)
@@ -70,8 +70,8 @@ def _draw_tile(img, draw, x0: float, y0: float, rec: dict, icons: dict) -> None:
 def _draw_streak(img, draw, y: int, streak: tuple[str, int]) -> int:
     name, length = streak
     h = 96
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + h), cards.mix(PANEL, GOLD, 0.12), radius=18)
-    cards.stripe(img, PAD, y, y + h, GOLD)
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + h), cards.mix(PANEL, GOLD, 0.12), radius=cards.R_CARD)
+    cards.edge_stripe(img, PAD, y, y + h, GOLD)
     draw_text(draw, (PAD + 32, y + h / 2), "ЛУЧШАЯ СЕРИЯ ПОБЕД", 20, GOLD, bold=True, anchor="lm")
     draw_text(draw, (PAD + 330, y + h / 2), clean(name) or "Игрок", 32, FG, bold=True, anchor="lm", max_w=520)
     draw_text(draw, (WIDTH - PAD - 32, y + h / 2), f"▲ {length} подряд", 36, GOLD, bold=True, anchor="rm")

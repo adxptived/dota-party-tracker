@@ -11,7 +11,7 @@ from typing import Optional
 from mmrbot import cards
 from mmrbot.cards import ACCENT, FG, GOLD, LOSS, MUTED, PAD, PANEL, WIDTH, clean, draw_text
 
-ROW_H, ROW_GAP = 96, 8
+ROW_H, ROW_GAP = 96, cards.ROW_GAP
 HEAD_ROW_H = 36
 AVATAR = 64
 NAME_X = PAD + 78 + AVATAR + 16
@@ -60,13 +60,11 @@ def render_compare_image(rows: list, avatars: Optional[dict] = None, note: Optio
 
 
 def _draw_row(img, draw, y: int, place: int, row: dict, size: int, avatars: dict) -> None:
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), PANEL, radius=16)
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + ROW_H), PANEL, radius=cards.R_CARD)
     if place == 1:
-        cards.stripe(img, PAD, y, y + ROW_H, GOLD)
+        cards.edge_stripe(img, PAD, y, y + ROW_H, GOLD)
     mid = y + ROW_H / 2
-    color = cards.PLACE_COLORS.get(place)
-    cards.dot(img, PAD + 44, mid, 22, color or cards.PANEL_HI)
-    draw_text(draw, (PAD + 44, mid), str(place), 24, cards.BG if color else MUTED, bold=True, anchor="mm")
+    cards.place_badge(img, draw, PAD + 44, mid, place)
     name = clean(row.get("name")) or "Игрок"
     cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, AVATAR), PAD + 78, mid - AVATAR / 2)
     draw_text(draw, (NAME_X, mid - 16), name, 28, FG, bold=True, anchor="lm", max_w=NAME_MAX_W)

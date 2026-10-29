@@ -28,7 +28,7 @@ TRACKED_PANEL, TRACKED_MARK = MINE_PANEL, GOLD  # строка своего иг
 
 HEAD_H = 132
 TEAM_HEAD_H = 58
-ROW_H, ROW_GAP = 78, 6
+ROW_H, ROW_GAP = 78, cards.ROW_GAP
 ROW_BEAR_H = 118  # у Лон Друида две строки предметов: свои и медведя
 TEAM_GAP = 22
 NAME_X = PAD + 24 + ICON_W + 20
@@ -245,11 +245,11 @@ def _draw_row(img, draw, y: int, p: dict, tracked: dict, icons: dict, item_icons
     row_h = _row_h(p)
     box = (PAD, y, MATCH_WIDTH - PAD, y + row_h)
     if mine:  # свой игрок: золотой отсвет слева, полоса и звезда у ника
-        cards.gradient_panel(img, box, cards.mix(TRACKED_PANEL, TRACKED_MARK, 0.2), TRACKED_PANEL, radius=12,
+        cards.gradient_panel(img, box, cards.mix(TRACKED_PANEL, TRACKED_MARK, 0.2), TRACKED_PANEL, radius=cards.R_TILE,
                              outline=cards.mix(TRACKED_PANEL, TRACKED_MARK, 0.28))
-        cards.stripe(img, PAD, y + 12, y + row_h - 12, TRACKED_MARK)
+        cards.edge_stripe(img, PAD, y, y + row_h, TRACKED_MARK)
     else:
-        cards.panel(img, box, PANEL, radius=12)
+        cards.panel(img, box, PANEL, radius=cards.R_TILE)
     mid = y + _base_h(p) / 2
 
     cards.paste(img, cards.hero_icon(icons.get(p.get("hero_id")), p.get("hero_id")), PAD + 24, mid - ICON_H / 2)

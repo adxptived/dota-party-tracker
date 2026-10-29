@@ -17,11 +17,11 @@ from mmrbot import cards
 from mmrbot.cards import ACCENT, BG, EDGE, FG, GOLD, LOSS, MUTED, PAD, PANEL, PANEL_HI, WIDTH, WIN, clean, draw_text, mix
 from mmrbot.alert_image import _item_icon, clock
 from mmrbot.heroes import hero_name
-from mmrbot.stats_image import HERO_H, HERO_W, _draw_records, _draw_tiles, _place
+from mmrbot.stats_image import HERO_H, HERO_W, _draw_records, _draw_tiles
 from mmrbot.upgrade_icons import paste_upgrade
 
 BANNER_H = 204
-ROW_H, IDLE_H, ROW_GAP = 104, 68, 8
+ROW_H, IDLE_H, ROW_GAP = 104, 68, cards.ROW_GAP
 HEAD_ROW_H = 36
 AVATAR, IDLE_AVATAR = 64, 44
 NAME_X = PAD + 72 + AVATAR + 16
@@ -68,7 +68,7 @@ def render_daily_image(
     if lanes:
         y = _draw_timeline(img, draw, y + 8, view["timeline"], avatars)
     if records:
-        y = _section(draw, y + 14, "РЕКОРДЫ СУТОК")
+        y = cards.section(draw, y + 14, "РЕКОРДЫ СУТОК")
         y = _draw_records(img, draw, y, records, icons)
     if best:
         y = _draw_best_game(img, draw, y + 14, best, icons, item_icons)
@@ -85,7 +85,7 @@ def _draw_best_game(img, draw, y: int, best: dict, icons: dict, item_icons: dict
     height = BEST_TOP_H + (BEST_BUILD_H if _has_build(best) else 0)
     won = best.get("won")
     accent = WIN if won else LOSS
-    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + height), mix(PANEL, accent, 0.22), PANEL, radius=20, outline=EDGE)
+    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + height), mix(PANEL, accent, 0.22), PANEL, radius=cards.R_CARD, outline=EDGE)
     draw_text(draw, (PAD + 28, y + 32), "ЛУЧШАЯ ИГРА СУТОК", 20, ACCENT, bold=True, anchor="lm")
     cards.pill(img, draw, WIDTH - PAD - 28, y + 32, "ПОБЕДА" if won else "ПОРАЖЕНИЕ", BG, accent, size=18, pad=14, align="right")
 
@@ -143,14 +143,9 @@ def _draw_best_build(img, draw, x: float, top: float, build: dict, item_icons: d
         x += width + 14
 
 
-def _section(draw, y: int, title: str) -> int:
-    draw_text(draw, (PAD + 6, y + 14), title, 20, ACCENT, bold=True, anchor="lm")
-    return y + 36
-
-
 def _draw_banner(img, draw, y: int, view: dict) -> int:
     """Баннер с градиентом: слева — что за сводка и за какое окно, справа — крупно ±MMR пати за сутки."""
-    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + BANNER_H), mix(PANEL, ACCENT, 0.34), PANEL, radius=24, outline=EDGE)
+    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + BANNER_H), mix(PANEL, ACCENT, 0.34), PANEL, radius=cards.R_CARD, outline=EDGE)
     x = PAD + 40
     badge_text, badge_color = view.get("badge") or ("24 ЧАСА", ACCENT)
     cards.chip(img, draw, x, y + 40, badge_text, badge_color, size=20, pad=16, base=mix(PANEL, ACCENT, 0.3))
@@ -190,12 +185,12 @@ def _draw_table(img, draw, y: int, rows: list, icons: dict, avatars: dict) -> in
 def _draw_row(img, draw, y: int, place: int, row: dict, icons: dict, avatars: dict, leader: bool = False) -> None:
     box = (PAD, y, WIDTH - PAD, y + ROW_H)
     if leader:  # как у лидера рейтинга: золотой отсвет слева и полоса
-        cards.gradient_panel(img, box, mix(PANEL, GOLD, 0.2), PANEL, radius=16, outline=mix(PANEL, GOLD, 0.3))
-        cards.stripe(img, PAD, y + 14, y + ROW_H - 14, GOLD)
+        cards.gradient_panel(img, box, mix(PANEL, GOLD, 0.2), PANEL, radius=cards.R_CARD, outline=mix(PANEL, GOLD, 0.3))
+        cards.edge_stripe(img, PAD, y, y + ROW_H, GOLD)
     else:
-        cards.panel(img, box, PANEL, radius=16)
+        cards.panel(img, box, PANEL, radius=cards.R_CARD)
     mid = y + ROW_H / 2
-    _place(img, draw, PAD + 44, mid, place)
+    cards.place_badge(img, draw, PAD + 44, mid, place)
 
     name = clean(row.get("name")) or "Игрок"
     cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, AVATAR), PAD + 78, mid - AVATAR / 2)
@@ -230,9 +225,9 @@ def _draw_row(img, draw, y: int, place: int, row: dict, icons: dict, avatars: di
 
 def _draw_idle_row(img, draw, y: int, row: dict, avatars: dict) -> None:
     """Не играл за сутки: компактная приглушённая строка."""
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + IDLE_H), PANEL, radius=16)
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + IDLE_H), PANEL, radius=cards.R_CARD)
     mid = y + IDLE_H / 2
-    cards.dot(img, PAD + 44, mid, 14, PANEL_HI)
+    cards.dot(img, PAD + 44, mid, 14, cards.mix(PANEL, FG, 0.14))
     draw_text(draw, (PAD + 44, mid), "–", 22, MUTED, bold=True, anchor="mm")
     name = clean(row.get("name")) or "Игрок"
     cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, IDLE_AVATAR), PAD + 78, mid - IDLE_AVATAR / 2)
@@ -250,7 +245,7 @@ def _draw_timeline(img, draw, y: int, timeline: dict, avatars: dict) -> int:
     top = 66
     lanes_h = len(lanes) * LANE_H + (len(lanes) - 1) * LANE_GAP
     height = top + lanes_h + 56
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + height), PANEL, radius=16)
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + height), PANEL, radius=cards.R_CARD)
     draw_text(draw, (PAD + 24, y + 32), "ТАЙМЛАЙН ИГР · 24 ЧАСА", 20, ACCENT, bold=True, anchor="lm")
     legend_x = WIDTH - PAD - 24
     for label, color in (("поражение", LOSS), ("победа", WIN)):

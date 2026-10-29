@@ -26,7 +26,7 @@ from mmrbot.talents import tree_rows
 from mmrbot.upgrade_icons import paste_upgrade
 
 TOP_H = 96  # верх строки игрока: аватар, герой, ник и ±MMR — без россыпи чисел
-ROW_GAP = 10
+ROW_GAP = cards.ROW_GAP
 AVATAR = 64
 NAME_X = PAD + 22 + AVATAR + 14 + ICON_W + 20
 RIGHT = WIDTH - PAD - 24
@@ -98,7 +98,7 @@ def _row_h(row: dict) -> int:
 
 
 @lru_cache(maxsize=512)
-def _item_icon(data: Optional[bytes], w: int = ITEM_W, h: int = ITEM_H, radius: int = 6):
+def _item_icon(data: Optional[bytes], w: int = ITEM_W, h: int = ITEM_H, radius: Optional[int] = None):
     """Иконка предмета со скруглением; нет/битая — тёмная плашка."""
     from PIL import Image
     icon = None
@@ -109,7 +109,7 @@ def _item_icon(data: Optional[bytes], w: int = ITEM_W, h: int = ITEM_H, radius: 
             icon = None
     if icon is None:
         icon = Image.new("RGBA", (w, h), cards.GRID)
-    icon.putalpha(cards._rr_mask(w, h, radius))
+    icon.putalpha(cards._rr_mask(w, h, cards.corner(min(w, h)) if radius is None else radius))
     return icon
 
 
@@ -153,9 +153,9 @@ def render_alert_image(
 def _draw_banner(img, draw, y: int, event: dict, label: str, color: str) -> int:
     """Шапка-плашка: исход крупно цветом (это главное в оповещении), справа — средний ранг лобби. Счёт, золото, дата и ID — в итоге под игроками: верх картинки не пестрит цифрами."""
     box = (PAD, y, WIDTH - PAD, y + BANNER_H)
-    cards.gradient_panel(img, box, cards.mix(PANEL, color, 0.34), cards.mix(PANEL, color, 0.04), radius=20,
+    cards.gradient_panel(img, box, cards.mix(PANEL, color, 0.34), cards.mix(PANEL, color, 0.04), radius=cards.R_CARD,
                          outline=cards.mix(PANEL, color, 0.42))
-    cards.stripe(img, PAD, y + 20, y + BANNER_H - 20, color)
+    cards.edge_stripe(img, PAD, y, y + BANNER_H, color)
     right = WIDTH - PAD - 28
     rank = event.get("average_rank")
     side_w = 300 if rank else 0
@@ -190,7 +190,7 @@ def _summary_cells(event: dict, tz: str) -> list:
 
 
 def _draw_summary(img, draw, y: int, cells: list, event: dict) -> None:
-    cards.panel(img, (PAD, y, WIDTH - PAD, y + SUMMARY_H), cards.PANEL_HI, radius=16)
+    cards.panel(img, (PAD, y, WIDTH - PAD, y + SUMMARY_H), cards.PANEL_HI, radius=cards.R_CARD)
     mid = y + SUMMARY_H / 2
     match_id = f"матч {event.get('match_id')}" if event.get("match_id") else ""
     id_w = cards.text_width(match_id, 18) + 24 if match_id else 0
@@ -207,7 +207,7 @@ def _draw_row(
     accent = WIN if won else LOSS
     fill = cards.mix(PANEL, accent, 0.05)
     row_h = _row_h(row)
-    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + row_h), cards.mix(PANEL, accent, 0.16), fill, radius=16,
+    cards.gradient_panel(img, (PAD, y, WIDTH - PAD, y + row_h), cards.mix(PANEL, accent, 0.16), fill, radius=cards.R_CARD,
                          outline=cards.mix(fill, "#ffffff", 0.07))
     cards.stripe(img, PAD, y + 16, y + TOP_H - 12, accent)
     mid = y + TOP_H / 2
@@ -357,7 +357,7 @@ def _draw_build(img, draw, mid: float, row: dict, item_icons: dict) -> None:
 
 
 def _draw_shared(img, draw, y: int, shared: dict) -> None:
-    cards.panel(img, (PAD, y + 6, WIDTH - PAD, y + FOOT_H - 6), cards.PANEL_HI, radius=16)
+    cards.panel(img, (PAD, y + 6, WIDTH - PAD, y + FOOT_H - 6), cards.PANEL_HI, radius=cards.R_CARD)
     mid = y + FOOT_H / 2
     draw_text(draw, (PAD + 24, mid), "СЕГОДНЯ ВМЕСТЕ", 18, MUTED, bold=True, anchor="lm")
     x = PAD + 24 + cards.text_width("СЕГОДНЯ ВМЕСТЕ", 18, True) + 20
