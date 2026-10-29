@@ -14,12 +14,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from bisect import bisect_left
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from mmrbot.migrations import LATEST_VERSION, migrate
+from mmrbot.migrations import LATEST_VERSION, PLUS_ESTIMATE_SQL, migrate
 
 DEFAULT_DIGEST_HOUR = 10
 DEFAULT_MMR_STEP = 25
@@ -699,18 +700,36 @@ class Storage:
             )
 
     def update_match_stratz(self, player_id: int, match_id: int, info: dict) -> None:
-        """Записать данные Stratz: позиция/роль/лейн/IMP + дозаполнить пустые числовые поля."""
-        fill = ", ".join(f"{f} = COALESCE({f}, ?)" for f in self._DETAIL_FIELDS + ("party_size",))
-        params = [info.get("position"), info.get("role"), info.get("lane"), info.get("imp")]
-        params += [info.get(f) for f in self._DETAIL_FIELDS + ("party_size",)]
-        params += [player_id, match_id]
+        """Записать данные Stratz: позиция/роль/лейн/IMP + дозаполнить пустые числовые поля.
+
+        Опыт Dota Plus: точный ответ всегда записывается (и снимает пометку «оценка»); нет его — берём опыт из прошлой
+        игры на этом же герое с пометкой plus_est = 1 (значок тира не пропадает, а точный ответ потом его заменит).
+        """
+        fields = tuple(f for f in self._DETAIL_FIELDS + ("party_size",) if f != "plus_xp")
+        guess = f"COALESCE({PLUS_ESTIMATE_SQL}, plus_xp)"
+        plus = (
+            "plus_xp = CASE WHEN ?1 IS NOT NULL THEN ?1 "
+            f"WHEN plus_est = 1 OR plus_xp IS NULL THEN {guess} ELSE plus_xp END, "
+            "plus_est = CASE WHEN ?1 IS NOT NULL THEN 0 "
+            f"WHEN plus_est = 1 OR plus_xp IS NULL THEN {guess} IS NOT NULL ELSE plus_est END"
+        ).replace("?1", ":plus")
+        names = ["position", "role", "lane", "imp", *fields]
+        params = {f"v{i}": info.get(f) for i, f in enumerate(names)}
+        params.update(plus=info.get("plus_xp"), player=player_id, match=match_id)
+        head = ", ".join(f"{f} = :v{i}" for i, f in enumerate(names[:4]))
+        fill = ", ".join(f"{f} = COALESCE({f}, :v{i + 4})" for i, f in enumerate(fields))
         with self._conn() as conn:
             self._save_lineups(conn, [(match_id, info.get("lineup"))])
             conn.execute(
-                f"UPDATE matches SET position = ?, role = ?, lane = ?, imp = ?, stratz_done = 1, {fill} "
-                f"WHERE account_id = {self._ACCOUNT_OF} AND match_id = ?",
+                f"UPDATE matches SET {head}, stratz_done = 1, {fill}, {plus} "
+                f"WHERE account_id = (SELECT account_id FROM players WHERE id = :player) AND match_id = :match",
                 params,
             )
+
+    # Свежий матч без точного опыта Dota Plus переспрашиваем у Stratz несколько раз (опыт часто приходит позже
+    # остальной статистики); старые и после PLUS_RETRIES попыток — не трогаем: запросы к Stratz ограничены.
+    PLUS_RETRIES = 4
+    PLUS_WINDOW = 3 * 86400
 
     # Пауза перед следующей попыткой после промаха: Stratz разбирает матч не сразу, а иногда — часами.
     STRATZ_BACKOFF = (300, 900, 2700, 7200, 21600, 43200, 86400)
@@ -723,11 +742,13 @@ class Storage:
         После max_tries промахов сдаёмся; при заданном now матчи, чья пауза повтора ещё не вышла, пропускаем.
         """
         due = "" if now is None else "AND stratz_next_ts <= ? "
-        params: list = [player_id, max_tries] + ([] if now is None else [now]) + [since_ts, limit]
+        fresh = (int(time.time()) if now is None else now) - self.PLUS_WINDOW
+        params: list = [player_id, self.PLUS_RETRIES, fresh, max_tries] + ([] if now is None else [now]) + [since_ts, limit]
         with self._conn() as conn:
             rows = conn.execute(
                 f"SELECT match_id FROM matches WHERE account_id = {self._ACCOUNT_OF} "
-                "AND (stratz_done = 0 OR party_size IS NULL) "
+                "AND (stratz_done = 0 OR party_size IS NULL "
+                "OR ((plus_xp IS NULL OR plus_est = 1) AND stratz_tries < ? AND start_time >= ?)) "
                 f"AND stratz_tries < ? {due}AND start_time >= ? ORDER BY start_time DESC LIMIT ?",
                 params,
             ).fetchall()

@@ -501,6 +501,30 @@ def _m014_plus_xp(conn: sqlite3.Connection) -> None:
     )
 
 
+# --- 15: оценка опыта Dota Plus ---------------------------------------------------------------------------------
+
+# Опыт героя из последней прошлой игры этого аккаунта на этом же герое, где Stratz прислал точное значение.
+PLUS_ESTIMATE_SQL = (
+    "(SELECT p.plus_xp FROM matches p WHERE p.account_id = matches.account_id AND p.hero_id = matches.hero_id "
+    "AND p.start_time < matches.start_time AND p.plus_xp IS NOT NULL AND p.plus_est = 0 "
+    "ORDER BY p.start_time DESC LIMIT 1)"
+)
+
+
+def _m015_plus_estimate(conn: sqlite3.Connection) -> None:
+    """Пометка «опыт Dota Plus — оценка» и сама оценка для матчей, где Stratz опыта не прислал.
+
+    Stratz отдаёт `dotaPlusHeroXp` не для всех матчей (часто — не сразу), и значок тира на таких играх пропадал.
+    Опыт героя только растёт, а тир меняется медленно, поэтому значение из прошлой игры на этом герое почти всегда
+    даёт тот же значок. plus_est = 1 — значение оценочное: точный ответ Stratz его заменит.
+    """
+    conn.execute("ALTER TABLE matches ADD COLUMN plus_est INTEGER NOT NULL DEFAULT 0")
+    conn.execute(
+        f"UPDATE matches SET plus_xp = {PLUS_ESTIMATE_SQL}, plus_est = 1 "
+        f"WHERE plus_xp IS NULL AND hero_id IS NOT NULL AND {PLUS_ESTIMATE_SQL} IS NOT NULL"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _m001_base_tables),
     (2, _m002_legacy_columns),
@@ -516,6 +540,7 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (12, _m012_notify_leaders),
     (13, _m013_match_builds),
     (14, _m014_plus_xp),
+    (15, _m015_plus_estimate),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

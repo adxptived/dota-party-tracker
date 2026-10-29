@@ -176,8 +176,9 @@ def _enrich_from_stratz(
     for match_id in pending:
         if match_id in data:
             storage.update_match_stratz(player.id, match_id, data[match_id])
-    # Матч без ответа или без размера пати считаем промахом — чтобы очередь не крутилась вечно.
-    storage.mark_stratz_miss(player.id, [m for m in pending if (data.get(m) or {}).get("party_size") is None], now)
+    # Матч без ответа, без размера пати или без опыта Dota Plus считаем промахом — повтор с паузой, а не вечная очередь.
+    missed = [m for m in pending if (data.get(m) or {}).get("party_size") is None or (data.get(m) or {}).get("plus_xp") is None]
+    storage.mark_stratz_miss(player.id, missed, now)
 
 
 def backfill_stratz(storage: Storage, stratz: StratzClient, rounds: int = 6) -> int:

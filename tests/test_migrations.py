@@ -223,3 +223,23 @@ def test_plus_xp_column_added_and_recent_stratz_matches_requeued(tmp_path):
     assert rows[1] == (0, 0)  # свежий матч снова в очереди Stratz: там опыт героя в Dota Plus
     assert rows[2] == (1, 3)  # старые не трогаем
     assert rows[3] == (0, 3)
+
+
+def test_plus_est_column_added_and_missing_plus_xp_estimated(tmp_path):
+    path = str(tmp_path / "old.db")
+    migrations.migrate(path, [m for m in migrations.MIGRATIONS if m[0] <= 14], backup=False)
+    conn = sqlite3.connect(path)
+    for match_id, start, hero, xp in ((1, 100, 9, 7399), (2, 200, 9, None), (3, 300, 71, None)):
+        conn.execute(
+            "INSERT INTO matches (account_id, match_id, start_time, player_slot, radiant_win, hero_id, plus_xp, "
+            "stratz_done) VALUES (42, ?, ?, 0, 1, ?, ?, 1)", (match_id, start, hero, xp))
+    conn.commit()
+    conn.close()
+
+    migrations.migrate(path, backup=False)
+    conn = sqlite3.connect(path)
+    rows = {r[0]: r[1:] for r in conn.execute("SELECT match_id, plus_xp, plus_est FROM matches")}
+    conn.close()
+    assert rows[1] == (7399, 0)
+    assert rows[2] == (7399, 1)  # опыт взят из прошлой игры на этом герое
+    assert rows[3] == (None, 0)  # на этом герое опыта не знаем — не выдумываем

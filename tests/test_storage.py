@@ -423,3 +423,34 @@ def test_get_plus_xp_returns_known_values_for_the_match_players(store):
     store.update_match_stratz(b.id, 1, {"plus_xp": None})  # у Stratz опыта не было — в ответе нет
     assert store.get_plus_xp(1, [42, 43, 44]) == {42: 31050}
     assert store.get_plus_xp(1, []) == {} and store.get_plus_xp(2, [42]) == {}
+
+
+def _hero_match(match_id, start_time, hero_id):
+    return {"match_id": match_id, "start_time": start_time, "player_slot": 0, "radiant_win": True, "lobby_type": 7,
+            "hero_id": hero_id, "party_size": 1}
+
+
+def test_missing_plus_xp_is_estimated_from_previous_game_on_same_hero(store):
+    p = store.add_player(1, 42, "Вася", None, 0, 0)
+    store.add_matches(p.id, [_hero_match(1, 100, 9), _hero_match(2, 200, 71), _hero_match(3, 300, 9)])
+    store.update_match_stratz(p.id, 1, {"plus_xp": 7399})
+    store.update_match_stratz(p.id, 2, {"plus_xp": 2775})
+    store.update_match_stratz(p.id, 3, {"position": 1})  # Stratz не прислал опыт
+    rows = {m["match_id"]: m for m in store.get_matches(p.id)}
+    assert rows[3]["plus_xp"] == 7399 and rows[3]["plus_est"] == 1  # из прошлой игры на этом же герое
+    store.update_match_stratz(p.id, 3, {"plus_xp": 7600})  # точный ответ заменяет оценку
+    row = next(m for m in store.get_matches(p.id) if m["match_id"] == 3)
+    assert row["plus_xp"] == 7600 and row["plus_est"] == 0
+
+
+def test_recent_matches_without_exact_plus_xp_are_requeued_a_few_times(store):
+    import time
+    now = int(time.time())
+    p = store.add_player(1, 42, "Вася", None, 0, 0)
+    store.add_matches(p.id, [_hero_match(1, now - 3600, 9), _hero_match(2, now - 10 * 86400, 9)])
+    for mid in (1, 2):
+        store.update_match_stratz(p.id, mid, {"position": 1})
+    assert store.get_match_ids_without_stratz(p.id, 0, now=now) == [1]  # свежий — ещё спросим, старый — нет
+    for _ in range(store.PLUS_RETRIES):
+        store.mark_stratz_miss(p.id, [1], now=0)
+    assert store.get_match_ids_without_stratz(p.id, 0, now=now) == []  # попытки кончились — не крутим вечно

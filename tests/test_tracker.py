@@ -1458,3 +1458,19 @@ def test_summary_main_position_is_the_most_played_one(store):
         store.update_match_stratz(p.id, match_id, {"position": position})
     s = build_player_summary(store, chat, store.get_player(100, "Вася"), now=100_001)
     assert s.main_position == (3, 2, 3)  # позиция, игр на ней, игр с известной позицией
+
+
+def test_stratz_answer_without_plus_xp_counts_as_miss(store):
+    import time
+    now = int(time.time())
+    player = store.add_player(1, 42, "Вася", None, 0, 0)
+    store.add_matches(player.id, [od_match(100, now - 3600)])
+
+    class NoPlusStratz:
+        def get_matches(self, account_id, ids, hints=None):
+            return {mid: {"position": 1, "party_size": 1} for mid in ids}  # разобран, но без опыта Dota Plus
+
+    from mmrbot.tracker import _enrich_from_stratz
+    _enrich_from_stratz(store, NoPlusStratz(), player, now)
+    assert store.get_match_ids_without_stratz(player.id, 0, now=now) == []  # пауза перед повтором
+    assert store.get_match_ids_without_stratz(player.id, 0, now=now + 86400) == [100]  # потом спросим снова
