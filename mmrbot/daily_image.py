@@ -104,7 +104,7 @@ def _draw_best_game(img, draw, y: int, best: dict, icons: dict, item_icons: dict
     for i, stat in enumerate(stats):
         cx = gx0 + (i % 3) * col_w
         cy = y + 80 + (i // 3) * 68
-        draw_text(draw, (cx, cy), clean(stat.get("label")), 18, MUTED, anchor="lm", max_w=col_w - 10)
+        cards.caption(draw, (cx, cy), stat.get("label"), max_w=col_w - 10)
         draw_text(draw, (cx, cy + 28), clean(stat.get("value")), 28, FG, bold=True, anchor="lm", max_w=col_w - 10)
 
     if _has_build(best):

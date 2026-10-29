@@ -765,13 +765,22 @@ def sparkline(img, box, values: Sequence[float], color: str = ACCENT, fill: bool
     img.paste(layer, (x0, y0), layer)
 
 
+CAPTION = mix(MUTED, PANEL, 0.2)  # цвет мелких подписей над значениями
+
+
+def caption(draw, xy, text, anchor: str = "lm", max_w: Optional[float] = None) -> None:
+    """Подпись над значением («СЕГОДНЯ», «МАКС. GPM», «K / D / A») — одна на все плитки и ячейки:
+    мелкие заглавные с разрядкой, приглушённо. Значение под ней — крупное, так что читается сначала оно."""
+    draw_text(draw, xy, clean(text).upper(), 16, CAPTION, bold=True, anchor=anchor, max_w=max_w)
+
+
 def tile(img, draw, box, label: str, value: str, sub: Optional[str] = None, color: str = FG, value_size: int = 40,
          fill: str = PANEL_HI) -> None:
     """Плитка показателя: мелкая подпись сверху, крупное значение, необязательная строка под ним."""
     x0, y0, x1, y1 = box
     panel(img, box, fill, radius=R_TILE)
     inner = x1 - x0 - 40
-    draw_text(draw, (x0 + 20, y0 + 16), clean(label), 18, MUTED, anchor="la", max_w=inner, shrink=15)
+    caption(draw, (x0 + 20, y0 + 18), label, anchor="la", max_w=inner)
     value_mid = (y0 + 42 + (y1 - 40 if sub else y1 - 14)) / 2  # между подписью и нижней строкой
     draw_text(draw, (x0 + 20, value_mid), clean(value), value_size, color, bold=True, anchor="lm", max_w=inner,
               shrink=max(value_size * 2 // 3, 18))
@@ -789,8 +798,7 @@ def stat_cells(draw, x: float, cy: float, cells: Sequence, cell_w: float, value_
         value = clean(value) if value is not None else ""
         if not value:
             continue
-        draw_text(draw, (x, cy - value_size * 0.6), clean(label).upper(), 16, mix(MUTED, PANEL, 0.2), bold=True,
-                  anchor="lm", max_w=cell_w - 10)
+        caption(draw, (x, cy - value_size * 0.6), label, max_w=cell_w - 10)
         draw_text(draw, (x, cy + value_size * 0.55), value, value_size, rest[0] if rest else FG, bold=True,
                   anchor="lm", max_w=cell_w - 10, track=False)
         x += cell_w

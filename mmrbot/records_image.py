@@ -58,7 +58,7 @@ def _draw_tile(img, draw, x0: float, y0: float, rec: dict, icons: dict) -> None:
     cards.hero_badges(img, draw, x0 + 20, mid - ICON_H / 2, ICON_W, ICON_H, rec.get("level"), rec.get("plus_xp"))
     tx = x0 + 20 + ICON_W + 20
     room = TILE_W - (tx - x0) - 18
-    draw_text(draw, (tx, y0 + 28), clean(rec.get("label")), 19, MUTED, anchor="lm", max_w=room)
+    cards.caption(draw, (tx, y0 + 28), rec.get("label"), max_w=room)
     draw_text(draw, (tx, y0 + 66), clean(rec.get("value")), 34, LOSS if anti else GOLD, bold=True, anchor="lm", max_w=room)
     date = clean(rec.get("date"))
     date_w = cards.text_width(date, 20) + 16 if date else 0

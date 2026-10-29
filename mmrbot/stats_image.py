@@ -149,7 +149,7 @@ def _draw_records(img, draw, y: int, records: list, icons: dict) -> int:
         hero_id = rec.get("hero_id")
         cards.paste(img, cards.hero_icon(icons.get(hero_id), hero_id, 96, 54, 8), x0 + 16, y0 + 21)
         tx = x0 + 128
-        draw_text(draw, (tx, y0 + 22), clean(rec.get("label")), 18, MUTED, anchor="lm", max_w=w - 144)
+        cards.caption(draw, (tx, y0 + 22), rec.get("label"), max_w=w - 144)
         draw_text(draw, (tx, y0 + 50), clean(rec.get("value")), 26, GOLD, bold=True, anchor="lm", max_w=w - 144)
         draw_text(draw, (tx, y0 + 78), clean(rec.get("player")), 19, FG, anchor="lm", max_w=w - 144)
     rows_used = (len(records) + per_row - 1) // per_row
@@ -178,7 +178,7 @@ def _draw_awards(img, draw, y: int, awards: list, title: str = "НАГРАДЫ")
         cards.panel(img, (x0, y0, x0 + w, y0 + AWARD_H), PANEL, radius=cards.R_CARD)
         _medal(img, x0 + 44, y0 + AWARD_H / 2)
         tx, room = x0 + 84, w - 84 - 18
-        draw_text(draw, (tx, y0 + 24), clean(award.get("title")), 18, MUTED, anchor="lm", max_w=room)
+        cards.caption(draw, (tx, y0 + 24), award.get("title"), max_w=room)
         draw_text(draw, (tx, y0 + 53), clean(award.get("player")), 26, FG, bold=True, anchor="lm", max_w=room)
         draw_text(draw, (tx, y0 + 82), clean(award.get("detail")), 19, GOLD, anchor="lm", max_w=room)
     rows_used = (len(awards) + per_row - 1) // per_row
