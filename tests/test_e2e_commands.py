@@ -503,7 +503,7 @@ def test_category_button_opens_submenu(env):
     assert not cb.message.deleted and not cb.message.statuses  # подменю правит то же сообщение
     markup = cb.message.sent[-1][1]["reply_markup"]
     data = {b.callback_data for row in markup.inline_keyboard for b in row}
-    assert {"m:stats", "m:week", "m:menu"} <= data
+    assert {"m:today", "m:week", "m:menu"} <= data
 
 
 def test_close_button_deletes_message(env):

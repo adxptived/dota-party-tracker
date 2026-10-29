@@ -6,7 +6,7 @@ import pytest
 
 from mmrbot import bot as botmod
 from mmrbot import gather
-from mmrbot.keyboards import CATEGORIES, category_menu
+from mmrbot.keyboards import CATEGORIES, category_menu, main_menu
 from mmrbot.storage import Storage
 
 T0 = 1_780_000_000
@@ -16,12 +16,15 @@ class Msg:
     def __init__(self):
         self.chat = SimpleNamespace(id=1, type="supergroup")
         self.sent = []
+        self.markups = []
 
     async def answer(self, text, **kw):
         self.sent.append(text)
+        self.markups.append(kw.get("reply_markup"))
 
     async def edit_text(self, text, **kw):
         self.sent.append(text)
+        self.markups.append(kw.get("reply_markup"))
 
 
 class Query:
@@ -56,7 +59,8 @@ def _actions(key):
 
 
 def test_menu_has_buttons_for_last_go_double_status():
-    all_actions = set().union(*(_actions(k) for k in CATEGORIES))
+    main = {b.callback_data for row in main_menu().inline_keyboard for b in row}
+    all_actions = main.union(*(_actions(k) for k in CATEGORIES))
     assert {"m:last", "m:go", "m:double", "m:status"} <= all_actions
 
 
@@ -102,3 +106,10 @@ def test_start_requires_user(store):
     msg = Msg()
     asyncio.run(gather.start(msg, store, None))
     assert "не анонимного" in msg.sent[0]
+
+
+def test_matches_button_asks_whose_matches_with_presser_first(store):
+    q = _press("m:matches", store, user_id=7)
+    text, markup = q.message.sent[-1], q.message.markups[-1]
+    first = markup.inline_keyboard[0][0]
+    assert "матчи" in text.lower() and first.text == "🙋 Вася" and first.callback_data.startswith("pp:matches:")

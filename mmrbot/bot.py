@@ -419,17 +419,32 @@ async def _prompt_find(message: Message) -> None:
     await message.answer(FIND_PROMPT, reply_markup=ForceReply(force_reply=True, input_field_placeholder="ID или ссылка"))
 
 
+# Кнопка меню → вопрос над списком игроков (ответ — `pp:<действие>:<account_id>`).
+PICK_PROMPTS = {
+    "matches": "📜 Чьи матчи показать?",
+    "player": "🪪 Чью карточку показать?",
+    "heroes": "🦸 Чьих героев показать?",
+    "roles": "🎯 Чьи позиции показать?",
+    "steam": "🎭 Чей Steam-профиль показать?",
+    "setmmr": "✏️ Кому задать MMR?",
+    "remove": "🗑️ Кого удалить из пати?",
+    "double": "✖️ Чей последний матч отметить дабл-дауном (×2)?",
+}
+
+
 async def _prompt_matchid(message: Message) -> None:
     await message.answer(MATCHID_PROMPT, reply_markup=ForceReply(force_reply=True, input_field_placeholder="7812345678"))
 
 
-async def _ask_match(message: Message, storage: Storage) -> None:
+async def _ask_match(message: Message, storage: Storage, user_id: Optional[int] = None) -> None:
     extra = [
         [InlineKeyboardButton(text="🕘 Последний в чате", callback_data="pp:match:last")],
         [InlineKeyboardButton(text="🔢 По ID матча", callback_data="m:matchid")],
     ]
+    players = storage.list_players(message.chat.id)
     await message.answer(
-        "Чей матч показать?", reply_markup=players_picker(storage.list_players(message.chat.id), "match", extra=extra)
+        "🎯 Чей последний матч разобрать?",
+        reply_markup=players_picker(players, "match", extra=extra, me=_my_account(players, user_id)),
     )
 
 
@@ -662,8 +677,19 @@ async def _has_players(message: Message, storage: Storage) -> bool:
     return False
 
 
-async def _ask_player(message: Message, storage: Storage, kind: str, prompt: str) -> None:
-    await message.answer(prompt, reply_markup=players_picker(storage.list_players(message.chat.id), kind))
+def _presser(query) -> Optional[int]:
+    """Telegram id того, кто нажал кнопку (у колбэка без пользователя — None)."""
+    return getattr(getattr(query, "from_user", None), "id", None)
+
+
+def _my_account(players, user_id: Optional[int]) -> Optional[int]:
+    """account_id игрока, к которому привязан этот пользователь Telegram (/me), иначе None."""
+    return next((p.account_id for p in players if user_id and p.tg_user_id == user_id), None)
+
+
+async def _ask_player(message: Message, storage: Storage, kind: str, prompt: str, user_id: Optional[int] = None) -> None:
+    players = storage.list_players(message.chat.id)
+    await message.answer(prompt, reply_markup=players_picker(players, kind, me=_my_account(players, user_id)))
 
 
 # --- действия (общие для команд и кнопок) -------------------------------
@@ -1529,7 +1555,7 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         elif action == "together":
             await do_together(message, storage, od, stratz)
         elif action == "match":
-            await _ask_match(message, storage)
+            await _ask_match(message, storage, _presser(query))
         elif action == "matchid":
             await _prompt_matchid(message)
         elif action == "find":
@@ -1548,10 +1574,9 @@ async def on_callback(query: CallbackQuery, storage: Storage, od: OpenDota, stra
         elif action == "tags":
             chat = storage.get_or_create_chat(message.chat.id)
             await message.answer(render_settings(chat), parse_mode="HTML", reply_markup=settings_menu(chat))
-        elif action in {"remove", "setmmr", "heroes", "roles", "player", "steam", "double"}:
+        elif action in PICK_PROMPTS:
             if await _has_players(message, storage):
-                label = {"remove": "Кого удалить", "setmmr": "Выберите игрока, чтобы задать MMR", "heroes": "Выберите игрока для просмотра героев", "roles": "Выберите игрока для просмотра позиций", "player": "Выберите игрока для просмотра карточки", "steam": "Выберите игрока для просмотра Steam-профиля", "double": "Чей последний матч отметить дабл-дауном (×2)"}[action]
-                await _ask_player(message, storage, action, f"{label}:")
+                await _ask_player(message, storage, action, PICK_PROMPTS[action], _presser(query))
         return
 
     if kind == "pp" and len(args) == 2:

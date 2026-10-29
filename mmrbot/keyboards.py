@@ -17,36 +17,43 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 PERIODS = [("day", "День"), ("week", "Неделя"), ("month", "Месяц"), ("all", "Всё")]
 
-# Главное меню — категории (`m:c:<ключ>`) и две «быстрые» кнопки; внутри категории — действия `m:<действие>`.
+# Главное меню: сверху самое частое (последний матч, матчи игрока, рейтинг) — в одно нажатие, ниже разделы
+# (`m:c:<ключ>`, подписаны «›» — за ними подменю). Каждое действие `m:<действие>` — ровно в одном месте.
 CATEGORIES = {
-    "stats": ("🏆 Статистика", [
-        [("🏆 Рейтинг", "stats"), ("📅 Сегодня", "today")],
-        [("🗓️ За неделю", "week"), ("📆 За месяц", "month")],
-        [("⚖️ Сравнение", "compare"), ("🤝 Совместные игры", "together")],
+    "stats": ("📊 Статистика", [
+        [("📅 Сегодня", "today"), ("🗓️ Неделя", "week"), ("📆 Месяц", "month")],
+        [("⚖️ Кто сильнее", "compare"), ("🤝 Игры вместе", "together")],
+        [("📈 График MMR", "graph")],
     ]),
-    "players": ("🎮 Игроки и матчи", [
-        [("🪪 Карточка игрока", "player"), ("🎭 Steam-профиль", "steam")],
-        [("🦸 Герои и позиции", "heroes"), ("🔎 Статистика героя", "hero")],
-        [("🎮 Матч", "match"), ("🏁 Последний матч", "last")],
-        [("🔎 Поиск по ID", "find"), ("⚔️ Против кого", "matchups")],
+    "players": ("🎮 Игроки и герои", [
+        [("🪪 Карточка игрока", "player"), ("🦸 Герои и позиции", "heroes")],
+        [("⚔️ Против кого и с кем", "matchups"), ("🔎 Статистика героя", "hero")],
+        [("🎯 Разбор матча", "match"), ("🔢 Найти по ID", "find")],
+        [("🎭 Steam-профиль", "steam")],
     ]),
-    "records": ("🌟 Рекорды и графики", [
-        [("🌟 Рекорды", "records"), ("📈 График MMR", "graph")],
-        [("🏅 Соревнование", "achv"), ("🏆 Сезон", "season")],
-        [("🏛 Зал славы", "hall")],
+    "records": ("🌟 Рекорды", [
+        [("🌟 Рекорды пати", "records"), ("🏅 Соревнование", "achv")],
+        [("🏆 Сезон", "season"), ("🏛 Зал славы", "hall")],
     ]),
     "party": ("👥 Пати", [
-        [("👥 Игроки", "list"), ("➕ Добавить", "add")],
-        [("✏️ Задать MMR", "setmmr"), ("🗑️ Удалить", "remove")],
-        [("🙋 Это я", "me"), ("🏷️ Теги с MMR", "tags")],
-        [("🎮 Позвать пати", "go"), ("✖️ Дабл-даун", "double")],
-        [("🩺 Состояние бота", "status")],
+        [("🎮 Позвать играть", "go"), ("✖️ Отметить ×2", "double")],
+        [("👥 Состав", "list"), ("➕ Добавить игрока", "add")],
+        [("✏️ Задать MMR", "setmmr"), ("🗑️ Удалить игрока", "remove")],
+        [("🙋 Это я", "me"), ("🩺 Состояние бота", "status")],
     ]),
 }
+
+
+def _section(key: str) -> tuple[str, str]:
+    return f"{CATEGORIES[key][0]} ›", f"c:{key}"
+
+
 _MAIN = [
-    [(CATEGORIES["stats"][0], "c:stats"), (CATEGORIES["players"][0], "c:players")],
-    [(CATEGORIES["records"][0], "c:records"), (CATEGORIES["party"][0], "c:party")],
-    [("⚙️ Настройки", "settings"), ("📖 Справка", "help")],
+    [("🏁 Мой последний матч", "last"), ("📜 Матчи игрока", "matches")],
+    [("🏆 Рейтинг", "stats"), _section("stats")],
+    [_section("players"), _section("records")],
+    [_section("party"), ("⚙️ Настройки", "settings")],
+    [("📖 Справка", "help")],
 ]
 _CLOSE = ("✖️ Закрыть", "x:close")
 
@@ -142,16 +149,20 @@ def category_title(key: str) -> str:
 
 
 def category_menu(key: str) -> InlineKeyboardMarkup:
-    """Подменю категории: её действия + «В меню»/«Закрыть»."""
+    """Подменю раздела: его действия + «В меню»/«Закрыть»."""
     rows = [[InlineKeyboardButton(text=t, callback_data=f"m:{a}") for t, a in row] for row in CATEGORIES[key][1]]
     rows.append(nav_row())
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def players_picker(players, kind: str, per_row: int = 2, extra=None) -> InlineKeyboardMarkup:
-    """Кнопки с именами игроков → `pp:<kind>:<account_id>`; extra — доп. ряды; внизу «В меню»."""
+def players_picker(players, kind: str, per_row: int = 2, extra=None, me: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Кнопки с именами игроков → `pp:<kind>:<account_id>`; extra — доп. ряды; внизу «В меню».
+
+    me — account_id того, кто нажал (если он привязан через /me): его кнопка первая и с «🙋», чтобы не искать себя."""
+    players = sorted(players, key=lambda p: p.account_id != me) if me else list(players)
     buttons = [
-        InlineKeyboardButton(text=p.display_name, callback_data=f"pp:{kind}:{p.account_id}")
+        InlineKeyboardButton(text=f"🙋 {p.display_name}" if p.account_id == me else p.display_name,
+                             callback_data=f"pp:{kind}:{p.account_id}")
         for p in players
     ]
     rows = [buttons[i:i + per_row] for i in range(0, len(buttons), per_row)]
@@ -198,13 +209,13 @@ def stats_tabs(current: str) -> InlineKeyboardMarkup:
 
 
 def player_actions(account_id: int) -> InlineKeyboardMarkup:
-    """Под карточкой игрока: герои, позиции, Steam (`pp:<вид>:<account_id>`)."""
+    """Под карточкой игрока: матчи (чаще всего нужны — первыми), герои, позиции, Steam (`pp:<вид>:<account_id>`)."""
     def btn(text, kind):
         return InlineKeyboardButton(text=text, callback_data=f"pp:{kind}:{account_id}")
 
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn("🦸 Герои", "heroes"), btn("🎯 Позиции", "roles")],
-        [btn("📜 Матчи", "matches"), btn("🎭 Steam", "steam")],
+        [btn("📜 Матчи", "matches"), btn("🦸 Герои", "heroes")],
+        [btn("🎯 Позиции", "roles"), btn("🎭 Steam", "steam")],
         nav_row(),
     ])
 

@@ -127,3 +127,23 @@ def test_every_action_is_in_exactly_one_place():
     data = [b.callback_data for b in _all_menu_buttons() if b.callback_data.startswith("m:")
             and not b.callback_data.startswith("m:c:") and b.callback_data not in {"m:menu"}]
     assert len(data) == len(set(data))
+
+
+def test_main_menu_puts_frequent_actions_first():
+    rows = main_menu().inline_keyboard
+    assert [b.callback_data for b in rows[0]] == ["m:last", "m:matches"]  # последний матч и матчи игрока — в одно нажатие
+    assert "m:stats" in {b.callback_data for b in rows[1]}
+    # разделы помечены «›» — видно, что дальше подменю, а не отчёт
+    assert all(b.text.endswith("›") for b in _flat(main_menu()) if b.callback_data.startswith("m:c:"))
+
+
+def test_players_picker_puts_presser_first():
+    players = [_p(1, "Вася"), _p(2, "Петя"), _p(3, "Коля")]
+    buttons = _flat(players_picker(players, "matches", me=1002))
+    assert buttons[0].callback_data == "pp:matches:1002" and buttons[0].text == "🙋 Петя"
+    assert [b.text for b in buttons[1:3]] == ["Вася", "Коля"]
+
+
+def test_player_actions_start_with_matches():
+    rows = player_actions(1001).inline_keyboard
+    assert rows[0][0].callback_data == "pp:matches:1001"
