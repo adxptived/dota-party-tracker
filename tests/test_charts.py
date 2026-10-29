@@ -78,3 +78,17 @@ def test_date_num_matches_matplotlib_for_aware_datetimes():
         for ts in (0, 1_700_000_000, 1_711_846_800, 1_730_000_000, 1_760_000_123.5):
             expected = mdates.date2num(datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(tz))
             assert abs(date_num(ts) - expected) < 1e-9, (name, ts)
+
+
+def test_chart_regular_text_uses_inter_medium_not_bold():
+    import os
+
+    from matplotlib import font_manager
+
+    from mmrbot import charts
+    family = charts._font_family()
+    regular = font_manager.findfont(font_manager.FontProperties(family=list(family), weight="normal"))
+    bold = font_manager.findfont(font_manager.FontProperties(family=list(family), weight="bold"))
+    if family[0] == "Inter":
+        assert os.path.basename(regular) == "Inter-Medium.otf"  # обычный текст — не жирный
+        assert os.path.basename(bold) == "Inter-Bold.otf"

@@ -108,6 +108,7 @@ def _font_family() -> tuple[str, ...]:
     Проверяем наличие сами: иначе matplotlib на каждый текст пишет в лог «Font family not found»
     (в Docker-образе нет ни Inter, ни Segoe UI).
     """
+    import dataclasses
     import os
 
     from matplotlib import font_manager
@@ -119,6 +120,13 @@ def _font_family() -> tuple[str, ...]:
             font_manager.fontManager.addfont(os.path.join(fonts_dir, name))
         except Exception:
             pass
+    # Medium matplotlib заносит отдельным семейством «Inter Medium» — тогда в «Inter» остаётся только Bold, и весь
+    # обычный текст графика выходил жирным. Переносим его в «Inter»: обычный вес (400) — это и есть наш Medium, без предупреждений в лог.
+    font_manager.fontManager.ttflist = [
+        dataclasses.replace(font, name="Inter", weight=400) if font.name == "Inter Medium" else font
+        for font in font_manager.fontManager.ttflist
+    ]
+    font_manager.fontManager._findfont_cached.cache_clear()
     installed = {font.name for font in font_manager.fontManager.ttflist}
     first = next((name for name in FONTS if name in installed), "DejaVu Sans")
     return (first,) if first == "DejaVu Sans" else (first, "DejaVu Sans")
