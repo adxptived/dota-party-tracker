@@ -15,7 +15,7 @@ from typing import Optional
 
 from mmrbot import cards
 from mmrbot.cards import ACCENT, BG, EDGE, FG, GOLD, LOSS, MUTED, PAD, PANEL, PANEL_HI, WIDTH, WIN, clean, draw_text, mix
-from mmrbot.alert_image import _item_icon, clock
+from mmrbot.alert_image import _item_icon, _neutral_icon, clock
 from mmrbot.heroes import hero_name
 from mmrbot.stats_image import HERO_H, HERO_W, _draw_records, _draw_tiles
 from mmrbot.upgrade_icons import paste_upgrade
@@ -127,9 +127,8 @@ def _draw_best_build(img, draw, x: float, top: float, build: dict, item_icons: d
     neutral = build.get("neutral_item")
     if isinstance(neutral, int) and not isinstance(neutral, bool) and neutral:
         x += 12
-        cards.paste(img, _item_icon(item_icons.get(neutral), BEST_ITEM_W, BEST_ITEM_H, 6), x, top)
-        draw_text(draw, (x + BEST_ITEM_W / 2, top + BEST_ITEM_H + 14), "нейтралка", 16, MUTED, anchor="mm")
-        x += BEST_ITEM_W + BEST_ITEM_GAP
+        cards.paste(img, _neutral_icon(item_icons.get(neutral), BEST_ITEM_H), x, top)  # нейтралка — кружком, как в игре
+        x += BEST_ITEM_H + BEST_ITEM_GAP
     x += 16
     for key, label, color in (("shard", "Ш", ACCENT), ("scepter", "С", GOLD)):
         if not build.get(key):

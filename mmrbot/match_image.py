@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Optional
 
 from mmrbot import cards
-from mmrbot.alert_image import _item_icon, clock
+from mmrbot.alert_image import _item_icon, _neutral_icon, clock
 from mmrbot.cards import (
     ACCENT, DIRE, FG, GOLD, ICON_H, ICON_W, LOSS, MINE_PANEL, MUTED, PAD, PANEL, RADIANT, WIN, clean, draw_text,
 )
@@ -196,18 +196,23 @@ def _draw_score(draw, cx: float, cy: float, radiant: int, dire: int,
 
 
 def _draw_items(img, draw, top: float, items, times, neutral, item_icons: dict) -> None:
-    """Одна линия билда: предметы по слотам, под каждым время покупки, затем нейтралка."""
+    """Одна линия билда: 6 слотов (пустые — приглушённой ячейкой), под каждым время покупки, затем нейтралка кружком."""
     x = ITEMS_X
     times = times if isinstance(times, list) else []
-    for i, item_id in enumerate(_ids(items)):
-        cards.paste(img, _item_icon(item_icons.get(item_id), SLOT_W, SLOT_H, 5), x, top)
+    items = _ids(items)
+    empty = cards.mix(PANEL, "#ffffff", 0.05)
+    for i in range(max(6, len(items))):
+        if i >= len(items):
+            cards.panel(img, (x, top, x + SLOT_W, top + SLOT_H), empty, radius=5)
+            x += SLOT_W + SLOT_GAP
+            continue
+        cards.paste(img, _item_icon(item_icons.get(items[i]), SLOT_W, SLOT_H, 5), x, top)
         when = clock(times[i]) if i < len(times) else ""
-        if when:
-            draw_text(draw, (x + SLOT_W / 2, top + SLOT_H + 12), when, 15, TIME_COLOR, anchor="mm", track=False)
+        if when:  # мелким кеглем: «18:00» не налезает на соседний слот
+            draw_text(draw, (x + SLOT_W / 2, top + SLOT_H + 11), when, 13, TIME_COLOR, anchor="mm", track=False)
         x += SLOT_W + SLOT_GAP
     if isinstance(neutral, int) and not isinstance(neutral, bool) and neutral:
-        draw.line((x + 2, top + 3, x + 2, top + SLOT_H - 3), fill=cards.mix(PANEL, "#ffffff", 0.22), width=2)  # нейтралка — не слот билда
-        cards.paste(img, _item_icon(item_icons.get(neutral), SLOT_W, SLOT_H, 5), x + 8, top)
+        cards.paste(img, _neutral_icon(item_icons.get(neutral), SLOT_H), x + 7, top)  # нейтралка — кружком, как в игре
 
 
 def _draw_build(img, draw, y: int, p: dict, item_icons: dict) -> None:

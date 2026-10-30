@@ -1235,6 +1235,8 @@ class Storage:
                                            "scepter", "scepter_time")}
         if build.get("talents"):  # дерево талантов (talents.talent_tree) — только если известно
             keep["talents"] = build["talents"]
+        if build.get("bear_items"):  # инвентарь медведя Лон Друида
+            keep.update({k: build.get(k) for k in ("bear_items", "bear_item_times", "bear_neutral")})
         with self._conn() as conn:
             row = conn.execute("SELECT build FROM match_builds WHERE account_id = ? AND match_id = ?",
                                (account_id, match_id)).fetchone()

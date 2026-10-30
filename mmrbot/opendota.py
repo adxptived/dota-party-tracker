@@ -59,11 +59,20 @@ def _purchase_times(player: dict) -> dict:
     return bought
 
 
+def _bear_unit(player: dict) -> Optional[dict]:
+    """Медведь Лон Друида из additional_units OpenDota (второй инвентарь); у остальных героев — None."""
+    units = [u for u in player.get("additional_units") or [] if isinstance(u, dict)]
+    return next((u for u in units if "bear" in str(u.get("unitname") or "")), units[0] if units else None)
+
+
 def _player_build(player: dict) -> dict:
-    """Билд игрока из матча OpenDota: предметы, время их покупки, нейтралка, шард и скипетр (с временем)."""
+    """Билд игрока из матча OpenDota: предметы, время их покупки, нейтралка, шард и скипетр (с временем).
+
+    У Лон Друида ещё и инвентарь медведя (bear_items, bear_item_times, bear_neutral): лог покупок у них общий.
+    """
     bought = _purchase_times(player)
     items = [player[slot] for slot in _ITEM_SLOTS if player.get(slot)]
-    return {
+    build = {
         "items": items,
         "item_times": [bought.get(item_slug(item_id)) for item_id in items],  # None — время неизвестно
         "neutral_item": player.get("item_neutral") or None,
@@ -76,6 +85,13 @@ def _player_build(player: dict) -> dict:
         "level": player.get("level"),
         "rank_tier": player.get("rank_tier"),
     }
+    bear = _bear_unit(player)
+    bear_items = [bear[slot] for slot in _ITEM_SLOTS if bear.get(slot)] if bear else []
+    if bear_items:
+        build["bear_items"] = bear_items
+        build["bear_item_times"] = [bought.get(item_slug(item_id)) for item_id in bear_items]
+        build["bear_neutral"] = bear.get("item_neutral") or None
+    return build
 
 
 def lineup_of(players) -> Optional[tuple[list, list]]:

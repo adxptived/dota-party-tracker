@@ -828,7 +828,9 @@ def _alert_png(event: dict, tz: str) -> bytes:
     rows = event.get("rows") or []
     found_icons = icons.get_many(r.get("hero_id") for r in rows) if icons is not None else {}
     found_avatars = loader.get_many(r.get("avatar") for r in rows) if loader is not None else {}
-    item_ids = [i for r in rows for i in (r.get("items") or []) + [r.get("neutral_item")]]
+    item_ids = [i for r in rows
+                for i in (r.get("items") or []) + [r.get("neutral_item")] + (r.get("bear_items") or []) + [r.get("bear_neutral")]
+                if i]
     found_items = gear.get_many(item_ids) if gear is not None else {}
     return render_alert_image(event, tz, found_icons, found_avatars, found_items)
 

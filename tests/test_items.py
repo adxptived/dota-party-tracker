@@ -412,3 +412,46 @@ def test_enrich_alert_items_fills_missing_times_from_stratz():
             raise RuntimeError("boom")
 
     enrich_alert_items(client, _event(), Broken())  # сбой Stratz не ломает оповещение
+
+
+def test_match_player_stats_reads_lone_druid_bear_items_with_times():
+    saved = dict(items.ITEM_SLUGS)
+    try:
+        items.update_items({"1": "blink", "50": "phase_boots", "135": "assault"})
+        match = {"players": [{
+            "account_id": 42, "hero_id": 80, "item_0": 1,
+            "additional_units": [{"unitname": "spirit_bear", "item_0": 50, "item_1": 0, "item_2": 135,
+                                  "item_neutral": 300}],
+            "purchase_log": [{"time": 400, "key": "phase_boots"}, {"time": 1700, "key": "assault"}],
+        }]}
+        stats = OpenDota(session=FakeApiSession(match), min_interval=0).get_match_player_stats(1, 42)
+        assert stats["bear_items"] == [50, 135] and stats["bear_neutral"] == 300
+        assert stats["bear_item_times"] == [400, 1700]  # лог покупок общий на героя и медведя
+        plain = {"players": [{"account_id": 42, "item_0": 1, "additional_units": None}]}
+        stats = OpenDota(session=FakeApiSession(plain), min_interval=0).get_match_player_stats(2, 42)
+        assert "bear_items" not in stats  # у остальных героев медведя нет — и ключей нет
+    finally:
+        _reset_items(saved)
+
+
+def test_enrich_alert_items_copies_bear_build():
+    client = FakeClient({1: {"items": [1], "bear_items": [50, 135], "bear_item_times": [400, None], "bear_neutral": 300}})
+    event = _event()
+    enrich_alert_items(client, event)
+    row = event["rows"][0]
+    assert row["bear_items"] == [50, 135] and row["bear_item_times"] == [400, None] and row["bear_neutral"] == 300
+
+
+def test_stratz_fills_bear_items_and_times_when_opendota_has_none():
+    from mmrbot.tracker import fill_alert_times_from_stratz
+
+    class Stratz:
+        def get_match(self, match_id):
+            return {"players": [{"account_id": 1, "bear_items": [50, 135], "bear_neutral": 300,
+                                 "purchases": {1: 600, 50: 400, 135: 1700}}]}
+
+    event = {"match_id": 9, "rows": [{"account_id": 1, "hero_id": 80, "items": [1], "item_times": [600]}]}
+    fill_alert_times_from_stratz(event, Stratz())
+    row = event["rows"][0]
+    assert row["item_times"] == [600]
+    assert row["bear_items"] == [50, 135] and row["bear_item_times"] == [400, 1700] and row["bear_neutral"] == 300

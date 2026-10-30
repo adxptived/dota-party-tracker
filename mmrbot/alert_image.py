@@ -37,6 +37,10 @@ CELLS_H = 66  # ряд подписанных ячеек: K/D/A, IMP, эконо
 TREE_W, TREE_H = 120, 60  # дерево талантов графикой — справа в линии билда
 ITEM_W, ITEM_H, ITEM_GAP = 54, 40, 6
 UPGRADE_SIZE = 32
+SLOTS = 6  # основных слотов инвентаря: пустые рисуем приглушёнными ячейками — видно, что слот свободен
+NEUTRAL_D = 40  # нейтралка — кружком, как в игре
+LABEL_W = 104  # у Лон Друида слева от линий билда подписи «ГЕРОЙ» / «МЕДВЕДЬ»
+BEAR_GAP = 10
 CELL_MAX_W = 176
 SUMMARY_H = 84  # итог матча внизу: счёт, золото, длительность, дата и ID
 FOOT_H = 76
@@ -70,18 +74,40 @@ def clock(seconds) -> str:
 
 
 def _has_build(row: dict) -> bool:
-    return bool(row.get("items") or row.get("neutral_item") or row.get("shard") or row.get("scepter") or _talents(row))
+    return bool(row.get("items") or row.get("neutral_item") or row.get("shard") or row.get("scepter") or _talents(row)
+                or _has_bear(row))
 
 
-def _times(row: dict) -> list:
-    """Подписи времени покупки по слотам билда ('' — неизвестно)."""
-    return [clock(t) for t in (row.get("item_times") or [])[: len(row.get("items") or [])]]
+def _has_bear(row: dict) -> bool:
+    """Лон Друид: у медведя свой инвентарь — вторая линия билда."""
+    return bool(_ids(row.get("bear_items")) or _ids([row.get("bear_neutral")]))
+
+
+def _ids(values) -> list:
+    return [i for i in values or [] if isinstance(i, int) and not isinstance(i, bool) and i]
+
+
+def _times(row: dict, prefix: str = "") -> list:
+    """Подписи времени покупки по слотам билда ('' — неизвестно); prefix="bear_" — у медведя."""
+    items = row.get(f"{prefix}items") or []
+    return [clock(t) for t in (row.get(f"{prefix}item_times") or [])[: len(items)]]
+
+
+def _line_h(timed: bool) -> int:
+    return ITEM_H + (TIME_H if timed else 0)
+
+
+def _hero_line_h(row: dict) -> int:
+    return _line_h(any(_times(row)) or _upgrade_times(row))
 
 
 def _build_h(row: dict) -> int:
     if not _has_build(row):
         return 0
-    return BUILD_H + (TIME_H if any(_times(row)) or _upgrade_times(row) else 0)
+    h = BUILD_H - ITEM_H + _hero_line_h(row)
+    if _has_bear(row):
+        h += BEAR_GAP + _line_h(any(_times(row, "bear_")))
+    return h
 
 
 def _upgrade_times(row: dict) -> bool:
@@ -241,7 +267,7 @@ def _draw_row(
     sep = y + TOP_H - 2
     img.paste(cards.mix(fill, "#ffffff", 0.07), (CELLS_X, sep, RIGHT, sep + 1))
     if _has_build(row):
-        _draw_build(img, draw, y + TOP_H + 8 + ITEM_H / 2, row, item_icons or {})
+        _draw_build_block(img, draw, y + TOP_H + 8, row, item_icons or {}, fill)
     if _talents(row):  # дерево талантов — справа в линии билда, по центру её высоты
         mid = y + TOP_H + _build_h(row) / 2 + 2
         cards.talent_tree(img, (RIGHT - TREE_W, mid - TREE_H / 2, RIGHT, mid + TREE_H / 2), _talents(row), fill)
@@ -330,20 +356,71 @@ def _draw_cells(draw, mid: float, row: dict) -> None:
         cards.stat_cells(draw, x, mid, cells, min(CELL_MAX_W, (RIGHT - x) / len(cells)), value_size=22)
 
 
-def _draw_build(img, draw, mid: float, row: dict, item_icons: dict) -> None:
-    """Билд: 6 слотов, нейтралка, шард и скипетр; под иконками — время покупки."""
-    x = CELLS_X
-    times = _times(row)
-    for i, item_id in enumerate(row.get("items") or []):
-        cards.paste(img, _item_icon(item_icons.get(item_id)), x, mid - ITEM_H / 2)
-        if i < len(times) and times[i]:
-            draw_text(draw, (x + ITEM_W / 2, mid + ITEM_H / 2 + 12), times[i], 17, TIME_COLOR, anchor="mm", track=False)
+def _neutral_icon(data: Optional[bytes], d: int = NEUTRAL_D):
+    """Нейтральный предмет кружком: середина иконки без искажения пропорций; нет иконки — тёмный круг."""
+    return _neutral_cached(data, d)
+
+
+@lru_cache(maxsize=256)
+def _neutral_cached(data: Optional[bytes], d: int):
+    from PIL import Image
+    icon = None
+    if data:
+        try:
+            src = Image.open(io.BytesIO(data)).convert("RGBA")
+            side = min(src.size)
+            left, top = (src.width - side) // 2, (src.height - side) // 2
+            icon = src.crop((left, top, left + side, top + side)).resize((d, d), Image.LANCZOS)
+        except Exception:
+            icon = None
+    if icon is None:
+        icon = Image.new("RGBA", (d, d), cards.GRID)
+    icon.putalpha(cards._rr_mask(d, d, d // 2))
+    return icon
+
+
+def _draw_build_block(img, draw, top: float, row: dict, item_icons: dict, fill: str) -> None:
+    """Линии билда: герой (и у Лон Друида — медведь второй линией, с подписями слева)."""
+    bear = _has_bear(row)
+    x = CELLS_X + (LABEL_W if bear else 0)
+    mid = top + ITEM_H / 2
+    if bear:
+        draw_text(draw, (CELLS_X, mid), "ГЕРОЙ", 15, cards.mix(MUTED, PANEL, 0.15), bold=True, anchor="lm")
+    _draw_items(img, draw, x, mid, row.get("items"), _times(row), row.get("neutral_item"), item_icons, fill)
+    _draw_upgrades(img, draw, x + _items_w(), mid, row)
+    if bear:
+        bear_mid = top + _hero_line_h(row) + BEAR_GAP + ITEM_H / 2
+        draw_text(draw, (CELLS_X, bear_mid), "МЕДВЕДЬ", 15, cards.mix(MUTED, PANEL, 0.15), bold=True, anchor="lm")
+        _draw_items(img, draw, x, bear_mid, row.get("bear_items"), _times(row, "bear_"), row.get("bear_neutral"),
+                    item_icons, fill)
+
+
+def _items_w() -> int:
+    return SLOTS * (ITEM_W + ITEM_GAP) + 8 + NEUTRAL_D + 18
+
+
+def _draw_items(img, draw, x: float, mid: float, items, times: list, neutral, item_icons: dict, fill: str) -> None:
+    """Шесть слотов (пустые — приглушённой ячейкой) и нейтралка кружком; под иконками — время покупки."""
+    items = _ids(items)
+    empty = cards.mix(fill, "#ffffff", 0.045)
+    for i in range(max(SLOTS, len(items))):
+        if i < len(items):
+            cards.paste(img, _item_icon(item_icons.get(items[i])), x, mid - ITEM_H / 2)
+            if i < len(times) and times[i]:
+                draw_text(draw, (x + ITEM_W / 2, mid + ITEM_H / 2 + 12), times[i], 16, TIME_COLOR, anchor="mm",
+                          track=False)
+        else:
+            cards.panel(img, (x, mid - ITEM_H / 2, x + ITEM_W, mid + ITEM_H / 2), empty, radius=cards.corner(ITEM_H))
         x += ITEM_W + ITEM_GAP
-    if row.get("neutral_item"):
-        x += 10
-        cards.paste(img, _item_icon(item_icons.get(row["neutral_item"])), x, mid - ITEM_H / 2)
-        x += ITEM_W
-    x += 14
+    x += 8
+    if _ids([neutral]):
+        cards.paste(img, _neutral_icon(item_icons.get(neutral)), x, mid - NEUTRAL_D / 2)
+    else:
+        cards.panel(img, (x, mid - NEUTRAL_D / 2, x + NEUTRAL_D, mid + NEUTRAL_D / 2), empty, radius=NEUTRAL_D // 2)
+
+
+def _draw_upgrades(img, draw, x: float, mid: float, row: dict) -> None:
+    """Шард и скипетр после нейтралки; время покупки — подписью под иконкой."""
     for key, label, color in (("shard", "ШАРД", ACCENT), ("scepter", "СКИПЕТР", GOLD)):
         if row.get(key):
             when = clock(row.get(f"{key}_time"))
@@ -352,8 +429,8 @@ def _draw_build(img, draw, mid: float, row: dict, item_icons: dict) -> None:
                 x += cards.pill(img, draw, x, mid, f"{label} {when}".strip(), BG, color, size=16, pad=10) + 8
                 continue
             if when:  # время покупки — подписью под иконкой, как у предметов
-                draw_text(draw, (x + icon_w / 2, mid + ITEM_H / 2 + 12), when, 17, TIME_COLOR, anchor="mm", track=False)
-            x += max(icon_w, cards.text_width(when, 17) if when else 0) + 10
+                draw_text(draw, (x + icon_w / 2, mid + ITEM_H / 2 + 12), when, 16, TIME_COLOR, anchor="mm", track=False)
+            x += max(icon_w, cards.text_width(when, 16) if when else 0) + 12
 
 
 def _draw_shared(img, draw, y: int, shared: dict) -> None:

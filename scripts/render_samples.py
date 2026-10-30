@@ -136,6 +136,13 @@ def build() -> dict[str, bytes]:
                           {"level": 25, "right": "Feast of Souls Grants +30% Cast Speed",
                            "left": "Shadowraze Applies Attack Damage", "pick": None}]}]}
     out["alert_solo.png"] = render_alert_image(solo, "Europe/Moscow", icons={11: fake_photo(3, 256)}, item_icons=items)
+    druid = dict(solo, rows=[dict(solo["rows"][0], name="Cotara", hero_id=80, won=True, delta=25, current_mmr=3734,
+                                  kills=4, deaths=9, assists=12, gpm=833, net_worth=57600, last_hits=1030, denies=4,
+                                  hero_damage=33000, tower_damage=16600, position=1, rank_tier=71, level=28,
+                                  items=[1, 2, 3], item_times=[620, 1340, 2400], neutral_item=10, shard=True,
+                                  shard_time=1900, bear_items=[4, 5, 6, 7, 8, 9], bear_neutral=11,
+                                  bear_item_times=[380, 900, 1500, 2100, 2900, 3600])])
+    out["alert_bear.png"] = render_alert_image(druid, "Europe/Moscow", icons={80: fake_photo(5, 256)}, item_icons=items)
     for kind in ("win", "loss", "mixed"):
         out[f"alert_{kind}.png"] = render_alert_image(
             sample_alert(kind), "Europe/Moscow", icons={12: fake_photo(1, 256), 1: fake_photo(2, 256)},

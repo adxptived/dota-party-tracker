@@ -338,6 +338,7 @@ def refresh_items(client: OpenDotaClient) -> int:
 _ALERT_FIELDS = (
     "items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents",
     "net_worth", "last_hits", "denies", "hero_healing", "tower_damage", "stacks", "level",
+    "bear_items", "bear_item_times", "bear_neutral",  # инвентарь медведя Лон Друида
 )
 
 
@@ -379,7 +380,7 @@ def _enrich_rows_from_opendota(client, event: dict) -> None:
 
 def fill_alert_times_from_stratz(event: dict, stratz) -> None:
     """Времена покупок строк оповещения, которых нет у OpenDota (матч не разобран), — из журнала Stratz. Best-effort."""
-    rows = [r for r in event.get("rows") or [] if r.get("items") and any(t is None for t in _times_of(r))]
+    rows = [r for r in event.get("rows") or [] if r.get("items") and (any(t is None for t in _times_of(r)) or _bear_missing(r))]
     if not rows or stratz is None or _provider_down(stratz):
         return
     try:
@@ -391,9 +392,22 @@ def fill_alert_times_from_stratz(event: dict, stratz) -> None:
     by_account = {p.get("account_id"): p for p in (match or {}).get("players") or []}
     for row in rows:
         source = by_account.get(row.get("account_id"))
+        if source and source.get("bear_items") and not row.get("bear_items"):  # OpenDota медведя не знает
+            row["bear_items"] = list(source["bear_items"])
+            row["bear_neutral"] = row.get("bear_neutral") or source.get("bear_neutral")
         if source and source.get("purchases"):
             row["purchases"] = source["purchases"]
             _fill_times_from_purchases(row)
+
+
+LONE_DRUID_ID = 80
+
+
+def _bear_missing(row: dict) -> bool:
+    """У Лон Друида нет предметов медведя или их времён — их стоит добрать из Stratz."""
+    if row.get("hero_id") != LONE_DRUID_ID:
+        return False
+    return not row.get("bear_items") or any(t is None for t in row.get("bear_item_times") or [None])
 
 
 def _times_of(row: dict) -> list:
@@ -447,7 +461,9 @@ def enrich_match_builds(client: OpenDotaClient, match: dict) -> None:
             continue  # билды с временами уже есть (матч из кэша Stratz)
         if build:
             player.update({key: build[key] for key in BUILD_FIELDS if key in build})
-            if player.get("bear_items"):  # лог покупок общий на героя и медведя: датируем предметы медведя по нему
+            if build.get("bear_items") and not player.get("bear_items"):  # Stratz матча не знает — медведь из OpenDota
+                player.update({key: build.get(key) for key in ("bear_items", "bear_item_times", "bear_neutral")})
+            elif player.get("bear_items"):  # лог покупок общий на героя и медведя: датируем предметы медведя по нему
                 bought = build.get("bought") or {}
                 player["bear_item_times"] = [bought.get(item_slug(i)) for i in player["bear_items"]]
         _fill_times_from_purchases(player)
@@ -1426,7 +1442,8 @@ def build_together(storage: Storage, chat_id: int) -> dict:
     }
 
 
-_STORED_KEYS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents")
+_STORED_KEYS = ("items", "item_times", "neutral_item", "shard", "shard_time", "scepter", "scepter_time", "talents",
+                "bear_items", "bear_item_times", "bear_neutral")
 
 
 def persist_builds(storage, match_id, rows: list) -> None:
@@ -1464,6 +1481,8 @@ def restore_builds(storage, match_id, rows: list) -> None:
             continue
         if row["items"] != saved.get("items"):
             continue
+        if saved.get("bear_items") and not row.get("bear_items"):
+            row.update({key: saved.get(key) for key in ("bear_items", "bear_item_times", "bear_neutral")})
         have = row.get("item_times") or [None] * len(row["items"])
         old = saved.get("item_times") or []
         row["item_times"] = [t if t is not None else (old[i] if i < len(old) else None) for i, t in enumerate(have)]

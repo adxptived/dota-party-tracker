@@ -221,3 +221,16 @@ def test_dota_plus_tier_is_drawn_on_alert_icon():
     event["rows"] = [dict(row, plus_xp=72050)]
     plus = Image.open(io.BytesIO(render_alert_image(event))).convert("RGB")
     assert plain.tobytes() != plus.tobytes()
+
+
+def test_lone_druid_row_shows_bear_items_on_its_own_line():
+    hero = _row("Cotara", hero_id=80, items=[1, 2, 3], item_times=[300, 900, 1500], neutral_item=4)
+    bear = dict(hero, bear_items=[5, 6, 7, 8], bear_item_times=[400, 1000, None, 2000], bear_neutral=9)
+    plain = _open(render_alert_image(_event([hero]), "UTC"))
+    with_bear = _open(render_alert_image(_event([bear]), "UTC"))
+    assert with_bear.height > plain.height + 40  # вторая линия билда — предметы медведя
+
+
+def test_bear_alone_is_a_build_too():
+    row = _row("Cotara", hero_id=80, bear_items=[5, 6])
+    assert _open(render_alert_image(_event([row]), "UTC")).height > _open(render_alert_image(_event([_row("X")]), "UTC")).height
