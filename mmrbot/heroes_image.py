@@ -198,7 +198,8 @@ def render_hero_image(
         cards.place_badge(img, draw, PAD + 30, mid, place, 36)
         name = clean(row.get("name")) or "Игрок"
         cards.paste(img, cards.avatar(avatars.get(row.get("avatar")), name, 60), PAD + 60, mid - 30)
-        draw_text(draw, (PAD + 60 + 60 + 18, mid - 14), name, 26, FG, bold=True, anchor="lm", max_w=COL_WL - 190)
+        draw_text(draw, (PAD + 60 + 60 + 18, mid - 14), name, 26, FG, bold=True, anchor="lm", max_w=COL_WL - 214,
+                  shrink=20)
         draw_text(draw, (PAD + 60 + 60 + 18, mid + 18), f"{row['games']} игр", 20, MUTED, anchor="lm")
         _stat_columns(img, draw, mid, row)
         y += ROW_H + ROW_GAP

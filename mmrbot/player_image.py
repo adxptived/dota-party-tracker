@@ -119,8 +119,9 @@ def _draw_header(img, draw, y: int, card: dict, avatars: dict, tone: str = GOLD)
                                           align="right", pad=14, base=PANEL))
     room = right - block_w - 32 - x
 
-    draw_text(draw, (x, y + 50), name, 46, FG, bold=True, anchor="lm", max_w=room, shrink=28)
     subtitle = clean(card.get("subtitle")) or (f"Steam: {clean(card['steam_name'])}" if card.get("steam_name") else "")
+    # без подписи ник опускается к рангу: иначе между ними зияет пустая строка
+    draw_text(draw, (x, y + (50 if subtitle else 74)), name, 46, FG, bold=True, anchor="lm", max_w=room, shrink=28)
     if subtitle:
         draw_text(draw, (x, y + 92), subtitle, 22, cards.mix(MUTED, "#ffffff", 0.12), anchor="lm", max_w=room, shrink=18)
     cards.paste(img, cards.rank_badge(card.get("rank_tier"), 56), x, y + 112)
@@ -151,7 +152,9 @@ def _draw_trend_row(img, draw, y: int, card: dict) -> int:
         draw_text(draw, (PAD + LEFT_W - 24, y + 28), f"{series[0]} → {series[-1]}", 20, FG, bold=True, anchor="rm")
         cards.sparkline(img, (x0, y0 - 6, PAD + LEFT_W - 24, y + h - 96), series, ACCENT)
     else:
-        draw_text(draw, (x0, y0 + 40), "мало игр для графика", 22, MUTED, anchor="lm")
+        # заглушка — по центру места, где был бы график, а не прилипшей к заголовку
+        draw_text(draw, ((x0 + PAD + LEFT_W - 24) / 2, (y0 - 6 + y + h - 96) / 2), "мало игр для графика", 22, MUTED,
+                  anchor="mm")
     form = card.get("form") or []
     if form:
         draw_text(draw, (x0, y + h - 60), "ФОРМА", 18, MUTED, bold=True, anchor="lm")
@@ -161,7 +164,8 @@ def _draw_trend_row(img, draw, y: int, card: dict) -> int:
                   anchor="rm")
 
     rx = PAD + LEFT_W + GAP
-    x1, y1 = _section(img, draw, (rx, y, rx + RIGHT_W, y + h), "Соло и группа")
+    # без разбивки соло/группа в панели только факты — и заголовок о них, а не о пустой разбивке
+    x1, y1 = _section(img, draw, (rx, y, rx + RIGHT_W, y + h), "Соло и группа" if card.get("split") else "Коротко")
     row_y = y1 + 4
     for item in card.get("split") or []:
         games = item["wins"] + item["losses"]
