@@ -202,4 +202,4 @@ def test_match_list_image_renders_rows_and_empty_page(drawn):
     texts = [t[0] for t in drawn]
     numbers = [texts[i - 1] for i, t in enumerate(texts) if t == "Shadow Fiend"]  # номер рисуется перед героем
     assert numbers == [str(n) for n in range(1, 11)]
-    assert "12.10 21:50  ·  40 мин  ·  295 крипов" in texts
+    assert "12.10 21:50 · 40 мин · 295 крипов" in texts
