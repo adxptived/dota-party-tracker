@@ -37,10 +37,9 @@ def render_compare_image(rows: list, avatars: Optional[dict] = None, note: Optio
     canvas = cards.Canvas(300 + size * (ROW_H + ROW_GAP) + 100)
     img, draw = canvas.img, canvas.draw
     y = cards.header(img, draw, "Сравнение игроков", "индекс — среднее положение среди участников по четырём показателям",
-                     (f"УЧАСТНИКОВ: {size}", ACCENT))
+                     (f"УЧАСТНИКОВ: {size}", ACCENT) if size else None)
     if not rows:
-        draw_text(draw, (PAD, y + 20), "Игроков пока нет.", 26, MUTED, anchor="lm")
-        y += 50
+        y = cards.empty_panel(img, draw, y, "Игроков пока нет.", "Добавьте участников: /add ссылка_или_ID [имя] [MMR]")
     else:
         draw_text(draw, (NAME_X, y + 10), "ИГРОК", 18, MUTED, anchor="lm")
         draw_text(draw, (INDEX_X, y + 10), "ИНДЕКС", 18, MUTED, anchor="mm")

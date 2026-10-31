@@ -142,8 +142,7 @@ def render_party_heroes_image(rows: list, icons: Optional[dict] = None, avatars:
                       bold=True, anchor="lm")
         y += PARTY_ROW_H + ROW_GAP
     if not rows:
-        draw_text(draw, (PAD, y + 20), "Игроков пока нет.", 26, MUTED, anchor="lm")
-        y += 50
+        y = cards.empty_panel(img, draw, y, "Игроков пока нет.")
     if note:
         y = cards.footer(draw, y, note)
     return canvas.png(y)

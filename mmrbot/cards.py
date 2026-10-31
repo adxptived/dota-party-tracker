@@ -893,3 +893,16 @@ def talent_tree(img, box, rows: Sequence[dict], base: str = PANEL, plate: bool =
                       _rr_mask(max(round(right) - round(left), 1), max(round(cy + bar_h / 2) - round(cy - bar_h / 2), 1),
                                max(1, bar_h // 2)))
         dot(img, cx, cy, node, GOLD if picked else mix(base, "#ffffff", 0.3))
+
+
+def empty_panel(img, draw, y: float, text: str, hint: Optional[str] = None) -> float:
+    """Пустое состояние карточки: панель с пояснением (и подсказкой, что сделать). Возвращает y под панелью."""
+    h = 110 if hint else 96
+    panel(img, (PAD, y, WIDTH - PAD, y + h), PANEL, radius=R_CARD)
+    room = WIDTH - 2 * PAD - 56
+    if hint:
+        draw_text(draw, (PAD + 28, y + 38), text, 26, FG, bold=True, anchor="lm", max_w=room, shrink=20)
+        draw_text(draw, (PAD + 28, y + 76), hint, 20, MUTED, anchor="lm", max_w=room, shrink=16)
+    else:
+        draw_text(draw, (PAD + 28, y + h / 2), text, 26, MUTED, anchor="lm", max_w=room, shrink=20)
+    return y + h + 16

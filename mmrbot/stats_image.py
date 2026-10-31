@@ -59,6 +59,8 @@ def render_stats_image(
         if any(r.get("hero_id") for r in rows):
             draw_text(draw, (HERO_X + HERO_W / 2, y + 10), "ГЕРОЙ", 18, MUTED, anchor="mm")
         y += HEAD_ROW_H
+    if not rows:
+        y = cards.empty_panel(img, draw, y, "Игроков пока нет.", "Добавьте первого: /add ссылка_или_ID [имя] [MMR]")
     for place, row in enumerate(rows, start=1):
         _draw_row(img, draw, y, place, row, icons, avatars)
         y += ROW_H + ROW_GAP
