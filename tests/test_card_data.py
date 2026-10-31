@@ -226,3 +226,11 @@ def test_player_card_and_match_list_pass_dota_plus_xp():
     match = {"match_id": 1, "start_time": 1000, "player_slot": 0, "radiant_win": True, "hero_id": 12,
              "kills": 1, "deaths": 2, "assists": 3, "plus_xp": 18250}
     assert cd.match_list_rows([match], 0, 25)[0]["plus_xp"] == 18250
+
+
+def test_match_list_rows_carry_saved_build():
+    match = {"match_id": 7, "start_time": 1000, "player_slot": 0, "radiant_win": True, "hero_id": 12}
+    builds = {7: {"items": [1, 2, 0], "neutral_item": 300}}
+    row = cd.match_list_rows([match], 0, 25, builds=builds)[0]
+    assert row["items"] == [1, 2] and row["neutral_item"] == 300
+    assert "items" not in cd.match_list_rows([match], 0, 25)[0]  # билд не сохранён — иконок нет

@@ -180,8 +180,12 @@ def build() -> dict[str, bytes]:
              "Shadow Fiend"][i % 5], "won": i % 3 != 1, "kills": 3 + i, "deaths": 2 + i % 4, "assists": 7 + i,
              "delta": 25 if i % 3 != 1 else -25, "double_down": i == 4, "minutes": 30 + i * 2, "when": f"{12 - i // 3:02d}.10 21:{10 + i}",
              "extra": "P1 · 612 GPM · 280 крипов", "current": i == 2} for i in range(10)]
+    for i, row in enumerate(page):
+        if i != 7:  # у одного матча билд не сохранён
+            row.update(items=[1 + (i + k) % 9 for k in range(6 - i % 3)], neutral_item=10 if i % 4 else None)
+    gear = {i: fake_photo(40 + i, 88) for i in range(1, 12)}
     out["match_list.png"] = render_match_list_image("Матчи · Вася", "матчи 1–10 из 56 · нажмите номер, чтобы открыть",
-                                                    page, icons, ("СТР. 1/6", ACCENT))
+                                                    page, icons, ("СТР. 1/6", ACCENT), item_icons=gear)
     long_card = sample_player()
     long_card.update(name="Оооочень длинный ник игрока из Steam", steam_name="steam_" + "x" * 40, rank_tier=80,
                      rank_text="Immortal #1234", mmr_text="≈12345", delta_note="за 1234 игры", streak=("L", 12))

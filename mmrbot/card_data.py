@@ -789,10 +789,11 @@ def lookup_caption(card: dict) -> str:
 # --- матчи игрока страницей ------------------------------------------------------------------------
 
 def match_list_rows(matches: list, offset: int, step: int, tz: str = "UTC", show_delta: bool = True,
-                    current: Optional[int] = None) -> list[dict]:
+                    current: Optional[int] = None, builds: Optional[dict] = None) -> list[dict]:
     """Матчи страницы (новые сверху) → строки картинки списка; номер строки (с 1) — подпись кнопки, которая его открывает.
 
-    current — номер открытого сейчас матча на странице (подсвечивается); show_delta — показывать ±MMR (MMR задан).
+    current — номер открытого сейчас матча на странице (подсвечивается); show_delta — показывать ±MMR (MMR задан);
+    builds — сохранённые билды {match_id: билд}: у матча с билдом в строке его итоговые предметы.
     """
     from mmrbot.stats import is_win, match_mmr_delta
     rows = []
@@ -814,6 +815,10 @@ def match_list_rows(matches: list, offset: int, step: int, tz: str = "UTC", show
             "extra": " · ".join(extra) or None, "current": current == i, "level": m.get("level"),
             "plus_xp": m.get("plus_xp"),
         })
+        build = (builds or {}).get(m.get("match_id")) or {}
+        items = [i for i in build.get("items") or [] if isinstance(i, int) and not isinstance(i, bool) and i]
+        if items:
+            rows[-1].update(items=items, neutral_item=build.get("neutral_item"))
     return rows
 
 

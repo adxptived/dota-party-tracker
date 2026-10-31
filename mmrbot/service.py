@@ -1232,9 +1232,11 @@ def player_page(storage: Storage, chat_id: int, account: str, offset: int) -> Op
 
 
 def _match_list_png(title, subtitle, rows, badge) -> bytes:
-    loader = hero_icons.shared()
+    loader, gear = hero_icons.shared(), item_icons.shared()
     icons = loader.get_many(r["hero_id"] for r in rows) if loader is not None else {}
-    return render_match_list_image(title, subtitle, rows, icons, badge)
+    item_ids = [i for r in rows for i in (r.get("items") or []) + [r.get("neutral_item")] if i]
+    found_items = gear.get_many(item_ids) if gear is not None and item_ids else {}
+    return render_match_list_image(title, subtitle, rows, icons, badge, item_icons=found_items)
 
 
 async def match_list_board(
@@ -1250,7 +1252,12 @@ async def match_list_board(
         return None
     player, matches, offset, total = page
     chat = storage.get_or_create_chat(chat_id)
-    rows = match_list_rows(matches, offset, chat.mmr_step, chat.tz, player.anchor_mmr is not None, current)
+    try:  # сохранённые билды матчей страницы — иконки предметов в строках; без них список просто короче
+        builds = await asyncio.to_thread(storage.get_builds, player.account_id, [m["match_id"] for m in matches])
+    except Exception:
+        log.debug("Билды страницы матчей не прочитаны", exc_info=True)
+        builds = {}
+    rows = match_list_rows(matches, offset, chat.mmr_step, chat.tz, player.anchor_mmr is not None, current, builds)
     board = ImageBoard(match_list_text(player.display_name, rows, offset, total))
     if want_image(storage, chat_id, image):
         subtitle = f"матчи {offset + 1}–{offset + len(rows)} из {total} · нажмите номер, чтобы открыть" if total else None
