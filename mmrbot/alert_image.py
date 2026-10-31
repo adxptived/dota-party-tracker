@@ -161,8 +161,9 @@ def render_alert_image(
     y = _draw_banner(img, draw, PAD, event, label, color) + 14
 
     mvp = _mvp_name(rows)
+    mixed = len({bool(r.get("won")) for r in rows}) > 1  # «разные стороны»: подписываем сторону каждого
     for row in rows:
-        _draw_row(img, draw, y, row, icons, avatars, mvp, item_icons)
+        _draw_row(img, draw, y, row, icons, avatars, mvp, item_icons, mixed)
         y += _row_h(row) + ROW_GAP
 
     if summary:
@@ -228,6 +229,7 @@ def _draw_summary(img, draw, y: int, cells: list, event: dict) -> None:
 
 def _draw_row(
     img, draw, y: int, row: dict, icons: dict, avatars: dict, mvp: Optional[str], item_icons: Optional[dict] = None,
+    mixed: bool = False,
 ) -> None:
     won = bool(row.get("won"))
     accent = WIN if won else LOSS
@@ -259,10 +261,7 @@ def _draw_row(
     tag_x = NAME_X + min(cards.text_width(name, size, True), name_max) + 12
     for text, tag_color in tags:
         tag_x += cards.pill(img, draw, tag_x, mid - 15, text, BG, tag_color, size=18, pad=10) + 8
-    hero = hero_name(row.get("hero_id")) + (f"  ·  P{row['position']}" if row.get("position") else "")
-    if lane_text(row):
-        hero += f"  ·  {lane_text(row)}"
-    draw_text(draw, (NAME_X, mid + 17), hero, 20, MUTED, anchor="lm", max_w=name_room, shrink=17)
+    draw_text(draw, (NAME_X, mid + 17), _hero_line(row, mixed), 20, MUTED, anchor="lm", max_w=name_room, shrink=17)
 
     sep = y + TOP_H - 2
     img.paste(cards.mix(fill, "#ffffff", 0.07), (CELLS_X, sep, RIGHT, sep + 1))
@@ -272,6 +271,16 @@ def _draw_row(
         mid = y + TOP_H + _build_h(row) / 2 + 2
         cards.talent_tree(img, (RIGHT - TREE_W, mid - TREE_H / 2, RIGHT, mid + TREE_H / 2), _talents(row), fill)
     _draw_cells(draw, y + TOP_H + _build_h(row) + CELLS_H / 2 - 2, row)
+
+
+def _hero_line(row: dict, mixed: bool = False) -> str:
+    """Герой · позиция · исход линии; если пати играла за разные стороны — и сторона игрока."""
+    hero = hero_name(row.get("hero_id")) + (f"  ·  P{row['position']}" if row.get("position") else "")
+    if lane_text(row):
+        hero += f"  ·  {lane_text(row)}"
+    if mixed and row.get("is_radiant") is not None:
+        hero += "  ·  " + ("Radiant" if row["is_radiant"] else "Dire")
+    return hero
 
 
 def _draw_mmr(img, draw, mid: float, row: dict, fill: str) -> float:

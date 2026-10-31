@@ -234,3 +234,10 @@ def test_lone_druid_row_shows_bear_items_on_its_own_line():
 def test_bear_alone_is_a_build_too():
     row = _row("Cotara", hero_id=80, bear_items=[5, 6])
     assert _open(render_alert_image(_event([row]), "UTC")).height > _open(render_alert_image(_event([_row("X")]), "UTC")).height
+
+
+def test_mixed_sides_name_each_players_side():
+    from mmrbot.alert_image import _hero_line
+    a, b = _row("A", is_radiant=True), _row("B", False, is_radiant=False)
+    assert _hero_line(a, mixed=True).endswith("Radiant") and _hero_line(b, mixed=True).endswith("Dire")
+    assert "Radiant" not in _hero_line(a, mixed=False)  # одна сторона — подпись лишняя
